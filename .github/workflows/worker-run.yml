@@ -1,0 +1,70 @@
+name: Worker Run
+on:
+  workflow_dispatch:
+    inputs:
+      session:
+        description: Session number to use
+        required: true
+        default: "3"
+      mode:
+        description: Health check mode
+        required: true
+        default: oneshot
+        type: choice
+        options:
+          - oneshot
+          - full
+      threads:
+        description: Worker threads
+        required: true
+        default: "64"
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout chimera-miner
+        uses: actions/checkout@v4
+        with:
+          path: chimera-miner
+
+      - name: Checkout automation-toolkit (sessions + core)
+        uses: actions/checkout@v4
+        with:
+          repository: accbroly1/automation-toolkit
+          token: ${{ secrets.GH_TOKEN }}
+          path: automation-toolkit
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb unzip
+          pip install --break-system-packages -q invisible-playwright
+          python3 -m playwright install-deps firefox > /dev/null 2>&1 || true
+
+      - name: Install rclone static binary (mega backend)
+        run: |
+          curl -sL -o /tmp/rclone.zip https://downloads.rclone.org/v1.75.0/rclone-v1.75.0-linux-amd64.zip
+          cd /tmp && unzip -o -q rclone.zip && sudo mv rclone-v1.75.0-linux-amd64/rclone /usr/local/bin/rclone
+          rclone version | head -1
+
+      - name: Fetch invisible firefox engine
+        run: python3 -m invisible_playwright fetch
+
+      - name: Write rclone config
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+      - name: Run worker
+        id: run_worker
+        env:
+          CHIMERA_TOOLKIT_CORE: ${{ github.workspace }}/automation-toolkit/finals/core
+          CHIMERA_SESSIONS_DIR: ${{ github.workspace }}/automation-toolkit/scripts/sessions
+        run: |
+          cd chimera-miner
+          xvfb-run -a python3 script3_launch_miner.py \
+            --session ${{ inputs.session }} \
+            --mode ${{ inputs.mode }} \
+            --threads ${{ inputs.threads }}
