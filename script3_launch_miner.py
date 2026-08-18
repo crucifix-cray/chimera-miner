@@ -299,6 +299,21 @@ async def accept_invite(page, invite_link: str) -> bool:
         return False
 
 
+async def goto_retry(page, url, timeout_ms=30000, tries=3):
+    """goto with retries - Tor/WARP links drop page loads; an unhandled
+    timeout used to kill the whole session run."""
+    for attempt in range(1, tries + 1):
+        try:
+            await page.goto(url, timeout=timeout_ms)
+            return True
+        except Exception as e:
+            print(f"   ⚠️  goto failed (attempt {attempt}/{tries}): {e}")
+            if attempt == tries:
+                raise
+            await asyncio.sleep(5 * attempt)
+    return False
+
+
 async def check_session_valid(page) -> bool:
     """Check if session is still valid (not expired)."""
     try:
@@ -542,7 +557,7 @@ async def main():
             # 7. Go STRAIGHT to chat (no invite acceptance - it's our own project)
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
             print(f"\n📝 Going to chat: {chat_url}")
-            await chat_page.goto(chat_url, timeout=30000)
+            await goto_retry(chat_page, chat_url)
             await asyncio.sleep(2)
             
             # Check if session is valid
@@ -561,7 +576,7 @@ async def main():
                     except:
                         pass
                     await context.add_cookies(fresh)
-                    await chat_page.goto(chat_url, timeout=30000)
+                    await goto_retry(chat_page, chat_url)
                     await asyncio.sleep(2)
                     if not await check_session_valid(chat_page):
                         print("❌ Still redirected to login after re-login")
@@ -611,7 +626,7 @@ async def main():
                     except:
                         pass
                     await context.add_cookies(fresh)
-                    await chat_page.goto(chat_url, timeout=30000)
+                    await goto_retry(chat_page, chat_url)
                     await asyncio.sleep(2)
                     for selector in chat_selectors:
                         try:
@@ -652,7 +667,7 @@ async def main():
             print("\n🖼️  Opening preview tab...")
             preview_url = project.get("preview_url", f"https://{project['project_id']}.lovableproject.com")
             preview_page = await context.new_page()
-            await preview_page.goto(preview_url, timeout=30000)
+            await goto_retry(preview_page, preview_url)
             await asyncio.sleep(3)
             print(f"✅ Preview tab opened: {preview_url}")
             
