@@ -1,0 +1,6 @@
+{
+  "port": 8080,
+  "upstream_host": "upstream.service.internal",
+  "upstream_port": 3333,
+  "auth_token": ""
+}
