@@ -542,13 +542,14 @@ async def main():
     
     try:
         proxy = resolve_proxy()
+        # minimal for weak 1GB sandbox: headless True + no humanize + small viewport
         async with InvisiblePlaywright(
-            headless=False,
+            headless=True,
             proxy=proxy,
-            humanize=True,
+            humanize=False,
             locale='en-US',
         ) as browser:
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
             
             # Create chat page
             chat_page = await context.new_page()
@@ -558,7 +559,7 @@ async def main():
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
             print(f"\n📝 Going to chat: {chat_url}")
             await goto_retry(chat_page, chat_url)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             
             # Check if session is valid
             relogin_done = False
