@@ -615,6 +615,12 @@ async def main():
             
             if not chat_input and not relogin_done:
                 print("🔑 No chat input - session may be stale, attempting re-login...")
+                try:
+                    shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
+                    await chat_page.screenshot(path=shot, full_page=True)
+                    print(f"📸 Screenshot saved to {shot}")
+                except Exception as e:
+                    print(f"⚠️ Screenshot failed: {e}")
                 cfg = config
                 cfg.setdefault("session_id", args.session)
                 result = await relogin_session(browser, cfg, args.session)
@@ -643,6 +649,12 @@ async def main():
                             continue
                     if not chat_input:
                         print("❌ Still no chat input after re-login")
+                        try:
+                            shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input_after_relogin.png"
+                            await chat_page.screenshot(path=shot, full_page=True)
+                            print(f"📸 Screenshot saved to {shot}")
+                        except Exception as e:
+                            print(f"⚠️ Screenshot failed: {e}")
                         return
                 else:
                     reason = "invalid credentials - account lost" if result == "lost" else f"re-login failed ({result})"
@@ -650,6 +662,12 @@ async def main():
                     return
             elif not chat_input:
                 print("❌ Could not find chat input")
+                try:
+                    shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
+                    await chat_page.screenshot(path=shot, full_page=True)
+                    print(f"📸 Screenshot saved to {shot}")
+                except Exception as e:
+                    print(f"⚠️ Screenshot failed: {e}")
                 return
             
             # Send simple prompt
