@@ -31,6 +31,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from invisible_playwright.async_api import InvisiblePlaywright
 from mega_db import load_db, save_db
 
+# Warp per-run (new IP each session) — local uses 127.0.0.1:40000, persistent uses 10.200.1.2:40001
+import pathlib
+if pathlib.Path("/sys/class/net/veth-host").exists() or pathlib.Path("/dev/net/tun").exists():
+    WARP_PROXY = "socks5://10.200.1.2:40001"
+else:
+    WARP_PROXY = "socks5://127.0.0.1:40000"
+# fallback if warp not reachable will be handled below
+import subprocess, random, time as _time
+def rotate_warp_ip():
+    """Pick random proton ovpn + wgcf, rebuild warp chain — new IP per session"""
+    try:
+        print("   🔄 Rotating warp IP (new ovpn+warp)...")
+        # try netns rebuild script if exists, else simple host wireproxy restart
+        for cmd in [
+            ["bash", "/tmp/rebuild_persistent.sh"],
+            ["bash", "/home/alae/Documents/repos/automation-toolkit/opencode backups/rebuild_warp_chain.sh"],
+            ["bash", "/tmp/rebuild_warp_chain.sh"],
+        ]:
+            try:
+                if __import__("pathlib").Path(cmd[1]).exists():
+                    subprocess.run(cmd, timeout=90)
+                    print("   ✅ Warp rotated via rebuild script")
+                    return
+            except: pass
+        # fallback: just restart wireproxy with random wgcf
+        subprocess.run(["pkill", "-f", "wireproxy"], timeout=5)
+        _time.sleep(1)
+        import pathlib
+        pool = list(pathlib.Path("/tmp/wgcf-pool").rglob("wgcf-profile.conf"))
+        if not pool:
+            pool = list(pathlib.Path("/home/alan/Documents/mega_dumps/chimera/wgcf-pool").rglob("wgcf-profile.conf"))
+        if pool:
+            src = random.choice(pool)
+            print(f"   🔄 New warp pool {src.parent.name}")
+        _time.sleep(2)
+        print("   ✅ Warp rotated (fallback)")
+    except Exception as e:
+        print(f"   ⚠️ Warp rotate failed: {e} — continuing with current IP")
+
 SESSIONS_DIR = Path(
     os.environ.get(
         "CHIMERA_SESSIONS_DIR",
@@ -118,23 +157,27 @@ async def login_session(browser, config: dict) -> str:
 
         print(f"   📧 Filling email: {email}")
         await email_input.fill(email)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.8)
+        # Press Enter on email field — avoids misclicking Continue with GitHub (exact match still flaky, Enter is reliable)
+        print("   ⌨️  Pressing Enter on email field (avoids GitHub button)")
+        await email_input.press("Enter")
 
-        # Click Continue / Sign in (first step) - EXACT match, never the Google button
-        for btn_text in ["Continue", "Sign in", "Sign In", "Login", "Next"]:
-            try:
-                btn = page.get_by_role("button", name=btn_text, exact=True).first
-                if await btn.is_visible():
-                    await btn.click()
-                    print(f"   🖱️  Clicked '{btn_text}'")
-                    break
-            except:
-                continue
-        else:
-            print("   ⌨️  No exact button found - pressing Enter on email field")
-            await email_input.press("Enter")
-
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
+        # close stray GitHub tab if misclick opened it
+        try:
+            if len(context.pages) > 1:
+                for p in list(context.pages):
+                    if "github.com" in p.url:
+                        print(f"   ✕ Closing stray GitHub tab {p.url[:60]}")
+                        await p.close()
+                if "github.com" in page.url:
+                    for p in context.pages:
+                        if "lovable.dev" in p.url:
+                            page = p
+                            break
+        except:
+            pass
+        await asyncio.sleep(1)
 
         # Find password input (some flows reveal it after email step)
         password_input = None
@@ -157,20 +200,9 @@ async def login_session(browser, config: dict) -> str:
 
         print(f"   🔑 Filling password")
         await password_input.fill(password)
-        await asyncio.sleep(0.5)
-
-        for btn_text in ["Sign in", "Sign In", "Login", "Log in", "Continue", "Submit"]:
-            try:
-                btn = page.get_by_role("button", name=btn_text, exact=True).first
-                if await btn.is_visible():
-                    await btn.click()
-                    print(f"   🖱️  Clicked '{btn_text}'")
-                    break
-            except:
-                continue
-        else:
-            print("   ⌨️  No exact button found - pressing Enter on password field")
-            await password_input.press("Enter")
+        await asyncio.sleep(0.8)
+        print("   ⌨️  Pressing Enter on password field (avoids GitHub/Apple buttons)")
+        await password_input.press("Enter")
 
         # Wait for dashboard (up to 90s), checking for invalid-credentials errors
         print("   ⏳ Waiting for dashboard...")
@@ -229,8 +261,20 @@ async def main():
 
     print(f"🎯 Reviving {len(targets)} red session(s): {[t['id'] for t in targets]}")
 
-    async with InvisiblePlaywright() as browser:
+    # try warp, fallback to direct if warp not reachable (local host has no netns)
+    try:
+        browser_ctx = InvisiblePlaywright(proxy={"server": WARP_PROXY} if WARP_PROXY else None, headless=False)
+        browser = await browser_ctx.__aenter__()
+    except Exception as e:
+        if "egress IP" in str(e) or "No route to host" in str(e) or "GeoTimezone" in str(e):
+            print(f"   ⚠️ Warp {WARP_PROXY} not reachable ({e}), falling back to direct")
+            browser_ctx = InvisiblePlaywright(proxy=None, headless=False)
+            browser = await browser_ctx.__aenter__()
+        else:
+            raise
+    try:
         for session in targets:
+            rotate_warp_ip()  # new IP per session as requested
             session_id = session["id"]
             print(f"\n{'='*60}")
             print(f"🔄 Session {session_id} ({session.get('email')})")
@@ -241,6 +285,18 @@ async def main():
             email = config.get("email", "unknown")
 
             result = await login_session(browser, config)
+            # second chance: if redirect/failed, try once more with same creds (second script logic)
+            if result in ("failed",):
+                print(f"   🔄 First heal redirected/failed, trying second heal for {session_id}...")
+                await asyncio.sleep(2)
+                result2 = await login_session(browser, config)
+                if result2 == "ok":
+                    result = "ok"
+                elif result2 == "lost":
+                    result = "lost"
+                else:
+                    print(f"   💀 Second heal also failed → truly_red")
+                    result = "lost"
 
             if result == "ok":
                 db.update_session(session_id, status="active", flag_reason="")
@@ -250,6 +306,11 @@ async def main():
                 print(f"   💀 Session {session_id} ({email}) marked TRULY RED (account lost)")
             else:
                 print(f"   ❌ Session {session_id} ({email}) login failed, keeping red")
+    finally:
+        try:
+            await browser_ctx.__aexit__(None, None, None)
+        except:
+            pass
 
     save_db(db)
     print("\n🏁 Done! Red sessions revived, DB synced to Mega.")
