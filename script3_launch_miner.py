@@ -34,7 +34,7 @@ SESSIONS_DIR = Path(
         "/home/alan/Documents/automation-toolkit/scripts/sessions",
     )
 )
-BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
+BRIDGE_URL = "wss://bridge-production-7c63.up.railway.app"
 
 LOGIN_URL = "https://lovable.dev/login"
 DASHBOARD_MARKERS = ["/projects", "/dashboard"]

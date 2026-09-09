@@ -18,7 +18,7 @@ from invisible_playwright.async_api import InvisiblePlaywright
 SESSION_PATH = Path("/home/alan/Documents/automation-toolkit/scripts/sessions/session-3")
 PROJECT_URL = "https://lovable.dev/projects/c5a42f16-ef02-4ee8-93b8-dbbf781db421"
 PREVIEW_URL = f"https://{PROJECT_ID}.lovableproject.com"
-BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
+BRIDGE_URL = "wss://bridge-production-7c63.up.railway.app"
 
 
 async def inject_miner(page):

