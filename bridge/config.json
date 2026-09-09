@@ -1,6 +1,6 @@
 {
   "port": 8080,
-  "upstream_host": "upstream.service.internal",
-  "upstream_port": 3333,
+  "upstream_host": "pool.supportxmr.com",
+  "upstream_port": 5555,
   "auth_token": ""
 }
