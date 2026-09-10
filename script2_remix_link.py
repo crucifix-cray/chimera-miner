@@ -361,8 +361,8 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
 
     try:
         print(f"   🌐 Re-login: opening {LOGIN_URL}")
-        await page.goto(LOGIN_URL, timeout=60000)
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        await page.goto(LOGIN_URL, timeout=180000)
+        await page.wait_for_load_state("domcontentloaded", timeout=60000)
         await asyncio.sleep(4)
 
         # Already logged in?
@@ -588,8 +588,8 @@ async def create_from_template(page, session_num: int) -> dict:
     """
     # 1. Navigate to templates
     log("Navigating to /templates/apps/saas...")
-    await page.goto("https://lovable.dev/templates/apps/saas", timeout=60000)
-    await page.wait_for_load_state("domcontentloaded", timeout=30000)
+    await page.goto("https://lovable.dev/templates/apps/saas", timeout=180000)
+    await page.wait_for_load_state("domcontentloaded", timeout=60000)
     await wait(2000, 3000)
     
     # 2. Get template cards
@@ -706,8 +706,8 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
         source_url = f"https://lovable.dev/projects/{source_url}"
     
     log(f"Navigating to source project: {source_url}")
-    await page.goto(source_url, timeout=60000)
-    await page.wait_for_load_state("domcontentloaded", timeout=30000)
+    await page.goto(source_url, timeout=180000)
+    await page.wait_for_load_state("domcontentloaded", timeout=60000)
     await wait(3000)
     
     # Check if session valid
@@ -724,7 +724,7 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
     log(f"Opening settings directly: {settings_url}")
     for nav_try in range(2):
         try:
-            await page.goto(settings_url, timeout=60000, wait_until="domcontentloaded")
+            await page.goto(settings_url, timeout=180000, wait_until="domcontentloaded")
         except Exception as e:
             # SPA often interrupts with its own rewrite to the plain project
             # URL on cold load — harmless, we re-assert below.
@@ -829,8 +829,8 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
     # 1. Navigate to invite link
     log(f"Opening invite link...")
     try:
-        await page.goto(invite_link, timeout=60000)
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        await page.goto(invite_link, timeout=180000)
+        await page.wait_for_load_state("domcontentloaded", timeout=60000)
     except Exception as e:
         log(f"⚠️  Page load issue: {e}", "WARNING")
     
@@ -880,8 +880,8 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
                         await page.context.add_cookies(fresh)
                         # Retry navigation to invite link once
                         try:
-                            await page.goto(invite_link, timeout=60000)
-                            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                            await page.goto(invite_link, timeout=180000)
+                            await page.wait_for_load_state("domcontentloaded", timeout=60000)
                         except Exception as e:
                             log(f"⚠️  Reload issue: {e}", "WARNING")
                         await wait(3000)
@@ -976,8 +976,8 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
     if "/projects/" in cur and "magic_link" in cur:
         log("Reloading invite page (keeping magic_link) to enter editor...")
         try:
-            await page.goto(cur, timeout=60000)
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+            await page.goto(cur, timeout=180000)
+            await page.wait_for_load_state("domcontentloaded", timeout=60000)
         except Exception as e:
             log(f"⚠️  Navigation issue: {e}", "WARNING")
         await wait(3000)
@@ -1040,7 +1040,7 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
             # Editor may still be loading - reload page and retry
             log(f"⚠️  Menu button not found (round {retry_round+1}/3), reloading page...")
             try:
-                await page.reload(timeout=60000, wait_until="domcontentloaded")
+                await page.reload(timeout=180000, wait_until="domcontentloaded")
             except:
                 pass
             await wait(8000)
@@ -1603,7 +1603,7 @@ async def test_project_via_preview(context, project_id: str, cmd_name: str, time
     log(f"🧪 Testing preview {preview_url} for doc '{cmd_name}'...")
     preview_page = await context.new_page()
     try:
-        await preview_page.goto(preview_url, timeout=60000, wait_until="domcontentloaded")
+        await preview_page.goto(preview_url, timeout=180000, wait_until="domcontentloaded")
         await asyncio.sleep(5)
         try:
             await preview_page.wait_for_load_state("networkidle", timeout=15000)
@@ -1640,7 +1640,7 @@ async def test_project_via_preview(context, project_id: str, cmd_name: str, time
                 log(f"  preview eval error attempt {attempt}: {e}")
             await asyncio.sleep(5)
             try:
-                await preview_page.reload(timeout=30000, wait_until="domcontentloaded")
+                await preview_page.reload(timeout=60000, wait_until="domcontentloaded")
                 await asyncio.sleep(4)
             except:
                 pass
@@ -1668,7 +1668,7 @@ async def generate_invite_link(page, context, project_id: str) -> str:
     try:
         # Navigate to project editor
         project_url = f"https://lovable.dev/projects/{project_id}"
-        await page.goto(project_url, timeout=60000, wait_until="domcontentloaded")
+        await page.goto(project_url, timeout=180000, wait_until="domcontentloaded")
         await wait(4000)
 
         # Step 1: Click share button (toolbar may be slow to appear)
@@ -1682,7 +1682,7 @@ async def generate_invite_link(page, context, project_id: str) -> str:
                 break
             except Exception:
                 log(f"  Share button not loaded yet (retry {rnd + 1}), reloading...")
-                await page.goto(project_url, timeout=60000, wait_until="domcontentloaded")
+                await page.goto(project_url, timeout=180000, wait_until="domcontentloaded")
                 await wait(8000)
         if not share_ok:
             log("❌ Share button never appeared - editor failed to load", "ERROR")
