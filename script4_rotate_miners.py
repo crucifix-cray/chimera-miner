@@ -76,6 +76,49 @@ async def human_moves(page, seconds: int):
             return
 
 
+async def chat_wake(page, pid: str, tag: str) -> bool:
+    """Cold previews have no bridge until the dev server wakes. Proven path
+    (script3): send a trivial chat prompt, wait, return to preview."""
+    try:
+        print(f"[{tag}] 💬 waking via chat...", flush=True)
+        await asyncio.wait_for(
+            page.goto(f"https://lovable.dev/projects/{pid}",
+                      timeout=25000, wait_until="domcontentloaded"),
+            timeout=40,
+        )
+        await asyncio.sleep(4)
+        chat_input = None
+        for sel in ['div[contenteditable="true"][role="textbox"]',
+                    '[contenteditable="true"]',
+                    'textarea[placeholder*="chat"]', 'textarea']:
+            try:
+                el = await page.wait_for_selector(sel, timeout=5000, state="visible")
+                if el and await el.is_visible() and await el.is_enabled():
+                    chat_input = el
+                    break
+            except Exception:
+                continue
+        if not chat_input:
+            print(f"[{tag}] ❌ no chat input", flush=True)
+            return False
+        prompt = random.choice(["say 'a'", "1+1?", "say 'x'", "2+2?"])
+        await chat_input.fill(prompt)
+        await asyncio.sleep(0.3)
+        await page.keyboard.press("Enter")
+        print(f"[{tag}] ✅ prompt sent, waiting 90s for dev server...", flush=True)
+        await asyncio.sleep(90)
+        await asyncio.wait_for(
+            page.goto(f"https://{pid}.lovableproject.com",
+                      timeout=25000, wait_until="domcontentloaded"),
+            timeout=40,
+        )
+        await asyncio.sleep(8)
+        return True
+    except Exception as e:
+        print(f"[{tag}] chat-wake warn: {str(e)[:100]}", flush=True)
+        return False
+
+
 async def tend_tab(page, pid: str, dwell: int, threads: int) -> str:
     """One rotation visit: restore if dead, verify worker, inject if missing,
     human moves for dwell seconds. Returns status string."""
@@ -104,11 +147,34 @@ async def tend_tab(page, pid: str, dwell: int, threads: int) -> str:
 
     running = await verify_worker(frame)
     if not running:
-        print(f"[{ts}] [{tag}] ⚙️ worker missing — injecting...")
-        ok = await inject_miner(page, threads=threads)
-        print(f"[{ts}] [{tag}] {'✅ worker up' if ok else '❌ inject failed'}")
-        if not ok:
-            return "no-worker"
+        # cold preview? wake via chat, then re-check bridge before inject
+        nobridge = False
+        try:
+            has_bridge = await frame.evaluate(
+                "(() => !!(window.doc && typeof window.doc === 'function'))()")
+        except Exception:
+            has_bridge = False
+        if not has_bridge:
+            nobridge = True
+            if await chat_wake(page, pid, tag):
+                try:
+                    frames = page.frames
+                    frame = next(
+                        (f for f in frames if "lovableproject" in f.url.lower()),
+                        page.main_frame,
+                    )
+                    running = await verify_worker(frame)
+                    if running:
+                        print(f"[{tag}] ✅ worker already up after wake", flush=True)
+                except Exception:
+                    pass
+        if not running:
+            print(f"[{ts}] [{tag}] ⚙️ worker missing{' (no bridge, wake failed)' if nobridge else ''} — injecting...",
+                  flush=True)
+            ok = await inject_miner(page, threads=threads)
+            print(f"[{ts}] [{tag}] {'✅ worker up' if ok else '❌ inject failed'}")
+            if not ok:
+                return "no-worker"
 
     print(f"[{ts}] [{tag}] 👀 dwelling {dwell}s...")
     await human_moves(page, dwell)
