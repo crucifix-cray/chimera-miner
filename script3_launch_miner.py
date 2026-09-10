@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from invisible_playwright.async_api import InvisiblePlaywright
 from db_backend import build_backend
-from miner_injector import inject_miner, health_check_loop
+from miner_injector import inject_miner, health_check_loop, is_tab_alive, restore_tab
 
 SESSIONS_DIR = Path(
     os.environ.get(
@@ -449,6 +449,15 @@ async def wait_for_console_message(page, timeout_seconds=300):
             await asyncio.sleep(10)
             continue
 
+        # Dead tab (crash)? Restore it instead of hammering reload.
+        try:
+            if not await is_tab_alive(page):
+                print("   💥 Tab crashed — restoring before refresh...")
+                await restore_tab(page, page.url)
+                await asyncio.sleep(5)
+                continue
+        except Exception as e:
+            print(f"   restore warn: {str(e)[:100]}")
         # Refresh page
         print(f"   🔄 Refreshing page... ({int(elapsed)}s elapsed)")
         try:
@@ -625,9 +634,12 @@ async def main():
                 print(f"✅ Project {pid} matches session config (latest remix)")
             else:
                 print(f"⚠️  Project {pid} has no DB record — using it directly (explicit --project)")
+            _cfg_link = _cfg.get("project_link") or ""
+            if pid not in _cfg_link:
+                _cfg_link = ""  # config tracks the latest remix, not this pid
             project = {
                 "project_id": pid,
-                "chat_url": _cfg.get("project_link") or f"https://lovable.dev/projects/{pid}",
+                "chat_url": _cfg_link or f"https://lovable.dev/projects/{pid}",
                 "preview_url": f"https://{pid}.lovableproject.com",
                 "invite_link": None,
                 "created_by": session_id,
