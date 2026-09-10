@@ -161,8 +161,8 @@ async def relogin_session(browser, config: dict, session_id: str, backend=None) 
 
     try:
         print(f"   🌐 Re-login: opening {LOGIN_URL}")
-        await page.goto(LOGIN_URL, timeout=60000)
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        await page.goto(LOGIN_URL, timeout=30000,
+                        wait_until="domcontentloaded")
         await asyncio.sleep(4)
 
         # Already logged in?
