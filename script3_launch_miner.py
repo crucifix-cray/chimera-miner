@@ -136,6 +136,13 @@ async def relogin_session(browser, config: dict, session_id: str, backend=None) 
         with open(session_path / "cookies.json", "w") as f:
             json.dump(cookies, f, indent=2)
         print(f"   ✅ Cookies overwritten ({len(cookies)} cookies)")
+        # Verify cookies persist by loading them back
+        try:
+            with open(session_path / "cookies.json") as f:
+                loaded = json.load(f)
+            print(f"   ✅ Cookie verify: {len(loaded)} cookies persisted to disk")
+        except Exception as e:
+            print(f"   ⚠️  Cookie verify failed: {e}")
         backend_name = getattr(backend, "name", "local") if backend is not None else "local"
         if backend_name == "mega":
             try:
@@ -703,7 +710,16 @@ async def main():
             humanize=_headed,
             locale='en-US',
         ) as browser:
-            context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
+            # Fixed viewport: no random chrome_w/chrome_h from invisible_playwright
+            # that can shrink the page and hide buttons
+            fixed_viewport = {"width": 1280, "height": 720}
+            context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport=fixed_viewport)
+            # Force consistent size on all pages
+            for page in context.pages:
+                try:
+                    await page.set_viewport_size(fixed_viewport)
+                except Exception:
+                    pass
             
             # Create chat page
             chat_page = await context.new_page()
