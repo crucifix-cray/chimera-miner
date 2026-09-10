@@ -396,18 +396,22 @@ async def check_session_valid(page) -> bool:
 
 
 async def wait_for_console_message(page, timeout_seconds=300):
-    """Wait for 'lovable' message in console by refreshing every 40 seconds."""
+    """Wait for 'lovable' message in console by refreshing every 40 seconds.
+
+    Returns "ready" | "timeout" | "rep-prompt" (3 error pages = dev server
+    needs a fresh chat prompt, not more refreshes)."""
     print(f"⏳ Waiting for console 'lovable' message (refreshing every 40s, max {timeout_seconds}s)...")
-    
+
     start_time = asyncio.get_event_loop().time()
     refresh_interval = 40
+    error_hits = 0
     
     while True:
         elapsed = asyncio.get_event_loop().time() - start_time
-        
+
         if elapsed > timeout_seconds:
             print(f"⚠️  Timeout waiting for console message after {timeout_seconds}s")
-            return False
+            return "timeout"
         
         # Check console logs
         try:
@@ -425,7 +429,7 @@ async def wait_for_console_message(page, timeout_seconds=300):
             
             if result:
                 print(f"✅ Console shows lovable is ready! (after {int(elapsed)}s)")
-                return True
+                return "ready"
         except Exception as e:
             print(f"   ⚠️  Console check error: {e}")
         
@@ -440,7 +444,11 @@ async def wait_for_console_message(page, timeout_seconds=300):
         except Exception:
             error_page = False
         if error_page:
-            print(f"   🔄 Error page hit, fast refresh... ({int(elapsed)}s elapsed)")
+            error_hits += 1
+            print(f"   🔄 Error page hit #{error_hits}, fast refresh... ({int(elapsed)}s elapsed)")
+            if error_hits >= 3:
+                print("   💬 3 error pages — dev server needs a fresh prompt, not refreshes")
+                return "rep-prompt"
             try:
                 await page.reload(timeout=30000)
                 await asyncio.sleep(5)
@@ -853,10 +861,37 @@ async def main():
                     print(f"   fresh tab failed: {str(e)[:100]}")
                     return None
 
-            # 10. Wait for console 'lovable' message (refresh every 40s)
+            async def reprompt_and_wait():
+                """Back to chat (same tab), fresh prompt, back to preview,
+                wait for console. Returns wait status string."""
+                print("🔄 Back to chat for a fresh prompt...")
+                await goto_retry(preview_page, chat_url)
+                await asyncio.sleep(3)
+                _input = None
+                for selector in chat_selectors:
+                    try:
+                        _input = await preview_page.wait_for_selector(selector, timeout=5000, state='visible')
+                        if _input and await _input.is_visible():
+                            break
+                    except Exception:
+                        _input = None
+                if _input:
+                    await _input.fill(random.choice(simple_prompts))
+                    await preview_page.keyboard.press("Enter")
+                    print("✅ Sent new prompt, waiting again...")
+                await goto_retry(preview_page, preview_url)
+                await asyncio.sleep(3)
+                return await wait_for_console_message(preview_page, timeout_seconds=300)
+
+            # 10. Wait for console 'lovable' message (refresh every 40s).
+            # 3 error pages -> "rep-prompt": refreshes won't fix it, the dev
+            # server wants a fresh chat prompt -> re-prompt, then continue.
             console_ready = await wait_for_console_message(preview_page, timeout_seconds=300)
 
-            if not console_ready:
+            if console_ready == "rep-prompt":
+                console_ready = await reprompt_and_wait()
+
+            if console_ready != "ready":
                 print("❌ Console message never appeared")
                 if args.mode == "oneshot":
                     print("🔄 Oneshot: one fresh-tab retry before giving up...")
@@ -865,37 +900,22 @@ async def main():
                         preview_page = _fresh
                         console_ready = await wait_for_console_message(
                             preview_page, timeout_seconds=180)
-                    if not console_ready:
+                        if console_ready == "rep-prompt":
+                            console_ready = await reprompt_and_wait()
+                    if console_ready != "ready":
                         print("🛑 Oneshot mode - exiting")
                         return
                 else:
-                    print("🔄 Full mode - back to chat for a new prompt...")
-                    # Same tab back to chat, re-prompt, back to preview
-                    await goto_retry(preview_page, chat_url)
-                    await asyncio.sleep(3)
-                    for selector in chat_selectors:
-                        try:
-                            chat_input = await preview_page.wait_for_selector(selector, timeout=5000, state='visible')
-                            if chat_input and await chat_input.is_visible():
-                                break
-                        except Exception:
-                            chat_input = None
-                    if chat_input:
-                        await chat_input.fill(random.choice(simple_prompts))
-                        await preview_page.keyboard.press("Enter")
-                        print("✅ Sent new prompt, waiting again...")
-                    await goto_retry(preview_page, preview_url)
-                    await asyncio.sleep(3)
-                    console_ready = await wait_for_console_message(preview_page, timeout_seconds=300)
+                    console_ready = await reprompt_and_wait()
 
-                    if not console_ready:
+                    if console_ready != "ready":
                         print("🔄 Last resort: fresh tab...")
                         _fresh = await fresh_preview_tab()
                         if _fresh is not None:
                             preview_page = _fresh
                             console_ready = await wait_for_console_message(
                                 preview_page, timeout_seconds=180)
-                    if not console_ready:
+                    if console_ready != "ready":
                         print("❌ Still no console message after retry - giving up")
                         return
             
