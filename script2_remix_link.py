@@ -1806,6 +1806,9 @@ async def main():
     parser.add_argument("--source-url", type=str, help="Source project URL/ID for remix mode")
     parser.add_argument("--invite", type=str, help="Invite link for accept mode")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument("--first-heavy", action=argparse.BooleanOptionalAction, default=True,
+                        help="Remix mode: project #1 runs WITH feature (high-credit), "
+                             "projects #2..N remix from #1 with SKIP_FEATURE (default: on)")
     args = parser.parse_args()
     
     session_id = args.session
@@ -1870,7 +1873,8 @@ async def main():
             print("🌐 Using warp proxy 127.0.0.1:40000 for browser (isolated, bypass api.lovable.dev/api.tempmailhub.org)")
     except:
         print("ℹ️  No warp proxy, using direct")
-    async with InvisiblePlaywright(headless=args.headless, proxy=proxy_settings) as browser:
+    async with InvisiblePlaywright(headless=args.headless, proxy=proxy_settings,
+                                     extra_args=["--no-sandbox", "--disable-dev-shm-usage"]) as browser:
         if browser.contexts:
             context = browser.contexts[0]
         else:
@@ -1881,7 +1885,14 @@ async def main():
         except:
             pass
         await context.add_cookies(cookies)
-        
+
+        # FIRST-HEAVY (remix mode): #1 = high-credit feature run from source-url,
+        # #2..N = cheap remixes cloned from #1 (SKIP_FEATURE forced on).
+        use_first_heavy = bool(args.first_heavy) and mode == "remix" and count > 1
+        first_url = None
+        if use_first_heavy:
+            print("🔥 FIRST-HEAVY on: #1 with feature (high-credit), #2..N remix from #1")
+
         for i in range(count):
             print(f"\n{'='*60}")
             print(f"📦 Creating project {i+1}/{count}")
@@ -1892,7 +1903,13 @@ async def main():
                 if mode == "template":
                     project_info = await create_from_template(page, args.session)
                 elif mode == "remix":
-                    project_info = await remix_existing(page, args.source_url, args.session)
+                    src = args.source_url
+                    if use_first_heavy and i > 0:
+                        if not first_url:
+                            raise Exception("FIRST-HEAVY: #1 never completed, cannot clone")
+                        src = first_url
+                        log(f"🔗 Cloning from #1: {src}")
+                    project_info = await remix_existing(page, src, args.session)
                 elif mode == "accept":
                     project_info = await accept_invite_and_remix(page, used_invite_link, args.session)
                 
@@ -1905,11 +1922,19 @@ async def main():
                 
                 # Step 2: Add feature + test (per brainstorm 3 parts).
                 # SKIP_FEATURE=1 skips this (remix+links only; 0-credit accts).
+                # FIRST-HEAVY overrides: #1 always runs the feature (high-credit),
+                # #2..N always skip it (cheap clones of #1).
                 cmd_name = random.choice(CMD_NAMES)
                 feature_added = False
                 test_ok = False
-                if os.environ.get("SKIP_FEATURE"):
-                    log("⏭️  SKIP_FEATURE=1 — skipping feature+test, straight to invite")
+                skip_feature = bool(os.environ.get("SKIP_FEATURE"))
+                if use_first_heavy:
+                    skip_feature = (i > 0)
+                    log("🔥 FIRST-HEAVY #1 — feature ON (high-credit)" if i == 0
+                        else "⏭️  FIRST-HEAVY clone — feature OFF, straight to invite")
+                if skip_feature:
+                    if not use_first_heavy:
+                        log("⏭️  SKIP_FEATURE=1 — skipping feature+test, straight to invite")
                 elif mode in ("template", "remix"):
                     try:
                         feature_added = await add_heavy_particles_feature(page, cmd_name)
@@ -1993,7 +2018,12 @@ async def main():
                         db.add_session(session_key, config["email"], "active")
                         db.update_session(session_key, projects_created=1)
                     save_db(db)
-                
+
+                # FIRST-HEAVY: #1 becomes the clone source for #2..N
+                if use_first_heavy and i == 0:
+                    first_url = project_info["chat_url"]
+                    log(f"🔥 FIRST-HEAVY #1 saved as clone source: {first_url}")
+
                 print(f"\n✅ Project {project_id} created successfully!")
                 print(f"   Mode: {mode}")
                 print(f"   Feature: {'added' if feature_added else 'FAILED'} (cmd: {cmd_name})")
