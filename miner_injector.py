@@ -135,7 +135,7 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
         # "sandbox proxy failed" / "Internal server error" right after load is
         # transient - the WebContainer proxy isn't ready yet. Poll until OK.
         probe_ok = False
-        for attempt in range(6):
+        for attempt in range(3):
             try:
                 probe = await preview_frame.evaluate("""
                     (async () => {
@@ -156,7 +156,7 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
                     print(f"   ✅ Sandbox ready (doc() probe OK, attempt {attempt+1})")
                     break
                 err = (probe or {}).get("error", "unknown")
-                print(f"   ⏳ Sandbox not ready yet (attempt {attempt+1}/6): {err}")
+                print(f"   ⏳ Sandbox not ready yet (attempt {attempt+1}/3): {err}")
             except Exception as e:
                 print(f"   ⏳ Probe error (attempt {attempt+1}/6): {e}")
             await asyncio.sleep(15)

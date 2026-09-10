@@ -27,9 +27,8 @@ from pathlib import Path
 HERE = Path(__file__).parent
 SCRIPT3 = HERE / "script3_launch_miner.py"
 
-# Speedrun law: no visit lives past ~8 min. Stubborn projects get
-# skipped and retried next round — the sweep never stalls.
-STARTUP_TIMEOUT = 420
+# Speedrun law: round 1 visits max 4 min. Stubborn = next round.
+STARTUP_TIMEOUT = 240
 POLL = 10
 
 
