@@ -4,10 +4,20 @@ Script 3: Session Runner
 Load session → Connect → Start worker → Health check
 
 Usage:
-  python3 script3_launch_miner.py --session 3 --mode oneshot
-  python3 script3_launch_miner.py --session 3 --mode full
-  python3 script3_launch_miner.py --session 3 --mode gh
-  python3 script3_launch_miner.py --session 3 --mode full --warp
+  python3 script3_launch_miner.py --session 1 --mode oneshot --project 498c08a9-...  # farm system (default)
+  python3 script3_launch_miner.py --session 3 --mode full --db mega                    # legacy chimera Mega DB
+  python3 script3_launch_miner.py --session 3 --mode gh --db github                    # git push state to repo
+
+DB backends (--db):
+  local   farm system on disk, no Mega, no push (default).
+          Sessions: <sessions-dir>/session-N/{config.json,cookies.json}
+          Projects: session config project_id/project_link + finals/lovables.json.
+  mega    legacy chimera Mega DB (mega:chimera/database.json via rclone).
+  github  local farm reads/writes PLUS git commit+push of the repo state
+          after every status change. GH token is NEVER committed: set
+          GH_TOKEN env, or store encrypted via
+          `CHIMERA_GH_KEY=<key> python3 db_backend.py encrypt-token`
+          (decrypted at runtime from ~/.config/chimera/gh_token.enc).
 """
 
 import asyncio
@@ -25,13 +35,19 @@ sys.path.insert(0, TOOLKIT_CORE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from invisible_playwright.async_api import InvisiblePlaywright
-from mega_db import load_db, save_db, mega_distributed_lock
+from db_backend import build_backend
 from miner_injector import inject_miner, health_check_loop
 
 SESSIONS_DIR = Path(
     os.environ.get(
         "CHIMERA_SESSIONS_DIR",
-        "/home/alan/Documents/automation-toolkit/scripts/sessions",
+        "/home/alan/Documents/repos/automation-toolkit/scripts/sessions",
+    )
+)
+FINALS_DIR = Path(
+    os.environ.get(
+        "CHIMERA_FINALS_DIR",
+        "/home/alan/Documents/repos/automation-toolkit/finals",
     )
 )
 BRIDGE_URL = "wss://bridge-production-7c63.up.railway.app"
@@ -57,8 +73,8 @@ def resolve_proxy() -> dict | None:
     return None
 
 
-async def mark_truly_red(session_id: str, session_key: str, config: dict, reason: str):
-    """Flag a session as truly_red in both config.json and the Mega DB."""
+async def mark_truly_red(session_id: str, session_key: str, config: dict, reason: str, backend=None):
+    """Flag a session as truly_red in config.json and the active backend DB."""
     print(f"\n💀 Session bounced out of dashboard - marking TRULY RED ({reason})")
     try:
         config["status"] = "truly_red"
@@ -67,20 +83,22 @@ async def mark_truly_red(session_id: str, session_key: str, config: dict, reason
             json.dump(config, f, indent=2)
     except Exception as e:
         print(f"⚠️  Failed to write config.json: {e}")
+    if backend is None:
+        return
     try:
-        with mega_distributed_lock(timeout=600):
-            db = load_db()
-            if db.get_session(session_key):
-                db.update_session(session_key, status="truly_red", flag_reason=reason)
-            save_db(db)
+        if backend.get_session(session_key):
+            backend.update_session(session_key, status="truly_red", flag_reason=reason)
+        backend.persist([str(SESSIONS_DIR / f"session-{session_id}" / "config.json")])
     except Exception as e:
         print(f"⚠️  Failed to flag truly_red in DB: {e}")
 
 
-async def relogin_session(browser, config: dict, session_id: str) -> str:
+async def relogin_session(browser, config: dict, session_id: str, backend=None) -> str:
     """Attempt normal email+password login in a FRESH context (mirrors script2/revive).
 
     On success, overwrites the session's cookies.json with fresh cookies.
+    Cookie sync follows the backend: mega → rclone upload, github → git
+    commit+push, local → disk only.
     Returns: "ok" (logged in + cookies saved), "lost" (invalid credentials - account dead),
              "failed" (other error)
     """
@@ -118,21 +136,28 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
         with open(session_path / "cookies.json", "w") as f:
             json.dump(cookies, f, indent=2)
         print(f"   ✅ Cookies overwritten ({len(cookies)} cookies)")
-        try:
-            import subprocess
-            proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
-            env = {k: v for k, v in os.environ.items() if k not in proxy_vars}
-            remote = f"mega:lovable_sessions/session-{session_id}/cookies.json"
-            res = subprocess.run(
-                ["rclone", "copyto", str(session_path / "cookies.json"), remote],
-                capture_output=True, text=True, timeout=60, env=env,
-            )
-            if res.returncode == 0:
-                print(f"   ✅ Cookies uploaded to Mega ({remote})")
-            else:
-                print(f"   ⚠️  Mega cookies upload failed: {res.stderr[:200]}")
-        except Exception as e:
-            print(f"   ⚠️  Mega cookies upload error: {e}")
+        backend_name = getattr(backend, "name", "local") if backend is not None else "local"
+        if backend_name == "mega":
+            try:
+                import subprocess
+                proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
+                env = {k: v for k, v in os.environ.items() if k not in proxy_vars}
+                remote = f"mega:lovable_sessions/session-{session_id}/cookies.json"
+                res = subprocess.run(
+                    ["rclone", "copyto", str(session_path / "cookies.json"), remote],
+                    capture_output=True, text=True, timeout=60, env=env,
+                )
+                if res.returncode == 0:
+                    print(f"   ✅ Cookies uploaded to Mega ({remote})")
+                else:
+                    print(f"   ⚠️  Mega cookies upload failed: {res.stderr[:200]}")
+            except Exception as e:
+                print(f"   ⚠️  Mega cookies upload error: {e}")
+        elif backend_name == "github" and backend is not None:
+            try:
+                backend.persist([str(session_path / "cookies.json")])
+            except Exception as e:
+                print(f"   ⚠️  GitHub cookies push error: {e}")
 
     try:
         print(f"   🌐 Re-login: opening {LOGIN_URL}")
@@ -178,13 +203,13 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
             print("   ⌨️  No exact button found - pressing Enter on email field")
             await email_input.press("Enter")
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(8)
 
         # Find password input (some flows reveal it after email step)
         password_input = None
-        for selector in ['input[type="password"]', 'input[name="password"]', 'input[autocomplete="current-password"]']:
+        for selector in ['input[placeholder="Password"]', 'input[type="password"]', 'input[name="password"]', 'input[autocomplete="current-password"]']:
             try:
-                password_input = await page.wait_for_selector(selector, timeout=10000, state="visible")
+                password_input = await page.wait_for_selector(selector, timeout=12000, state="visible")
                 if password_input:
                     break
             except:
@@ -215,8 +240,10 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
             print("   ⌨️  No exact button found - pressing Enter on password field")
             await password_input.press("Enter")
 
-        # Wait for dashboard (up to 90s), checking for invalid-credentials errors
+        # Wait for dashboard (up to 90s), checking for invalid-credentials errors.
+        # Lovable 2FA accounts land on a TOTP prompt first — handle via local secret.
         print("   ⏳ Waiting for dashboard...")
+        totp_tried = False
         for _ in range(18):
             await asyncio.sleep(5)
             if await check_lost():
@@ -226,6 +253,46 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
                 print("   ✅ Logged in!")
                 await save_fresh_cookies()
                 return "ok"
+            if not totp_tried:
+                try:
+                    txt = (await page.content()).lower()
+                except Exception:
+                    txt = ""
+                if "verification code" in txt or "two-factor" in txt or "authenticator" in txt:
+                    totp_tried = True
+                    secrets = [config.get("totp_secret"), config.get("totp_secret_backup")]
+                    for sec in [s for s in secrets if s]:
+                        try:
+                            import pyotp
+
+                            code = pyotp.TOTP(sec).now()
+                            print("   🔑 Submitting TOTP code")
+                            inp = page.locator(
+                                'input[inputmode="numeric"], input[autocomplete="one-time-code"], '
+                                'input[type="text"], input:not([type])'
+                            ).first
+                            try:
+                                await inp.wait_for(state="visible", timeout=8000)
+                                await inp.fill(code)
+                            except Exception:
+                                await page.evaluate(
+                                    """(code) => {
+                                    const el = document.querySelector('#totp-code') || [...document.querySelectorAll('input')].find(i=>/code|token|otp|auth/i.test((i.placeholder||'')+(i.name||'')+(i.id||''))) || [...document.querySelectorAll('input')].find(i=>i.offsetParent!==null);
+                                    if(!el) throw new Error('no totp input');
+                                    el.focus();
+                                    document.execCommand('selectAll', false, null);
+                                    document.execCommand('insertText', false, code); }""",
+                                    code,
+                                )
+                            await asyncio.sleep(1)
+                            try:
+                                await page.get_by_role("button", name="Verify").click(timeout=5000)
+                            except Exception:
+                                await page.locator('[data-testid="auth-submit-button"]').click()
+                            break
+                        except Exception as e:
+                            print(f"   ⚠️  TOTP attempt error: {str(e)[:100]}")
+                            continue
 
         print("   ❌ Re-login did not reach dashboard")
         return "failed"
@@ -362,6 +429,26 @@ async def wait_for_console_message(page, timeout_seconds=300):
         except Exception as e:
             print(f"   ⚠️  Console check error: {e}")
         
+        # Fast path: error pages (502/proxy error/snag) mean container still
+        # booting — refresh aggressively until gone, then inject.
+        try:
+            body = (await page.content()).lower()
+            error_page = any(
+                m in body
+                for m in ["proxy error", ">502", "we hit a snag", "error 502"]
+            )
+        except Exception:
+            error_page = False
+        if error_page:
+            print(f"   🔄 Error page hit, fast refresh... ({int(elapsed)}s elapsed)")
+            try:
+                await page.reload(timeout=30000)
+                await asyncio.sleep(5)
+            except Exception as e:
+                print(f"   ⚠️  Refresh error: {e}")
+            await asyncio.sleep(10)
+            continue
+
         # Refresh page
         print(f"   🔄 Refreshing page... ({int(elapsed)}s elapsed)")
         try:
@@ -369,7 +456,7 @@ async def wait_for_console_message(page, timeout_seconds=300):
             await asyncio.sleep(5)
         except Exception as e:
             print(f"   ⚠️  Refresh error: {e}")
-        
+
         # Wait before next check
         await asyncio.sleep(refresh_interval)
 
@@ -377,7 +464,7 @@ async def wait_for_console_message(page, timeout_seconds=300):
 async def verify_session_projects(session_id: int, db):
     """Open every project's chat link with this session's cookies and stamp linked=true/false."""
     session_key = f"session-{session_id}"
-    projects = [p for p in db.data["projects"] if p.get("created_by") == session_key]
+    projects = db.projects_for(session_key)
     
     if not projects:
         print(f"❌ No projects found for {session_key}")
@@ -432,8 +519,13 @@ async def verify_session_projects(session_id: int, db):
                 p["linked"] = False
                 print(f"   ❌ Error: {e}")
             await page.close()
-    
-    save_db(db)
+
+    try:
+        for p in projects:
+            db.set_project_linked(p["project_id"], p.get("linked", False))
+        db.persist()
+    except Exception as e:
+        print(f"⚠️  Failed to stamp verification results: {e}")
     print("\n=== VERIFICATION RESULTS ===")
     for p in projects:
         print(f"  {p['project_id']}: linked={p.get('linked')} mode={p.get('mode')}")
@@ -446,8 +538,20 @@ async def main():
     parser.add_argument("--warp", action="store_true", help="Use WARP proxy (not implemented yet)")
     parser.add_argument("--project", help="Optional: specify project ID to use")
     parser.add_argument("--threads", type=int, default=64, help="Worker threads (default: 64)")
-    
+    parser.add_argument("--db", choices=["local", "mega", "github"], default="local",
+                        help="State backend: local farm disk (default, no Mega), mega (legacy chimera DB), github (local + git push)")
+    parser.add_argument("--sessions-dir", default=None,
+                        help="Sessions dir (default: farm scripts/sessions, or CHIMERA_SESSIONS_DIR)")
+    parser.add_argument("--repo", default=None,
+                        help="Repo path for --db github (default: automation-toolkit repo)")
+    parser.add_argument("--gh-token-file", default=None,
+                        help="Encrypted GH token file for --db github (default ~/.config/chimera/gh_token.enc)")
+
     args = parser.parse_args()
+
+    global SESSIONS_DIR
+    if args.sessions_dir:
+        SESSIONS_DIR = Path(args.sessions_dir)
     
     # Normalize session: strip optional "session-" prefix so both "3" and
     # "session-3" and GH-style "31959887265-1-1786899376" all work.
@@ -464,11 +568,14 @@ async def main():
     print(f"Mode: {args.mode}")
     print(f"WARP: {'Yes' if args.warp else 'No'}")
     print(f"Threads: {args.threads}")
+    print(f"DB: {args.db} (sessions: {SESSIONS_DIR})")
     print("=" * 60 + "\n")
-    
-    # 1. Load Mega DB
-    print("📥 Loading Mega database...")
-    db = load_db()
+
+    # 1. Load state backend (local farm disk by default — no Mega)
+    print(f"📥 Loading {args.db} database...")
+    db = build_backend(args.db, sessions_dir=str(SESSIONS_DIR),
+                       finals_dir=str(FINALS_DIR), repo=args.repo,
+                       gh_token_file=args.gh_token_file)
     db.print_stats()
     
     if args.mode == "verify":
@@ -504,10 +611,31 @@ async def main():
     if args.project:
         project = db.get_project(args.project)
         if not project:
-            print(f"❌ Project {args.project} not found in database")
-            return
+            # Farm system: explicit --project wins even if no DB record exists
+            # (records only track the latest remix). Build the record from the
+            # session config when it matches, else construct it directly.
+            pid = args.project.strip().rstrip("/")
+            if "/projects/" in pid:
+                pid = pid.split("/projects/")[-1].split("?")[0].strip()
+            try:
+                _cfg, _ = await load_session_cookies(args.session)
+            except Exception:
+                _cfg = {}
+            if _cfg.get("project_id") == pid:
+                print(f"✅ Project {pid} matches session config (latest remix)")
+            else:
+                print(f"⚠️  Project {pid} has no DB record — using it directly (explicit --project)")
+            project = {
+                "project_id": pid,
+                "chat_url": _cfg.get("project_link") or f"https://lovable.dev/projects/{pid}",
+                "preview_url": f"https://{pid}.lovableproject.com",
+                "invite_link": None,
+                "created_by": session_id,
+                "usage_count": 0,
+                "max_usage": 20,
+            }
         # Verify ownership
-        if project.get("created_by") != session_id:
+        elif project.get("created_by") != session_id:
             print(f"⚠️  Warning: Project {args.project} was created by {project.get('created_by')}, not {session_id}")
     else:
         # Get project linked to THIS account (template-created, not external invites)
@@ -524,9 +652,9 @@ async def main():
     # 4. Mark account ON_HOLD (no usage increment - prevents concurrent use of the account)
     prev_status = session.get("status", "active")
     db.update_session(session_id, status="on_hold")
-    
-    save_db(db)
-    
+
+    db.persist()
+
     # 5. Load session cookies
     print(f"\n📂 Loading session cookies...")
     try:
@@ -534,7 +662,7 @@ async def main():
     except Exception as e:
         print(f"❌ Failed to load session: {e}")
         db.mark_session_red(session_id)
-        save_db(db)
+        db.persist()
         return
     
     # 6. Start browser
@@ -542,11 +670,12 @@ async def main():
     
     try:
         proxy = resolve_proxy()
-        # minimal for weak 1GB sandbox: headless True + no humanize + small viewport
+        # headed for local runs so the operator can watch (set HEADLESS=1 to force headless)
+        _headed = os.environ.get("HEADLESS", "0") != "1"
         async with InvisiblePlaywright(
-            headless=True,
+            headless=not _headed,
             proxy=proxy,
-            humanize=False,
+            humanize=_headed,
             locale='en-US',
         ) as browser:
             context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
@@ -567,7 +696,7 @@ async def main():
                 print("🔑 Session expired (redirected to login) - attempting re-login with stored credentials...")
                 cfg = config
                 cfg.setdefault("session_id", args.session)
-                result = await relogin_session(browser, cfg, args.session)
+                result = await relogin_session(browser, cfg, args.session, db)
                 relogin_done = True
                 if result == "ok":
                     print("✅ Re-login OK - retrying chat with fresh cookies")
@@ -582,11 +711,13 @@ async def main():
                     if not await check_session_valid(chat_page):
                         print("❌ Still redirected to login after re-login")
                         await mark_truly_red(args.session, session_id, cfg,
-                                             "redirected to login after successful re-login")
+                                             "redirected to login after successful re-login", db)
                         return
                 else:
-                    reason = "invalid credentials - account lost" if result == "lost" else f"re-login failed ({result})"
-                    await mark_truly_red(args.session, session_id, cfg, reason)
+                    if result == "lost":
+                        await mark_truly_red(args.session, session_id, cfg, "invalid credentials - account lost", db)
+                        return
+                    print(f"   ⚠️  Re-login flaked ({result}) — NOT flagging red, aborting run")
                     return
             
             # 8. Find chat input and send SIMPLE prompt immediately
@@ -624,7 +755,7 @@ async def main():
                     print(f"⚠️ Screenshot failed: {e}")
                 cfg = config
                 cfg.setdefault("session_id", args.session)
-                result = await relogin_session(browser, cfg, args.session)
+                result = await relogin_session(browser, cfg, args.session, db)
                 if result == "ok":
                     print("✅ Re-login OK - retrying chat with fresh cookies")
                     fresh = json.load(open(SESSIONS_DIR / f"session-{args.session}" / "cookies.json"))
@@ -658,8 +789,10 @@ async def main():
                             print(f"⚠️ Screenshot failed: {e}")
                         return
                 else:
-                    reason = "invalid credentials - account lost" if result == "lost" else f"re-login failed ({result})"
-                    await mark_truly_red(args.session, session_id, cfg, reason)
+                    if result == "lost":
+                        await mark_truly_red(args.session, session_id, cfg, "invalid credentials - account lost", db)
+                        return
+                    print(f"   ⚠️  Re-login flaked ({result}) — NOT flagging red, aborting run")
                     return
             elif not chat_input:
                 print("❌ Could not find chat input")
@@ -742,7 +875,7 @@ async def main():
             print(f"⚠️  Session {session_id} is {cur_status.get('status')} - not restoring to active")
         else:
             db.update_session(session_id, status="active")
-            save_db(db)
+            db.persist()
             print(f"✅ Session {session_id} released back to 'active'")
 
 

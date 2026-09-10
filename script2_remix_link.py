@@ -714,70 +714,98 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
     if not await check_session_valid(page):
         raise Exception("Session is expired (redirected to login)")
     
-    # Wait for project menu button
-    log("Waiting for project menu button...")
-    menu_btn = None
-    menu_selectors = [
-        '[data-testid="editor-nav-project-menu"]',
-        'button[aria-label="Project menu"]',
-        'button[aria-label="More options"]',
-        'button[data-testid="editor-nav-project-name"]',
-        'button:has-text("Remix this project")',
-        'header button:has-text("Remix")',
-    ]
-    
-    for retry_round in range(3):
-        for sel in menu_selectors:
+    # NEW UI (2026-09-10, verified click-by-click via browser-use MCP on s1):
+    #   {project}?view=more&subview=settings-general  (deep-link, no clicking)
+    #   -> scroll #preview-panel to "Project actions"
+    #   -> "Remix project" row -> Remix pill
+    #   -> "Remix project" dialog (name prefilled, NO checkbox) -> Remix button
+    #   -> redirect to /projects/<new-id>.
+    settings_url = source_url.split("?")[0] + "?view=more&subview=settings-general"
+    log(f"Opening settings directly: {settings_url}")
+    for nav_try in range(2):
+        try:
+            await page.goto(settings_url, timeout=60000, wait_until="domcontentloaded")
+        except Exception as e:
+            # SPA often interrupts with its own rewrite to the plain project
+            # URL on cold load — harmless, we re-assert below.
+            log(f"  nav interrupted ({str(e)[:80]}), re-checking...")
+        await wait(4000)
+        if "view=more" in page.url:
+            break
+        log(f"  query stripped (try {nav_try+1}/2), re-navigating...")
+    await wait(3000)
+    if not await check_session_valid(page):
+        raise Exception("Session is expired (redirected to login)")
+    # prove the settings view rendered (General sub-nav, unique to panel)
+    try:
+        await page.get_by_role("button", name="General").first.wait_for(
+            state="visible", timeout=20000
+        )
+        log("✅ Settings view open (General nav visible)")
+    except:
+        await page.screenshot(path="/tmp/lovable-no-menu.png")
+        raise Exception("Settings view did not render")
+
+    # The "Remix project" row lives in Project actions, below the fold inside
+    # the #preview-panel scroll container. Minimal probe-verified flow
+    # (probe_remix.py 2026-09-10: wheel x4 at default mouse pos, plain click):
+    # NO focus clicks, NO End key, NO scroll_into_view — all three were
+    # proven no-ops/harmful via screenshots.
+    log("Scrolling #preview-panel to Remix pill...")
+    panel_scroll = page.locator("#preview-panel").first
+    try:
+        await panel_scroll.wait_for(state="attached", timeout=15000)
+    except:
+        await page.screenshot(path="/tmp/lovable-no-menu.png")
+        raise Exception("#preview-panel not found")
+    remix_btn = None
+    for attempt in range(6):
+        try:
+            cand = panel_scroll.get_by_role(
+                "button", name="Remix", exact=True
+            ).first
             try:
-                candidate = page.locator(sel).first
-                await candidate.wait_for(state="attached", timeout=8000)
-                if await candidate.is_visible(timeout=2000):
-                    menu_btn = candidate
-                    log(f"✅ Found project menu button: {sel}")
+                await cand.wait_for(state="visible", timeout=5000)
+                if await cand.is_enabled():
+                    remix_btn = cand
+                    log(f"✅ Remix pill visible+enabled (round {attempt+1})")
                     break
             except:
-                continue
-        if menu_btn:
-            break
-        log(f"⚠️  Menu button not found (round {retry_round+1}/3), reloading page...")
-        try:
-            await page.reload(timeout=60000, wait_until="domcontentloaded")
-        except:
-            pass
-        await wait(8000)
-    
-    if not menu_btn:
+                pass
+            try:
+                await page.mouse.wheel(0, 900)
+            except:
+                pass
+            await wait(1500)
+            log(f"⚠️  Remix pill not in view (round {attempt+1}/6)")
+        except Exception as e:
+            log(f"⚠️  Remix row error (round {attempt+1}/6): {str(e)[:100]}")
+            await wait(2000)
+    if not remix_btn:
         await page.screenshot(path="/tmp/lovable-no-menu.png")
-        raise Exception("Project menu button not found after retries")
-    
-    # Click project menu button
-    await mouse_click(page, menu_btn, "Clicked project menu button")
-    await wait(2000)
-    
-    # Click "Remix" menuitem (retry up to 3 times)
-    remix_item = page.locator('div[role="menuitem"]:has-text("Remix"), [role="menuitem"]:has-text("Remix this project")').first
-    for retry in range(3):
-        try:
-            await remix_item.wait_for(state="visible", timeout=3000)
-            break
-        except:
-            if retry < 2:
-                log(f"⚠️  Remix menuitem not visible, retry {retry+1}/3...")
-                await mouse_click(page, menu_btn, "Re-click project menu")
-                await wait(1500)
-            else:
-                try:
-                    await mouse_click(page, remix_item, "Remix item (force attempt)", tries=6)
-                    break
-                except:
-                    await page.screenshot(path="/tmp/lovable-no-menu.png")
-                    raise Exception("Remix menu item not appearing after 3 clicks")
-    
-    await mouse_click(page, remix_item, "Clicked Remix menuitem")
-    
+        raise Exception("Remix pill button not found in Project actions")
+
+    try:
+        await page.screenshot(path="/tmp/remix_scrolled.png")
+    except:
+        pass
+    try:
+        await remix_btn.click(timeout=12000)
+        log("✅ Clicked Remix pill button (plain click)")
+    except Exception as e:
+        log(f"⚠️  Plain pill click failed ({str(e)[:80]}), mouse fallback")
+        await mouse_click(page, remix_btn, "Clicked Remix pill button")
     await wait(2000, 3000)
-    
-    # Handle remix dialog
+    try:
+        await page.screenshot(path="/tmp/remix_after_pill.png")
+    except:
+        pass
+
+    # Handle remix dialog (source id guards the no-dialog URL fallback)
+    try:
+        page._remix_source_id = source_url.rstrip("/").split("/")[-1].split("?")[0]
+    except:
+        pass
     project_id = await handle_remix_dialog(page, session_num)
     return finalize_project(page, project_id)
 
@@ -1110,26 +1138,53 @@ async def handle_remix_dialog(page, session_num: int) -> str:
     """
     log("Handling remix dialog...")
     
-    # Wait for dialog
+    # Wait for dialog (pill click -> dialog can take 20-40s on loaded editor)
     try:
         dialog = page.locator('div[role="dialog"]')
-        await dialog.wait_for(state="visible", timeout=10000)
+        await dialog.first.wait_for(state="visible", timeout=45000)
         log("✅ Dialog appeared")
         await wait(1000, 2000)
     except:
-        # Maybe we got redirected directly
+        # Maybe we got redirected directly — but ONLY accept a DIFFERENT
+        # project id (falling back to the source URL fakes success).
         current_url = page.url
         log(f"⚠️  No dialog appeared. Current URL: {current_url}")
+        src_id = getattr(page, "_remix_source_id", None)
         if "/projects/" in current_url:
             project_id = current_url.split("/projects/")[-1].split("?")[0]
-            log(f"📂 Project ID: {project_id}")
-            return project_id
+            if not src_id or project_id != src_id:
+                log(f"📂 Project ID: {project_id}")
+                return project_id
+            log("⚠️  Still on source project — remix did not start")
         await page.screenshot(path="/tmp/lovable-no-dialog.png")
         raise Exception("Remix dialog never appeared")
     
+    # FAST PATH (2026-09-10): the settings-remix dialog comes with the name
+    # prefilled ("Remix of ..."), workspace default, NO checkbox — just hit
+    # the submit button directly:
+    #   form[data-testid="remix-dialog-content"] button[type="submit"]
+    # Skip the slow retype entirely.
+    try:
+        fast_submit = dialog.locator(
+            'form[data-testid="remix-dialog-content"] button[type="submit"]'
+        ).first
+        await fast_submit.wait_for(state="visible", timeout=15000)
+        await wait(1000)
+        try:
+            await fast_submit.click(timeout=10000)
+            log("✅ Clicked dialog Remix submit (fast path)")
+        except Exception:
+            await mouse_click(page, fast_submit, "Click dialog Remix submit")
+            log("✅ Clicked dialog Remix submit (mouse fallback)")
+        await wait(3000)
+        # jump straight to redirect wait below
+        return await _wait_remix_redirect(page)
+    except Exception as e:
+        log(f"⚠️  Fast submit unavailable ({str(e)[:100]}), full dialog flow")
+
     # Retype the project title (human-like)
     await retype_project_title(page, dialog)
-    
+
     # Wait for Target folder to finish loading (pulse placeholder)
     try:
         for _ in range(15):
@@ -1311,9 +1366,13 @@ async def handle_remix_dialog(page, session_num: int) -> str:
         # No error toast
         pass
     
-    # Wait for redirect to new project — RE-CLICK the submit button until it
-    # actually lands (first click often misses: disabled button, stale coords).
-    # Re-query the dialog fresh each time since React re-renders shift elements.
+    return await _wait_remix_redirect(page)
+
+
+async def _wait_remix_redirect(page) -> str:
+    """Wait for redirect to new project — RE-CLICK the submit button until it
+    actually lands (first click often misses: disabled button, stale coords).
+    Re-query the dialog fresh each time since React re-renders shift elements."""
     log("Waiting for redirect to new project...")
     
     old_url = page.url
@@ -1844,11 +1903,14 @@ async def main():
                 project_id = project_info["project_id"]
                 print(f"📂 Project ID: {project_id}")
                 
-                # Step 2: Add feature + test (per brainstorm 3 parts)
+                # Step 2: Add feature + test (per brainstorm 3 parts).
+                # SKIP_FEATURE=1 skips this (remix+links only; 0-credit accts).
                 cmd_name = random.choice(CMD_NAMES)
                 feature_added = False
                 test_ok = False
-                if mode in ("template", "remix"):
+                if os.environ.get("SKIP_FEATURE"):
+                    log("⏭️  SKIP_FEATURE=1 — skipping feature+test, straight to invite")
+                elif mode in ("template", "remix"):
                     try:
                         feature_added = await add_heavy_particles_feature(page, cmd_name)
                     except Exception as e:
