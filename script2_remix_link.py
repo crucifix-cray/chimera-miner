@@ -32,7 +32,7 @@ TOOLKIT_CORE = os.environ.get(
 sys.path.insert(0, TOOLKIT_CORE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from invisible_playwright.async_api import InvisiblePlaywright
+from camoufox.async_api import AsyncCamoufox
 from mega_db import load_db, save_db, mega_distributed_lock
 
 SESSIONS_DIR = Path(
@@ -1864,7 +1864,7 @@ async def main():
             used_invite_link = best_invite["invite_link"]
             print(f"🔗 Auto-picked invite (usage {best_invite.get('usage_count', 0)}): {used_invite_link}")
     
-    # Initialize InvisiblePlaywright - use proxy for isolated warp and 1440x900 for selector stability
+    # Initialize Camoufox - use proxy for isolated warp and 1440x900 for selector stability
     proxy_settings = None
     try:
         import socket as _sock
@@ -1873,8 +1873,20 @@ async def main():
             print("🌐 Using warp proxy 127.0.0.1:40000 for browser (isolated, bypass api.lovable.dev/api.tempmailhub.org)")
     except:
         print("ℹ️  No warp proxy, using direct")
-    async with InvisiblePlaywright(headless=args.headless, proxy=proxy_settings,
-                                     extra_args=["--no-sandbox", "--disable-dev-shm-usage"]) as browser:
+
+    camoufox_args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-site-isolation-trials"
+    ]
+    async with AsyncCamoufox(
+        headless=args.headless,
+        proxy=proxy_settings,
+        humanize=True,
+        args=camoufox_args
+    ) as browser:
         if browser.contexts:
             context = browser.contexts[0]
         else:
