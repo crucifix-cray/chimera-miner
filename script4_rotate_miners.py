@@ -117,31 +117,60 @@ async def wait_chat_ready(page, url: str, tag: str, timeout: int = 180) -> bool:
 
 
 async def send_chat_prompt(page, tag: str) -> bool:
-    """Find chat input and fire a trivial trigger prompt. No waiting."""
-    try:
-        chat_input = None
-        for sel in ['div[contenteditable="true"][role="textbox"]',
-                    '[contenteditable="true"]',
-                    'textarea[placeholder*="chat"]', 'textarea']:
-            try:
-                el = await page.wait_for_selector(sel, timeout=5000, state="visible")
-                if el and await el.is_visible() and await el.is_enabled():
-                    chat_input = el
-                    break
-            except Exception:
+    """Fire a trigger prompt — with PROOF at every step. True only when the
+    text is seen in the box AND the send is confirmed accepted."""
+    for attempt in range(3):
+        try:
+            chat_input = None
+            for sel in CHAT_SELECTORS:
+                try:
+                    el = await page.wait_for_selector(sel, timeout=5000,
+                                                      state="visible")
+                    if el and await el.is_visible() and await el.is_enabled():
+                        chat_input = el
+                        break
+                except Exception:
+                    continue
+            if not chat_input:
+                print(f"[{tag}] ❌ no chat input (try {attempt+1}/3)", flush=True)
+                await asyncio.sleep(5)
                 continue
-        if not chat_input:
-            print(f"[{tag}] ❌ no chat input", flush=True)
-            return False
-        prompt = random.choice(["say 'a'", "1+1?", "say 'x'", "2+2?"])
-        await chat_input.fill(prompt)
-        await asyncio.sleep(0.3)
-        await page.keyboard.press("Enter")
-        print(f"[{tag}] ✅ prompt sent: '{prompt}'", flush=True)
-        return True
-    except Exception as e:
-        print(f"[{tag}] prompt warn: {str(e)[:100]}", flush=True)
-        return False
+            prompt = random.choice(["say 'a'", "1+1?", "say 'x'", "2+2?"])
+            # click-focus + human typing (fill() silently fails on some editors)
+            try:
+                await chat_input.click(timeout=5000)
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+            await page.keyboard.type(prompt, delay=random.randint(40, 120))
+            await asyncio.sleep(1)
+            # PROOF 1: text actually in the box?
+            try:
+                box_text = await chat_input.evaluate(
+                    "(el) => el.innerText || el.value || el.textContent || ''")
+            except Exception:
+                box_text = ""
+            if prompt not in (box_text or ""):
+                print(f"[{tag}] ⚠️ text not in box (try {attempt+1}/3): "
+                      f"'{(box_text or '')[:40]}'", flush=True)
+                continue
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(4)
+            # PROOF 2: box cleared (= message accepted)?
+            try:
+                after = await chat_input.evaluate(
+                    "(el) => el.innerText || el.value || el.textContent || ''")
+            except Exception:
+                after = prompt
+            if (after or "").strip() == "":
+                print(f"[{tag}] ✅ prompt sent (box cleared): '{prompt}'", flush=True)
+                return True
+            print(f"[{tag}] ⚠️ send not accepted (try {attempt+1}/3)", flush=True)
+        except Exception as e:
+            print(f"[{tag}] prompt warn: {str(e)[:100]}", flush=True)
+            await asyncio.sleep(5)
+    print(f"[{tag}] ❌ prompt failed 3/3 — NOT pretending it sent", flush=True)
+    return False
 
 
 async def wait_bridge(page, tag: str, timeout: int = 120) -> bool:
