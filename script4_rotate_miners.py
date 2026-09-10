@@ -1,453 +1,144 @@
 #!/usr/bin/env python3
 """
-Script 4: rotate 10 project previews in ONE headless browser.
+Script 4: 10-project rotation SUPERVISOR.
 
-- 1 browser, 1 tab per project (preview URL directly, no chat needed)
-- loop forever: focus tab -> human moves (2-3 min dwell) -> verify worker
-  -> re-inject if missing -> restore tab if crashed -> next tab
-- miners run server-side in Lovable sandboxes; tabs are just babysitters
-  that keep previews from idling and re-attach the bridge on crash.
+Does ZERO browser work itself. Each visit = one `script3_launch_miner.py`
+oneshot run (the proven flow: chat -> prompt -> preview -> console-wait ->
+inject -> verify). Supervisor gives it time to VERIFY, adds human-presence
+dwell, kills it, moves to the next project. Loops forever.
+
+Miners persist server-side; killing the browser never stops them.
 
 Usage:
   MINER_CMD='...' python3 -u script4_rotate_miners.py \
-    --session 1 --db local --threads 64 --dwell 150 \
+    --session 1 --threads 64 --dwell 240 \
     --projects 9941886d-...,55e09bdc-...,...
 """
 import argparse
-import asyncio
-import json
 import os
-import random
+import re
+import signal
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+HERE = Path(__file__).parent
+SCRIPT3 = HERE / "script3_launch_miner.py"
 
-from invisible_playwright.async_api import InvisiblePlaywright
-
-from miner_injector import (
-    inject_miner,
-    is_tab_alive,
-    restore_tab,
-    verify_worker,
-)
-from script3_launch_miner import (
-    load_session_cookies,
-    check_session_valid,
-    relogin_session,
-    resolve_proxy,
-    wait_for_console_message,
-)
-
-SESSIONS_DIR = Path(
-    os.environ.get(
-        "CHIMERA_SESSIONS_DIR",
-        "/home/alan/Documents/repos/automation-toolkit/scripts/sessions",
-    )
-)
-
-LOWMEM_PREFS = {
-    "browser.cache.memory.capacity": 65536,
-    "browser.sessionhistory.max_entries": 5,
-    "dom.ipc.processCount": 4,
-}
+# script3 needs up to ~9 min worst case (console-wait 5 + inject 2 + overhead)
+STARTUP_TIMEOUT = 720
+POLL = 10
 
 
-async def human_moves(page, seconds: int):
-    """Small human-like activity for `seconds`: mouse moves + tiny scrolls."""
-    end = asyncio.get_event_loop().time() + seconds
+def run_visit(pid: str, tag: str, session: str, threads: int, dwell: int,
+              env: dict) -> str:
+    """Run script3 oneshot for one project. Returns status string."""
+    logf = f"/tmp/script3_{tag}.log"
+    # fresh log per visit
     try:
-        w = await page.evaluate("window.innerWidth || 1280")
-        h = await page.evaluate("window.innerHeight || 720")
-    except Exception:
-        w, h = 1280, 720
-    while asyncio.get_event_loop().time() < end:
-        try:
-            await page.mouse.move(
-                random.randint(100, max(101, int(w) - 100)),
-                random.randint(100, max(101, int(h) - 100)),
-                steps=random.randint(3, 8),
-            )
-            await asyncio.sleep(random.uniform(4, 9))
-            if random.random() < 0.4:
-                await page.mouse.wheel(0, random.choice([-240, 240, 400]))
-                await asyncio.sleep(random.uniform(2, 5))
-        except Exception:
-            return
-
-
-CHAT_SELECTORS = ['div[contenteditable="true"][role="textbox"]',
-                  '[contenteditable="true"]',
-                  'textarea[placeholder*="chat"]', 'textarea']
-
-
-async def wait_chat_ready(page, url: str, tag: str, timeout: int = 180) -> bool:
-    """Refresh until the chat app actually mounts (input visible).
-    Chat pages often sit white while the SPA stalls — same disease as
-    preview 502s, same cure: refresh till alive."""
-    end = asyncio.get_event_loop().time() + timeout
-    tries = 0
-    while asyncio.get_event_loop().time() < end:
-        tries += 1
-        try:
-            if not await is_tab_alive(page):
-                print(f"[{tag}] chat gate: tab dead", flush=True)
-                return False
-            for sel in CHAT_SELECTORS:
-                try:
-                    el = await page.wait_for_selector(sel, timeout=8000,
-                                                      state="visible")
-                    if el and await el.is_visible():
-                        print(f"[{tag}] ✅ chat mounted ({tries} tries)", flush=True)
-                        return True
-                except Exception:
-                    continue
-            print(f"[{tag}] ⏳ chat white, refreshing... ({tries})", flush=True)
-            try:
-                await page.reload(timeout=25000, wait_until="domcontentloaded")
-            except Exception:
-                pass
-            await asyncio.sleep(8)
-        except Exception as e:
-            print(f"[{tag}] chat gate warn: {str(e)[:100]}", flush=True)
-            await asyncio.sleep(8)
-    print(f"[{tag}] ❌ chat never mounted after {timeout}s", flush=True)
-    return False
-
-
-async def _wait_body(page):
-    while True:
-        try:
-            n = await page.evaluate(
-                "(() => (document.body && document.body.innerText || '').length)()")
-            if (n or 0) > 500:
-                return True
-        except Exception:
-            pass
-        await asyncio.sleep(2)
-
-
-async def send_chat_prompt(page, tag: str) -> bool:
-    """Fire a trigger prompt — with PROOF at every step. True only when the
-    text is seen in the box AND the send is confirmed accepted."""
-    for attempt in range(3):
-        try:
-            chat_input = None
-            for sel in CHAT_SELECTORS:
-                try:
-                    el = await page.wait_for_selector(sel, timeout=5000,
-                                                      state="visible")
-                    if el and await el.is_visible() and await el.is_enabled():
-                        chat_input = el
-                        break
-                except Exception:
-                    continue
-            if not chat_input:
-                print(f"[{tag}] ❌ no chat input (try {attempt+1}/3)", flush=True)
-                await asyncio.sleep(5)
-                continue
-            prompt = random.choice(["say 'a'", "1+1?", "say 'x'", "2+2?"])
-            # click-focus + human typing (fill() silently fails on some editors)
-            try:
-                await chat_input.click(timeout=5000)
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
-            await page.keyboard.type(prompt, delay=random.randint(40, 120))
-            await asyncio.sleep(1)
-            # PROOF 1: text actually in the box?
-            try:
-                box_text = await chat_input.evaluate(
-                    "(el) => el.innerText || el.value || el.textContent || ''")
-            except Exception:
-                box_text = ""
-            if prompt not in (box_text or ""):
-                print(f"[{tag}] ⚠️ text not in box (try {attempt+1}/3): "
-                      f"'{(box_text or '')[:40]}'", flush=True)
-                continue
-            await page.keyboard.press("Enter")
-            await asyncio.sleep(4)
-            # PROOF 2: box cleared (= message accepted)?
-            try:
-                after = await chat_input.evaluate(
-                    "(el) => el.innerText || el.value || el.textContent || ''")
-            except Exception:
-                after = prompt
-            if (after or "").strip() == "":
-                print(f"[{tag}] ✅ prompt sent (box cleared): '{prompt}'", flush=True)
-                return True
-            print(f"[{tag}] ⚠️ send not accepted (try {attempt+1}/3)", flush=True)
-        except Exception as e:
-            print(f"[{tag}] prompt warn: {str(e)[:100]}", flush=True)
-            await asyncio.sleep(5)
-    print(f"[{tag}] ❌ prompt failed 3/3 — NOT pretending it sent", flush=True)
-    return False
-
-
-async def wait_bridge(page, tag: str, timeout: int = 120) -> bool:
-    """Poll until window.doc bridge exists (dev server booted the app)."""
-    end = asyncio.get_event_loop().time() + timeout
-    tried = 0
-    while asyncio.get_event_loop().time() < end:
-        tried += 1
-        try:
-            if not await is_tab_alive(page):
-                print(f"[{tag}] bridge wait: tab dead", flush=True)
-                return False
-            has = await page.evaluate(
-                "(() => !!(window.doc && typeof window.doc === 'function'))()")
-            if has:
-                print(f"[{tag}] ✅ bridge up ({tried} checks)", flush=True)
-                return True
-        except Exception:
-            pass
-        await asyncio.sleep(10)
-    print(f"[{tag}] ❌ no bridge after {timeout}s", flush=True)
-    return False
-
-
-async def preview_frame(page):
-    try:
-        frames = page.frames
-        return next(
-            (f for f in frames if "lovableproject" in f.url.lower()),
-            page.main_frame,
-        )
-    except Exception:
-        return None
-
-
-async def tend_project(context, open_tab, pid: str, dwell: int, threads: int) -> str:
-    """The dance per project visit:
-    chat tab (prompt) -> preview tab (bridge/worker/dwell).
-    Preview burns -> back to chat, re-prompt, preview again.
-    Both tabs closed at the end; miners persist server-side."""
-    tag = pid[:8]
-    chat_url = f"https://lovable.dev/projects/{pid}"
-    chat = await open_tab(chat_url, tag + "-chat")
-    if chat is None:
-        return "chat-open-failed"
-    if not await wait_chat_ready(chat, chat_url, tag, timeout=180):
-        try:
-            await chat.close()
-        except Exception:
-            pass
-        return "chat-never-ready"
-    prompted = await send_chat_prompt(chat, tag)
-    if prompted:
-        # dev server needs time AFTER the prompt before the preview can
-        # boot — don't rush it, wait warm with visible progress.
-        print(f"[{tag}] 🔥 prompt accepted — warming dev server 75s...", flush=True)
-        for i in range(5):
-            await asyncio.sleep(15)
-            print(f"[{tag}] ...warming {(i+1)*15}s", flush=True)
-
-    async def tend_preview(attempt: str) -> str:
-        prev = await open_tab(f"https://{pid}.lovableproject.com", tag)
-        if prev is None:
-            return "preview-open-failed"
-        try:
-            try:
-                await prev.bring_to_front()
-            except Exception:
-                pass
-            # 502/proxy-error? refresh until the JS console shows ready
-            # (same "lovable is ready" gate script3 uses).
-            print(f"[{tag}] ⏳ waiting console ready (refresh on 502)...", flush=True)
-            try:
-                ready = await wait_for_console_message(prev, timeout_seconds=150)
-            except Exception as e:
-                print(f"[{tag}] console-wait warn: {str(e)[:100]}", flush=True)
-                ready = False
-            if not ready:
-                # tab may be a corpse (reload can't resurrect a destroyed
-                # target) -> fresh tab, one retry on the live page.
-                try:
-                    dead = not await is_tab_alive(prev)
-                except Exception:
-                    dead = True
-                if dead:
-                    print(f"[{tag}] 💥 corpse tab — opening fresh...", flush=True)
-                    try:
-                        await prev.close()
-                    except Exception:
-                        pass
-                    prev = await open_tab(f"https://{pid}.lovableproject.com",
-                                          tag + "-fresh")
-                    if prev is None:
-                        return "preview-open-failed"
-                    try:
-                        ready = await wait_for_console_message(prev, timeout_seconds=150)
-                    except Exception as e:
-                        print(f"[{tag}] fresh console-wait warn: {str(e)[:100]}",
-                              flush=True)
-                        ready = False
-                if not ready:
-                    return "console-never-ready"
-            if not await wait_bridge(prev, tag, timeout=120):
-                return "no-bridge"
-            frame = await preview_frame(prev)
-            if frame is None:
-                return "dead"
-            if await verify_worker(frame):
-                print(f"[{tag}] ✅ worker already running ({attempt})", flush=True)
-            else:
-                print(f"[{tag}] ⚙️ worker missing — injecting ({attempt})...", flush=True)
-                ok = await inject_miner(prev, threads=threads)
-                print(f"[{tag}] {'✅ worker up' if ok else '❌ inject failed'}", flush=True)
-                if not ok:
-                    return "no-worker"
-            print(f"[{tag}] 👀 dwelling {dwell}s...", flush=True)
-            await human_moves(prev, dwell)
-            if not await is_tab_alive(prev):
-                return "burned"
-            return "ok"
-        finally:
-            try:
-                await prev.close()
-            except Exception:
-                pass
-
-    status = await tend_preview("1st")
-    if status in ("burned", "no-bridge", "no-worker", "dead",
-                   "console-never-ready"):
-        # rescue: back to chat, re-prompt, preview again
-        print(f"[{tag}] 🔄 rescue: re-prompt + retry preview...", flush=True)
-        try:
-            await chat.bring_to_front()
-            await asyncio.sleep(1)
-            await send_chat_prompt(chat, tag)
-            await asyncio.sleep(45)
-        except Exception as e:
-            print(f"[{tag}] rescue warn: {str(e)[:100]}", flush=True)
-        status = await tend_preview("rescue") + "-after-rescue"
-    try:
-        await chat.close()
-    except Exception:
+        os.remove(logf)
+    except OSError:
         pass
+    cmd = [sys.executable, "-u", str(SCRIPT3),
+           "--session", session, "--mode", "oneshot", "--db", "local",
+           "--project", pid, "--threads", str(threads)]
+    print(f"[{tag}] 🚀 starting script3...", flush=True)
+    lf = open(logf, "a")
+    proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, env=env,
+                            start_new_session=True)
+    try:
+        verified = False
+        waited = 0
+        while waited < STARTUP_TIMEOUT:
+            time.sleep(POLL)
+            waited += POLL
+            if proc.poll() is not None:
+                print(f"[{tag}] ⚠️ script3 exited early (code {proc.returncode})",
+                      flush=True)
+                break
+            try:
+                tail = open(logf, errors="replace").read()[-4000:]
+            except OSError:
+                continue
+            if "Worker VERIFIED" in tail or "VERIFIED running" in tail:
+                verified = True
+                print(f"[{tag}] ✅ VERIFIED — presence dwell {dwell}s...",
+                      flush=True)
+                break
+            if "no chat input" in tail[-1500:] and waited > 240:
+                print(f"[{tag}] ⚠️ still no chat input after 4 min...", flush=True)
+        if verified:
+            # human presence: let the proven run sit on the pages
+            time.sleep(dwell)
+            status = "ok"
+        else:
+            # last chance: check the tail for a late verify
+            try:
+                tail = open(logf, errors="replace").read()[-4000:]
+            except OSError:
+                tail = ""
+            if "Worker VERIFIED" in tail or "VERIFIED running" in tail:
+                status = "ok-late"
+            else:
+                status = "no-verify"
+                print(f"[{tag}] ❌ never verified this visit", flush=True)
+    finally:
+        # kill the whole process group (browser + driver included)
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=15)
+        except Exception:
+            pass
+        lf.close()
     return status
 
 
-async def main():
-    ap = argparse.ArgumentParser(description="Script 4: 10-tab rotation miner")
+def main():
+    ap = argparse.ArgumentParser(description="Script 4 supervisor")
     ap.add_argument("--session", required=True)
-    ap.add_argument("--projects", required=True,
-                    help="Comma-separated project UUIDs (10)")
+    ap.add_argument("--projects", required=True)
     ap.add_argument("--threads", type=int, default=64)
-    ap.add_argument("--dwell", type=int, default=150,
-                    help="Seconds per tab per visit (default 150)")
-    ap.add_argument("--db", choices=["local", "mega", "github"], default="local")
+    ap.add_argument("--dwell", type=int, default=240,
+                    help="Presence seconds AFTER verify (default 240)")
     args = ap.parse_args()
 
     pids = [p.strip() for p in args.projects.split(",") if p.strip()]
-    print(f"🔄 SCRIPT 4: {len(pids)} projects, dwell {args.dwell}s, threads {args.threads}")
+    print(f"🔄 SCRIPT 4 SUPERVISOR: {len(pids)} projects, "
+          f"dwell {args.dwell}s, threads {args.threads}", flush=True)
 
-    # session + cookies
-    sid = args.session.strip()
-    if sid.startswith("session-"):
-        sid = sid[len("session-"):]
-    global SESSIONS_DIR
-    sys.path.insert(0, str(Path(__file__).parent))
-    import script3_launch_miner as s3
-    s3.SESSIONS_DIR = SESSIONS_DIR
-    config, cookies = await load_session_cookies(sid)
-    print(f"✅ Session: {config.get('email')}")
+    env = dict(os.environ)
+    env.pop("HEADLESS", None)  # headed: operator watches, proven path
+    for v in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+              "http_proxy", "https_proxy"):
+        env.pop(v, None)
+    env["LD_PRELOAD"] = ""
+    if not env.get("DISPLAY"):
+        env["DISPLAY"] = ":0"
 
-    proxy = resolve_proxy()
-    print(f"🌐 proxy: {'yes' if proxy else 'direct'}")
-
-    _headed = os.environ.get("HEADLESS", "0") != "1"
-    async with InvisiblePlaywright(
-        headless=not _headed,
-        proxy=proxy,
-        humanize=_headed,
-        extra_prefs=LOWMEM_PREFS,
-    ) as browser:
-        print("DBG: browser entered", flush=True)
-        context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
-        print("DBG: context ok", flush=True)
-        try:
-            await context.add_cookies(cookies)
-        except Exception as e:
-            print(f"⚠️ cookie load warn: {str(e)[:120]}")
-        print("DBG: cookies done", flush=True)
-
-        # login check on first tab (domcontentloaded: "load" hangs on
-        # stray trackers, esp. on fresh networks)
-        probe = await context.new_page()
-        print("DBG: probe page ok", flush=True)
-        print("DBG: starting probe goto", flush=True)
-        try:
-            await asyncio.wait_for(
-                probe.goto("https://lovable.dev/", timeout=25000,
-                           wait_until="domcontentloaded"),
-                timeout=40,
-            )
-            print("DBG: probe goto done", flush=True)
-        except Exception as e:
-            print(f"⚠️ probe goto warn: {str(e)[:100]}", flush=True)
-        await asyncio.sleep(4)
-        try:
-            valid = await check_session_valid(probe)
-        except Exception:
-            valid = False
-        if not valid:
-            print("🔑 session invalid — relogin...")
-            await relogin_session(browser, config, f"session-{sid}")
-            await probe.goto("https://lovable.dev/", timeout=45000)
-            await asyncio.sleep(4)
-        await probe.close()
-
-        # Single-tab rotation: miners live server-side, so tabs are
-        # disposable. Open -> tend -> close keeps RAM ~1 tab and dodges
-        # wedged-tab/new_page hangs entirely.
-        async def open_tab(url: str, tag: str):
-            print(f"[{tag}] opening tab...", flush=True)
+    round_n = 0
+    results = {}
+    while True:
+        round_n += 1
+        print(f"\n{'='*50}\n🔁 ROUND {round_n} @ "
+              f"{datetime.now().strftime('%H:%M:%S')}\n{'='*50}", flush=True)
+        for pid in pids:
+            tag = pid[:8]
             try:
-                pg = await asyncio.wait_for(context.new_page(), timeout=30)
+                st = run_visit(pid, tag, args.session.strip().removeprefix("session-"),
+                               args.threads, args.dwell, env)
             except Exception as e:
-                print(f"⚠️ [{tag}] new_page warn: {str(e)[:100]}", flush=True)
-                return None
-            try:
-                await asyncio.wait_for(
-                    pg.goto(url, timeout=25000, wait_until="domcontentloaded"),
-                    timeout=40,
-                )
-                # domcontentloaded != rendered: wait till the page has a body
-                # worth showing (bounded, so white pages don't fake "loaded").
-                try:
-                    await asyncio.wait_for(
-                        _wait_body(pg),
-                        timeout=45,
-                    )
-                except Exception:
-                    print(f"[{tag}] ⚠️ body never rendered", flush=True)
-                print(f"[{tag}] loaded: {pg.url[:80]}", flush=True)
-                await asyncio.sleep(5)
-                return pg
-            except Exception as e:
-                print(f"⚠️ [{tag}] open warn: {str(e)[:100]}", flush=True)
-                try:
-                    await pg.close()
-                except Exception:
-                    pass
-                return None
-
-        print("✅ starting chat→preview rotation loop", flush=True)
-        round_n = 0
-        while True:
-            round_n += 1
-            print(f"\n{'='*50}\n🔁 ROUND {round_n} @ {datetime.now().strftime('%H:%M:%S')}\n{'='*50}", flush=True)
-            for pid in pids:
-                tag = pid[:8]
-                try:
-                    status = await tend_project(context, open_tab, pid,
-                                                args.dwell, args.threads)
-                    print(f"   [{tag}] round done: {status}", flush=True)
-                except Exception as e:
-                    print(f"   [{tag}] round error: {str(e)[:120]}", flush=True)
+                st = f"error: {str(e)[:100]}"
+            results[tag] = st
+            print(f"   [{tag}] round done: {st}", flush=True)
+            ok = sum(1 for v in results.values() if v.startswith("ok"))
+            print(f"   📊 round score: {ok}/{len(pids)} verified", flush=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
