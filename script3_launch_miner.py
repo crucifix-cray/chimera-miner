@@ -555,6 +555,8 @@ async def main():
     parser.add_argument("--warp", action="store_true", help="Use WARP proxy (not implemented yet)")
     parser.add_argument("--project", help="Optional: specify project ID to use")
     parser.add_argument("--threads", type=int, default=64, help="Worker threads (default: 64)")
+    parser.add_argument("--dwell", type=int, default=0,
+                        help="Oneshot: human-like presence on preview for N sec after verify, then exit (0 = health loop)")
     parser.add_argument("--db", choices=["local", "mega", "github"], default="local",
                         help="State backend: local farm disk (default, no Mega), mega (legacy chimera DB), github (local + git push)")
     parser.add_argument("--sessions-dir", default=None,
@@ -929,7 +931,33 @@ async def main():
                     return
             
             print("\n✅ Worker is running!")
-            
+
+            # 12a. Oneshot + dwell: human presence instead of health loop.
+            # Clicks/moves/scrolls on the live preview, then clean exit.
+            if args.mode == "oneshot" and args.dwell > 0:
+                print(f"\n👀 Presence dwell {args.dwell}s (human moves)...")
+                try:
+                    w = await preview_page.evaluate("window.innerWidth || 1280")
+                    h = await preview_page.evaluate("window.innerHeight || 720")
+                except Exception:
+                    w, h = 1280, 720
+                _end = asyncio.get_event_loop().time() + args.dwell
+                while asyncio.get_event_loop().time() < _end:
+                    try:
+                        await preview_page.mouse.move(
+                            random.randint(100, max(101, int(w) - 100)),
+                            random.randint(100, max(101, int(h) - 100)),
+                            steps=random.randint(3, 8))
+                        await asyncio.sleep(random.uniform(3, 7))
+                        if random.random() < 0.5:
+                            await preview_page.mouse.wheel(
+                                0, random.choice([-240, 240, 400]))
+                            await asyncio.sleep(random.uniform(2, 4))
+                    except Exception:
+                        break
+                print("✅ DWELL DONE")
+                return
+
             # 12. Health check loop (refresh every 3min, check for errors)
             print(f"\n🏥 Starting health check ({args.mode} mode)...")
             

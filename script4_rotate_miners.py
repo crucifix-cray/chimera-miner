@@ -43,7 +43,8 @@ def run_visit(pid: str, tag: str, session: str, threads: int, dwell: int,
         pass
     cmd = [sys.executable, "-u", str(SCRIPT3),
            "--session", session, "--mode", "oneshot", "--db", "local",
-           "--project", pid, "--threads", str(threads)]
+           "--project", pid, "--threads", str(threads),
+           "--dwell", str(dwell)]
     print(f"[{tag}] 🚀 starting script3...", flush=True)
     lf = open(logf, "a")
     proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT,
@@ -51,40 +52,43 @@ def run_visit(pid: str, tag: str, session: str, threads: int, dwell: int,
                             start_new_session=True)
     try:
         verified = False
+        done = False
         waited = 0
-        while waited < STARTUP_TIMEOUT:
+        # visit budget: startup + dwell + margin (script3 exits itself)
+        budget = STARTUP_TIMEOUT + dwell + 120
+        while waited < budget:
             time.sleep(POLL)
             waited += POLL
             if proc.poll() is not None:
-                print(f"[{tag}] ⚠️ script3 exited early (code {proc.returncode})",
+                print(f"[{tag}] script3 exited (code {proc.returncode})",
                       flush=True)
                 break
             try:
                 tail = open(logf, errors="replace").read()[-4000:]
             except OSError:
                 continue
-            if "Worker VERIFIED" in tail or "VERIFIED running" in tail:
+            if not verified and ("Worker VERIFIED" in tail or "VERIFIED running" in tail):
                 verified = True
-                print(f"[{tag}] ✅ VERIFIED — presence dwell {dwell}s...",
+                print(f"[{tag}] ✅ VERIFIED — presence {dwell}s (in-page)...",
                       flush=True)
+            if "DWELL DONE" in tail:
+                done = True
                 break
-            if "no chat input" in tail[-1500:] and waited > 240:
-                print(f"[{tag}] ⚠️ still no chat input after 4 min...", flush=True)
-        if verified:
-            # human presence: let the proven run sit on the pages
-            time.sleep(dwell)
+            if "no chat input" in tail[-1500:] and waited > 240 and waited % 60 < POLL:
+                print(f"[{tag}] ⚠️ still no chat input...", flush=True)
+        try:
+            tail = open(logf, errors="replace").read()[-4000:]
+        except OSError:
+            tail = ""
+        if not verified and ("Worker VERIFIED" in tail or "VERIFIED running" in tail):
+            verified = True
+        if verified and (done or "DWELL DONE" in tail):
             status = "ok"
+        elif verified:
+            status = "ok-dwell-cut"
         else:
-            # last chance: check the tail for a late verify
-            try:
-                tail = open(logf, errors="replace").read()[-4000:]
-            except OSError:
-                tail = ""
-            if "Worker VERIFIED" in tail or "VERIFIED running" in tail:
-                status = "ok-late"
-            else:
-                status = "no-verify"
-                print(f"[{tag}] ❌ never verified this visit", flush=True)
+            status = "no-verify"
+            print(f"[{tag}] ❌ never verified this visit", flush=True)
     finally:
         # kill the whole process group (browser + driver included)
         try:
@@ -141,12 +145,15 @@ def main():
         first_round = False
         print(f"\n{'='*50}\n🔁 ROUND {round_n} @ "
               f"{datetime.now().strftime('%H:%M:%S')}\n{'='*50}", flush=True)
+        # two-phase law: round 1 speedrun (30s), patrol (180s) after.
+        dwell = 30 if round_n == 1 else 180
+        print(f"⏱️ round dwell: {dwell}s", flush=True)
         for i in range(start_idx, len(pids)):
             pid = pids[i]
             tag = pid[:8]
             try:
                 st = run_visit(pid, tag, args.session.strip().removeprefix("session-"),
-                               args.threads, args.dwell, env)
+                               args.threads, dwell, env)
             except Exception as e:
                 st = f"error: {str(e)[:100]}"
             results[tag] = st
