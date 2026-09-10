@@ -37,6 +37,7 @@ from script3_launch_miner import (
     check_session_valid,
     relogin_session,
     resolve_proxy,
+    wait_for_console_message,
 )
 
 SESSIONS_DIR = Path(
@@ -157,6 +158,16 @@ async def tend_project(context, open_tab, pid: str, dwell: int, threads: int) ->
                 await prev.bring_to_front()
             except Exception:
                 pass
+            # 502/proxy-error? refresh until the JS console shows ready
+            # (same "lovable is ready" gate script3 uses).
+            print(f"[{tag}] ⏳ waiting console ready (refresh on 502)...", flush=True)
+            try:
+                ready = await wait_for_console_message(prev, timeout_seconds=300)
+            except Exception as e:
+                print(f"[{tag}] console-wait warn: {str(e)[:100]}", flush=True)
+                ready = False
+            if not ready:
+                return "console-never-ready"
             if not await wait_bridge(prev, tag, timeout=120):
                 return "no-bridge"
             frame = await preview_frame(prev)
@@ -182,7 +193,8 @@ async def tend_project(context, open_tab, pid: str, dwell: int, threads: int) ->
                 pass
 
     status = await tend_preview("1st")
-    if status in ("burned", "no-bridge", "no-worker", "dead"):
+    if status in ("burned", "no-bridge", "no-worker", "dead",
+                   "console-never-ready"):
         # rescue: back to chat, re-prompt, preview again
         print(f"[{tag}] 🔄 rescue: re-prompt + retry preview...", flush=True)
         try:
