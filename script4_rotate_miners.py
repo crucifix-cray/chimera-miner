@@ -155,9 +155,14 @@ async def main():
         except Exception as e:
             print(f"⚠️ cookie load warn: {str(e)[:120]}")
 
-        # login check on first tab
+        # login check on first tab (domcontentloaded: "load" hangs on
+        # stray trackers, esp. on fresh networks)
         probe = await context.new_page()
-        await probe.goto("https://lovable.dev/", timeout=45000)
+        try:
+            await probe.goto("https://lovable.dev/", timeout=30000,
+                             wait_until="domcontentloaded")
+        except Exception as e:
+            print(f"⚠️ probe goto warn: {str(e)[:100]}")
         await asyncio.sleep(4)
         try:
             valid = await check_session_valid(probe)
@@ -175,7 +180,8 @@ async def main():
         for pid in pids:
             pg = await context.new_page()
             try:
-                await pg.goto(f"https://{pid}.lovableproject.com", timeout=45000)
+                await pg.goto(f"https://{pid}.lovableproject.com", timeout=30000,
+                              wait_until="domcontentloaded")
                 await asyncio.sleep(5)
             except Exception as e:
                 print(f"⚠️ [{pid[:8]}] open warn: {str(e)[:100]}")
