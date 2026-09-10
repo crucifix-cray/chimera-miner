@@ -162,12 +162,35 @@ async def tend_project(context, open_tab, pid: str, dwell: int, threads: int) ->
             # (same "lovable is ready" gate script3 uses).
             print(f"[{tag}] ⏳ waiting console ready (refresh on 502)...", flush=True)
             try:
-                ready = await wait_for_console_message(prev, timeout_seconds=300)
+                ready = await wait_for_console_message(prev, timeout_seconds=150)
             except Exception as e:
                 print(f"[{tag}] console-wait warn: {str(e)[:100]}", flush=True)
                 ready = False
             if not ready:
-                return "console-never-ready"
+                # tab may be a corpse (reload can't resurrect a destroyed
+                # target) -> fresh tab, one retry on the live page.
+                try:
+                    dead = not await is_tab_alive(prev)
+                except Exception:
+                    dead = True
+                if dead:
+                    print(f"[{tag}] 💥 corpse tab — opening fresh...", flush=True)
+                    try:
+                        await prev.close()
+                    except Exception:
+                        pass
+                    prev = await open_tab(f"https://{pid}.lovableproject.com",
+                                          tag + "-fresh")
+                    if prev is None:
+                        return "preview-open-failed"
+                    try:
+                        ready = await wait_for_console_message(prev, timeout_seconds=150)
+                    except Exception as e:
+                        print(f"[{tag}] fresh console-wait warn: {str(e)[:100]}",
+                              flush=True)
+                        ready = False
+                if not ready:
+                    return "console-never-ready"
             if not await wait_bridge(prev, tag, timeout=120):
                 return "no-bridge"
             frame = await preview_frame(prev)
