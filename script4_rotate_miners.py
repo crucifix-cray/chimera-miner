@@ -121,13 +121,28 @@ def main():
     if not env.get("DISPLAY"):
         env["DISPLAY"] = ":0"
 
-    round_n = 0
+    # resume progress across restarts: every relaunch used to restart at
+    # project 1, starving 3-10. Persist next index + round to disk.
+    import json as _json
+    progress_file = "/tmp/script4_progress.json"
+    try:
+        _prog = _json.load(open(progress_file))
+        start_idx = int(_prog.get("next_idx", 0)) % len(pids)
+        round_n = int(_prog.get("round", 1))
+        print(f"📌 resuming: round {round_n}, starting at #{start_idx+1} "
+              f"({pids[start_idx][:8]})", flush=True)
+    except Exception:
+        start_idx, round_n = 0, 1
     results = {}
+    first_round = True
     while True:
-        round_n += 1
+        if not first_round:
+            start_idx = 0
+        first_round = False
         print(f"\n{'='*50}\n🔁 ROUND {round_n} @ "
               f"{datetime.now().strftime('%H:%M:%S')}\n{'='*50}", flush=True)
-        for pid in pids:
+        for i in range(start_idx, len(pids)):
+            pid = pids[i]
             tag = pid[:8]
             try:
                 st = run_visit(pid, tag, args.session.strip().removeprefix("session-"),
@@ -138,6 +153,12 @@ def main():
             print(f"   [{tag}] round done: {st}", flush=True)
             ok = sum(1 for v in results.values() if v.startswith("ok"))
             print(f"   📊 round score: {ok}/{len(pids)} verified", flush=True)
+            try:
+                _json.dump({"round": round_n, "next_idx": (i + 1) % len(pids)},
+                           open(progress_file, "w"))
+            except Exception:
+                pass
+        round_n += 1
 
 
 if __name__ == "__main__":
