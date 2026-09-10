@@ -248,12 +248,18 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
 
 
 async def is_tab_alive(page) -> bool:
-    """True if the tab's renderer answers (False = crashed/closed target)."""
-    try:
-        await page.evaluate("1")
-        return True
-    except Exception:
-        return False
+    """True if the tab's renderer answers (False = crashed/closed target).
+
+    A single failed evaluate does NOT mean death — mid-navigation /
+    busy-renderer errors are transient. 3 strikes over ~9s before
+    declaring the tab dead, so live-but-busy tabs aren't murdered."""
+    for _ in range(3):
+        try:
+            await page.evaluate("1")
+            return True
+        except Exception:
+            await asyncio.sleep(3)
+    return False
 
 
 async def restore_tab(page, url: str = None) -> bool:
