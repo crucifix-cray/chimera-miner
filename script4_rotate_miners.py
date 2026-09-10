@@ -27,8 +27,9 @@ from pathlib import Path
 HERE = Path(__file__).parent
 SCRIPT3 = HERE / "script3_launch_miner.py"
 
-# script3 needs up to ~9 min worst case (console-wait 5 + inject 2 + overhead)
-STARTUP_TIMEOUT = 720
+# Speedrun law: no visit lives past ~8 min. Stubborn projects get
+# skipped and retried next round — the sweep never stalls.
+STARTUP_TIMEOUT = 420
 POLL = 10
 
 

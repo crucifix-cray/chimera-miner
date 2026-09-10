@@ -891,7 +891,9 @@ async def main():
             # 10. Wait for console 'lovable' message (refresh every 40s).
             # 3 error pages -> "rep-prompt": refreshes won't fix it, the dev
             # server wants a fresh chat prompt -> re-prompt, then continue.
-            console_ready = await wait_for_console_message(preview_page, timeout_seconds=300)
+            # Oneshot budgets are TIGHT (speedrun): 150s first gate,
+            # 90s fresh-tab retry. Stubborn sandboxes retry next round.
+            console_ready = await wait_for_console_message(preview_page, timeout_seconds=150)
 
             if console_ready == "rep-prompt":
                 console_ready = await reprompt_and_wait()
@@ -904,7 +906,7 @@ async def main():
                     if _fresh is not None:
                         preview_page = _fresh
                         console_ready = await wait_for_console_message(
-                            preview_page, timeout_seconds=180)
+                            preview_page, timeout_seconds=90)
                         if console_ready == "rep-prompt":
                             console_ready = await reprompt_and_wait()
                     if console_ready != "ready":
