@@ -77,6 +77,45 @@ async def human_moves(page, seconds: int):
             return
 
 
+CHAT_SELECTORS = ['div[contenteditable="true"][role="textbox"]',
+                  '[contenteditable="true"]',
+                  'textarea[placeholder*="chat"]', 'textarea']
+
+
+async def wait_chat_ready(page, url: str, tag: str, timeout: int = 180) -> bool:
+    """Refresh until the chat app actually mounts (input visible).
+    Chat pages often sit white while the SPA stalls — same disease as
+    preview 502s, same cure: refresh till alive."""
+    end = asyncio.get_event_loop().time() + timeout
+    tries = 0
+    while asyncio.get_event_loop().time() < end:
+        tries += 1
+        try:
+            if not await is_tab_alive(page):
+                print(f"[{tag}] chat gate: tab dead", flush=True)
+                return False
+            for sel in CHAT_SELECTORS:
+                try:
+                    el = await page.wait_for_selector(sel, timeout=8000,
+                                                      state="visible")
+                    if el and await el.is_visible():
+                        print(f"[{tag}] ✅ chat mounted ({tries} tries)", flush=True)
+                        return True
+                except Exception:
+                    continue
+            print(f"[{tag}] ⏳ chat white, refreshing... ({tries})", flush=True)
+            try:
+                await page.reload(timeout=25000, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            await asyncio.sleep(8)
+        except Exception as e:
+            print(f"[{tag}] chat gate warn: {str(e)[:100]}", flush=True)
+            await asyncio.sleep(8)
+    print(f"[{tag}] ❌ chat never mounted after {timeout}s", flush=True)
+    return False
+
+
 async def send_chat_prompt(page, tag: str) -> bool:
     """Find chat input and fire a trivial trigger prompt. No waiting."""
     try:
@@ -144,9 +183,16 @@ async def tend_project(context, open_tab, pid: str, dwell: int, threads: int) ->
     Preview burns -> back to chat, re-prompt, preview again.
     Both tabs closed at the end; miners persist server-side."""
     tag = pid[:8]
-    chat = await open_tab(f"https://lovable.dev/projects/{pid}", tag + "-chat")
+    chat_url = f"https://lovable.dev/projects/{pid}"
+    chat = await open_tab(chat_url, tag + "-chat")
     if chat is None:
         return "chat-open-failed"
+    if not await wait_chat_ready(chat, chat_url, tag, timeout=180):
+        try:
+            await chat.close()
+        except Exception:
+            pass
+        return "chat-never-ready"
     prompted = await send_chat_prompt(chat, tag)
 
     async def tend_preview(attempt: str) -> str:
