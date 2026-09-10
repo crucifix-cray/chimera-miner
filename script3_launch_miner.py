@@ -371,7 +371,10 @@ async def goto_retry(page, url, timeout_ms=30000, tries=3):
     timeout used to kill the whole session run."""
     for attempt in range(1, tries + 1):
         try:
-            await page.goto(url, timeout=timeout_ms)
+            # domcontentloaded: wait_until="load" hangs forever on stray
+            # trackers (new networks) — bodged every visit by 90s+.
+            await page.goto(url, timeout=timeout_ms,
+                            wait_until="domcontentloaded")
             return True
         except Exception as e:
             print(f"   ⚠️  goto failed (attempt {attempt}/{tries}): {e}")
