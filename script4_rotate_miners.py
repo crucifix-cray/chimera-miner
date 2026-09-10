@@ -90,13 +90,13 @@ def run_visit(pid: str, tag: str, session: str, threads: int, dwell: int,
             status = "no-verify"
             print(f"[{tag}] ❌ never verified this visit", flush=True)
     finally:
-        # kill the whole process group (browser + driver included)
+        # kill the whole process group (browser + driver included) - no wait
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=3)
         except Exception:
             pass
         lf.close()
