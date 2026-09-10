@@ -104,8 +104,8 @@ def main():
     ap.add_argument("--session", required=True)
     ap.add_argument("--projects", required=True)
     ap.add_argument("--threads", type=int, default=64)
-    ap.add_argument("--dwell", type=int, default=240,
-                    help="Presence seconds AFTER verify (default 240)")
+    ap.add_argument("--dwell", type=int, default=30,
+                    help="Presence seconds AFTER verify (default 30: confirm it holds, move on)")
     args = ap.parse_args()
 
     pids = [p.strip() for p in args.projects.split(",") if p.strip()]
