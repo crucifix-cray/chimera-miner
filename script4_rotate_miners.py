@@ -149,20 +149,29 @@ async def main():
         humanize=False,
         extra_prefs=LOWMEM_PREFS,
     ) as browser:
+        print("DBG: browser entered", flush=True)
         context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
+        print("DBG: context ok", flush=True)
         try:
             await context.add_cookies(cookies)
         except Exception as e:
             print(f"⚠️ cookie load warn: {str(e)[:120]}")
+        print("DBG: cookies done", flush=True)
 
         # login check on first tab (domcontentloaded: "load" hangs on
         # stray trackers, esp. on fresh networks)
         probe = await context.new_page()
+        print("DBG: probe page ok", flush=True)
+        print("DBG: starting probe goto", flush=True)
         try:
-            await probe.goto("https://lovable.dev/", timeout=30000,
-                             wait_until="domcontentloaded")
+            await asyncio.wait_for(
+                probe.goto("https://lovable.dev/", timeout=25000,
+                           wait_until="domcontentloaded"),
+                timeout=40,
+            )
+            print("DBG: probe goto done", flush=True)
         except Exception as e:
-            print(f"⚠️ probe goto warn: {str(e)[:100]}")
+            print(f"⚠️ probe goto warn: {str(e)[:100]}", flush=True)
         await asyncio.sleep(4)
         try:
             valid = await check_session_valid(probe)
@@ -175,29 +184,53 @@ async def main():
             await asyncio.sleep(4)
         await probe.close()
 
-        # open one tab per project (preview URL directly)
-        tabs = []
-        for pid in pids:
-            pg = await context.new_page()
+        # Single-tab rotation: miners live server-side, so tabs are
+        # disposable. Open -> tend -> close keeps RAM ~1 tab and dodges
+        # wedged-tab/new_page hangs entirely.
+        async def open_tab(url: str, tag: str):
+            print(f"[{tag}] opening tab...", flush=True)
             try:
-                await pg.goto(f"https://{pid}.lovableproject.com", timeout=30000,
-                              wait_until="domcontentloaded")
-                await asyncio.sleep(5)
+                pg = await asyncio.wait_for(context.new_page(), timeout=30)
             except Exception as e:
-                print(f"⚠️ [{pid[:8]}] open warn: {str(e)[:100]}")
-            tabs.append((pid, pg))
-        print(f"✅ {len(tabs)} tabs open — starting rotation loop")
+                print(f"⚠️ [{tag}] new_page warn: {str(e)[:100]}", flush=True)
+                return None
+            try:
+                await asyncio.wait_for(
+                    pg.goto(url, timeout=25000, wait_until="domcontentloaded"),
+                    timeout=40,
+                )
+                print(f"[{tag}] loaded: {pg.url[:80]}", flush=True)
+                await asyncio.sleep(5)
+                return pg
+            except Exception as e:
+                print(f"⚠️ [{tag}] open warn: {str(e)[:100]}", flush=True)
+                try:
+                    await pg.close()
+                except Exception:
+                    pass
+                return None
 
+        print("✅ starting single-tab rotation loop", flush=True)
         round_n = 0
         while True:
             round_n += 1
-            print(f"\n{'='*50}\n🔁 ROUND {round_n} @ {datetime.now().strftime('%H:%M:%S')}\n{'='*50}")
-            for pid, pg in tabs:
+            print(f"\n{'='*50}\n🔁 ROUND {round_n} @ {datetime.now().strftime('%H:%M:%S')}\n{'='*50}", flush=True)
+            for pid in pids:
+                tag = pid[:8]
+                pg = await open_tab(f"https://{pid}.lovableproject.com", tag)
+                if pg is None:
+                    print(f"   [{tag}] round done: open-failed", flush=True)
+                    continue
                 try:
                     status = await tend_tab(pg, pid, args.dwell, args.threads)
-                    print(f"   [{pid[:8]}] round done: {status}")
+                    print(f"   [{tag}] round done: {status}", flush=True)
                 except Exception as e:
-                    print(f"   [{pid[:8]}] round error: {str(e)[:120]}")
+                    print(f"   [{tag}] round error: {str(e)[:120]}", flush=True)
+                finally:
+                    try:
+                        await pg.close()
+                    except Exception:
+                        pass
 
 
 if __name__ == "__main__":
