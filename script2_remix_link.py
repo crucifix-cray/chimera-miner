@@ -1909,7 +1909,22 @@ async def main():
                             raise Exception("FIRST-HEAVY: #1 never completed, cannot clone")
                         src = first_url
                         log(f"🔗 Cloning from #1: {src}")
-                    project_info = await remix_existing(page, src, args.session)
+                    if use_first_heavy and i == 0:
+                        # #1 is load-bearing — retry transient SPA failures (3x)
+                        last_err = None
+                        for attempt1 in range(3):
+                            try:
+                                project_info = await remix_existing(page, src, args.session)
+                                last_err = None
+                                break
+                            except Exception as e1:
+                                last_err = e1
+                                log(f"FIRST-HEAVY #1 attempt {attempt1+1}/3 failed: {str(e1)[:120]}", "WARNING")
+                                await wait(5000)
+                        if last_err is not None:
+                            raise last_err
+                    else:
+                        project_info = await remix_existing(page, src, args.session)
                 elif mode == "accept":
                     project_info = await accept_invite_and_remix(page, used_invite_link, args.session)
                 
