@@ -116,6 +116,18 @@ async def wait_chat_ready(page, url: str, tag: str, timeout: int = 180) -> bool:
     return False
 
 
+async def _wait_body(page):
+    while True:
+        try:
+            n = await page.evaluate(
+                "(() => (document.body && document.body.innerText || '').length)()")
+            if (n or 0) > 500:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+
 async def send_chat_prompt(page, tag: str) -> bool:
     """Fire a trigger prompt — with PROOF at every step. True only when the
     text is seen in the box AND the send is confirmed accepted."""
@@ -223,6 +235,13 @@ async def tend_project(context, open_tab, pid: str, dwell: int, threads: int) ->
             pass
         return "chat-never-ready"
     prompted = await send_chat_prompt(chat, tag)
+    if prompted:
+        # dev server needs time AFTER the prompt before the preview can
+        # boot — don't rush it, wait warm with visible progress.
+        print(f"[{tag}] 🔥 prompt accepted — warming dev server 75s...", flush=True)
+        for i in range(5):
+            await asyncio.sleep(15)
+            print(f"[{tag}] ...warming {(i+1)*15}s", flush=True)
 
     async def tend_preview(attempt: str) -> str:
         prev = await open_tab(f"https://{pid}.lovableproject.com", tag)
@@ -395,6 +414,15 @@ async def main():
                     pg.goto(url, timeout=25000, wait_until="domcontentloaded"),
                     timeout=40,
                 )
+                # domcontentloaded != rendered: wait till the page has a body
+                # worth showing (bounded, so white pages don't fake "loaded").
+                try:
+                    await asyncio.wait_for(
+                        _wait_body(pg),
+                        timeout=45,
+                    )
+                except Exception:
+                    print(f"[{tag}] ⚠️ body never rendered", flush=True)
                 print(f"[{tag}] loaded: {pg.url[:80]}", flush=True)
                 await asyncio.sleep(5)
                 return pg
