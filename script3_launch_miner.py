@@ -827,32 +827,74 @@ async def main():
             await chat_page.keyboard.press("Enter")
             print("✅ Prompt sent!")
             
-            # 9. IMMEDIATELY open preview in NEW TAB
-            print("\n🖼️  Opening preview tab...")
+            # 9. SAME TAB to preview (single-tab flow: chat -> preview in
+            # one tab, halves RAM and matches the manual game)
+            print("\n🖼️  Going to preview (same tab)...")
             preview_url = project.get("preview_url", f"https://{project['project_id']}.lovableproject.com")
-            preview_page = await context.new_page()
+            preview_page = chat_page
             await goto_retry(preview_page, preview_url)
             await asyncio.sleep(3)
-            print(f"✅ Preview tab opened: {preview_url}")
-            
+            print(f"✅ Preview opened: {preview_url}")
+
+            async def fresh_preview_tab():
+                """Corpse recovery: the tab may be unrestorable in place —
+                open a brand-new tab on the preview URL."""
+                try:
+                    print("   💥 corpse tab — opening fresh preview tab...")
+                    try:
+                        await preview_page.close()
+                    except Exception:
+                        pass
+                    fresh = await asyncio.wait_for(context.new_page(), timeout=30)
+                    await goto_retry(fresh, preview_url)
+                    await asyncio.sleep(3)
+                    return fresh
+                except Exception as e:
+                    print(f"   fresh tab failed: {str(e)[:100]}")
+                    return None
+
             # 10. Wait for console 'lovable' message (refresh every 40s)
             console_ready = await wait_for_console_message(preview_page, timeout_seconds=300)
-            
+
             if not console_ready:
                 print("❌ Console message never appeared")
                 if args.mode == "oneshot":
-                    print("🛑 Oneshot mode - exiting")
-                    return
+                    print("🔄 Oneshot: one fresh-tab retry before giving up...")
+                    _fresh = await fresh_preview_tab()
+                    if _fresh is not None:
+                        preview_page = _fresh
+                        console_ready = await wait_for_console_message(
+                            preview_page, timeout_seconds=180)
+                    if not console_ready:
+                        print("🛑 Oneshot mode - exiting")
+                        return
                 else:
-                    print("🔄 Full mode - will retry with new prompt...")
-                    # Go back to chat and try again
-                    await chat_page.bring_to_front()
-                    await chat_input.fill(random.choice(simple_prompts))
-                    await chat_page.keyboard.press("Enter")
-                    print("✅ Sent new prompt, waiting again...")
-                    await preview_page.bring_to_front()
+                    print("🔄 Full mode - back to chat for a new prompt...")
+                    # Same tab back to chat, re-prompt, back to preview
+                    await goto_retry(preview_page, chat_url)
+                    await asyncio.sleep(3)
+                    for selector in chat_selectors:
+                        try:
+                            chat_input = await preview_page.wait_for_selector(selector, timeout=5000, state='visible')
+                            if chat_input and await chat_input.is_visible():
+                                break
+                        except Exception:
+                            chat_input = None
+                    if chat_input:
+                        await chat_input.fill(random.choice(simple_prompts))
+                        await preview_page.keyboard.press("Enter")
+                        print("✅ Sent new prompt, waiting again...")
+                    await goto_retry(preview_page, preview_url)
+                    await asyncio.sleep(3)
                     console_ready = await wait_for_console_message(preview_page, timeout_seconds=300)
-                    
+
+                    if not console_ready:
+                        print("🔄 Last resort: fresh tab...")
+                        _fresh = await fresh_preview_tab()
+                        if _fresh is not None:
+                            preview_page = _fresh
+                            console_ready = await wait_for_console_message(
+                                preview_page, timeout_seconds=180)
                     if not console_ready:
                         print("❌ Still no console message after retry - giving up")
                         return
