@@ -537,14 +537,23 @@ class MegaDB:
 
 # Convenience functions
 def load_db() -> MegaDB:
-    """Load database from Mega."""
+    """Load database from Mega (or in-memory empty when CHIMERA_NO_MEGA=1)."""
     db = MegaDB()
+    if os.environ.get("CHIMERA_NO_MEGA") == "1":
+        print("📂 CHIMERA_NO_MEGA=1 — using empty local DB (no Mega sync)")
+        db.loaded = True
+        return db
     db.sync_from_mega()
     return db
 
 
 def save_db(db: MegaDB):
-    """Save database to Mega."""
+    """Save database to Mega (or local file only when CHIMERA_NO_MEGA=1)."""
+    if os.environ.get("CHIMERA_NO_MEGA") == "1":
+        with open(LOCAL_DB_PATH, "w") as f:
+            json.dump(db.data, f, indent=2)
+        print(f"💾 Saved local DB only: {LOCAL_DB_PATH}")
+        return
     db.sync_to_mega()
 
 

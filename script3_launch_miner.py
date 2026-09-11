@@ -374,11 +374,16 @@ async def wait_for_console_message(page, timeout_seconds=300):
         await asyncio.sleep(refresh_interval)
 
 
-async def verify_session_projects(session_id: int, db):
+async def verify_session_projects(session_id: int, db, local_only: bool = False):
     """Open every project's chat link with this session's cookies and stamp linked=true/false."""
     session_key = f"session-{session_id}"
     projects = [p for p in db.data["projects"] if p.get("created_by") == session_key]
-    
+
+    if not projects and (local_only or os.environ.get("CHIMERA_NO_MEGA") == "1"):
+        # GitHub-only mode: enumerate this session's own projects from its dashboard.
+        print(f"📂 No DB projects for {session_key} — enumerating dashboard instead (local mode)")
+        projects = "__dashboard__"  # sentinel: fill after login below
+
     if not projects:
         print(f"❌ No projects found for {session_key}")
         return
@@ -389,14 +394,47 @@ async def verify_session_projects(session_id: int, db):
     
     proxy = resolve_proxy()
     async with InvisiblePlaywright(
-        headless=False,
+        headless=True,  # 900MB sandbox: headed+Xwayland costs ~200MB extra
         proxy=proxy,
-        humanize=True,
+        humanize=False,
         locale='en-US',
     ) as browser:
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
         await context.add_cookies(cookies)
-        
+        if projects == "__dashboard__":
+            dash = await context.new_page()
+            try:
+                await dash.goto("https://lovable.dev/dashboard", timeout=30000)
+                await asyncio.sleep(4)
+                # locator-based (page CSP blocks evaluate)
+                hrefs = []
+                try:
+                    anchors = await dash.locator('a[href*="/projects/"]').all()
+                    for ael in anchors:
+                        try:
+                            h = await ael.get_attribute("href")
+                            if h and h not in hrefs:
+                                hrefs.append(h)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                import re
+                seen = set()
+                projects = []
+                for h in hrefs:
+                    m = re.search(r"/projects/([a-f0-9-]{8,})", h)
+                    if m and m.group(1) not in seen:
+                        seen.add(m.group(1))
+                        projects.append({"project_id": m.group(1),
+                                         "chat_url": f"https://lovable.dev/projects/{m.group(1)}"})
+                print(f"📂 Dashboard lists {len(projects)} project(s) for {session_key}")
+            finally:
+                await dash.close()
+            if not projects:
+                print(f"❌ Dashboard shows no projects for {session_key}")
+                return
+
         chat_selectors = [
             'div[contenteditable="true"][role="textbox"]',
             '[contenteditable="true"]',
@@ -437,6 +475,17 @@ async def verify_session_projects(session_id: int, db):
     print("\n=== VERIFICATION RESULTS ===")
     for p in projects:
         print(f"  {p['project_id']}: linked={p.get('linked')} mode={p.get('mode')}")
+    if os.environ.get("CHIMERA_NO_MEGA") == "1":
+        out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "..", "automation-toolkit", "finals", f"verify_{session_key}.json")
+        out = os.path.normpath(out)
+        try:
+            with open(out, "w") as f:
+                json.dump([{"project_id": p["project_id"], "linked": p.get("linked"),
+                            "chat_url": p.get("chat_url")} for p in projects], f, indent=2)
+            print(f"💾 Local results: {out}")
+        except Exception as e:
+            print(f"⚠️  Local save failed: {e}")
 
 
 async def main():
