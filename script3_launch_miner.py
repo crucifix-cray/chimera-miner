@@ -596,9 +596,10 @@ async def main():
     
     try:
         proxy = resolve_proxy()
-        # minimal for weak 1GB sandbox: headless True + no humanize + small viewport
+        # CHIMERA_HEADED=1 shows the browser (default, user watches); =0 for 1GB sandbox
+        headed = os.environ.get("CHIMERA_HEADED", "1") == "1"
         async with InvisiblePlaywright(
-            headless=True,
+            headless=not headed,
             proxy=proxy,
             humanize=False,
             locale='en-US',
