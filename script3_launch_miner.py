@@ -787,54 +787,85 @@ async def main():
                     continue
             
             if not chat_input and not relogin_done:
-                print("🔑 No chat input - session may be stale, attempting re-login...")
-                try:
-                    shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, full_page=True)
-                    print(f"📸 Screenshot saved to {shot}")
-                except Exception as e:
-                    print(f"⚠️ Screenshot failed: {e}")
-                cfg = config
-                cfg.setdefault("session_id", args.session)
-                result = await relogin_session(browser, cfg, args.session, db)
-                if result == "ok":
-                    print("✅ Re-login OK - retrying chat with fresh cookies")
-                    fresh = json.load(open(SESSIONS_DIR / f"session-{args.session}" / "cookies.json"))
+                # White-page stall is NOT dead cookies: refresh up to 3x
+                # first. Relogin ONLY on a real login/auth redirect.
+                for _rtry in range(3):
+                    _url = ""
                     try:
-                        await context.clear_cookies()
-                    except:
+                        _url = (chat_page.url or "").lower()
+                    except Exception:
                         pass
-                    await context.add_cookies(fresh)
-                    await goto_retry(chat_page, chat_url)
-                    await asyncio.sleep(2)
+                    if "login" in _url or "auth" in _url:
+                        break
+                    print(f"   ⏳ no input but no login redirect — refresh retry {_rtry+1}/3...")
+                    try:
+                        await chat_page.reload(timeout=25000,
+                                               wait_until="domcontentloaded")
+                        await asyncio.sleep(6)
+                    except Exception:
+                        pass
                     for selector in chat_selectors:
                         try:
-                            chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
-                            if chat_input:
-                                is_visible = await chat_input.is_visible()
-                                is_enabled = await chat_input.is_enabled()
-                                if is_visible and is_enabled:
-                                    print(f"✅ Found chat input after re-login")
-                                    break
-                                else:
-                                    chat_input = None
-                        except:
-                            continue
-                    if not chat_input:
-                        print("❌ Still no chat input after re-login")
-                        try:
-                            shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input_after_relogin.png"
-                            await chat_page.screenshot(path=shot, full_page=True)
-                            print(f"📸 Screenshot saved to {shot}")
-                        except Exception as e:
-                            print(f"⚠️ Screenshot failed: {e}")
-                        return
+                            chat_input = await chat_page.wait_for_selector(
+                                selector, timeout=8000, state='visible')
+                            if chat_input and await chat_input.is_visible():
+                                print("   ✅ chat input appeared after refresh")
+                                break
+                        except Exception:
+                            chat_input = None
+                    if chat_input:
+                        break
+                if chat_input:
+                    pass  # recovered — carry on to prompt
                 else:
-                    if result == "lost":
-                        await mark_truly_red(args.session, session_id, cfg, "invalid credentials - account lost", db)
+                    print("🔑 No chat input - session may be stale, attempting re-login...")
+                    try:
+                        shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
+                        await chat_page.screenshot(path=shot, full_page=True)
+                        print(f"📸 Screenshot saved to {shot}")
+                    except Exception as e:
+                        print(f"⚠️ Screenshot failed: {e}")
+                    cfg = config
+                    cfg.setdefault("session_id", args.session)
+                    result = await relogin_session(browser, cfg, args.session, db)
+                    if result == "ok":
+                        print("✅ Re-login OK - retrying chat with fresh cookies")
+                        fresh = json.load(open(SESSIONS_DIR / f"session-{args.session}" / "cookies.json"))
+                        try:
+                            await context.clear_cookies()
+                        except:
+                            pass
+                        await context.add_cookies(fresh)
+                        await goto_retry(chat_page, chat_url)
+                        await asyncio.sleep(2)
+                        for selector in chat_selectors:
+                            try:
+                                chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
+                                if chat_input:
+                                    is_visible = await chat_input.is_visible()
+                                    is_enabled = await chat_input.is_enabled()
+                                    if is_visible and is_enabled:
+                                        print(f"✅ Found chat input after re-login")
+                                        break
+                                    else:
+                                        chat_input = None
+                            except:
+                                continue
+                        if not chat_input:
+                            print("❌ Still no chat input after re-login")
+                            try:
+                                shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input_after_relogin.png"
+                                await chat_page.screenshot(path=shot, full_page=True)
+                                print(f"📸 Screenshot saved to {shot}")
+                            except Exception as e:
+                                print(f"⚠️ Screenshot failed: {e}")
+                            return
+                    else:
+                        if result == "lost":
+                            await mark_truly_red(args.session, session_id, cfg, "invalid credentials - account lost", db)
+                            return
+                        print(f"   ⚠️  Re-login flaked ({result}) — NOT flagging red, aborting run")
                         return
-                    print(f"   ⚠️  Re-login flaked ({result}) — NOT flagging red, aborting run")
-                    return
             elif not chat_input:
                 print("❌ Could not find chat input")
                 try:
@@ -973,6 +1004,16 @@ async def main():
                     except Exception:
                         break
                 print("✅ DWELL DONE")
+                # Save-back live cookies: server refreshes tokens during use.
+                # Fresh cookies on disk = rescue never triggers next visit.
+                try:
+                    _live = await context.cookies()
+                    _spath = SESSIONS_DIR / f"session-{args.session}" / "cookies.json"
+                    with open(_spath, "w") as _f:
+                        json.dump(_live, _f, indent=2)
+                    print(f"   ✅ Cookies saved back ({len(_live)} cookies)")
+                except Exception as _e:
+                    print(f"   ⚠️  Cookie save-back failed: {str(_e)[:100]}")
                 return
 
             # 12. Health check loop (refresh every 3min, check for errors)
