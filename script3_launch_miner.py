@@ -215,8 +215,11 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
             print("   ⌨️  No exact button found - pressing Enter on password field")
             await password_input.press("Enter")
 
-        # Wait for dashboard (up to 90s), checking for invalid-credentials errors
+        # Wait for dashboard (up to 90s), checking for invalid-credentials errors.
+        # 2FA: our own TOTP (all 37 sessions enrolled) triggers "Enter authenticator
+        # code" after password — fill it from config totp_secret and Verify.
         print("   ⏳ Waiting for dashboard...")
+        totp_done = False
         for _ in range(18):
             await asyncio.sleep(5)
             if await check_lost():
@@ -226,6 +229,54 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
                 print("   ✅ Logged in!")
                 await save_fresh_cookies()
                 return "ok"
+            if not totp_done:
+                try:
+                    body = await page.locator("body").inner_text(timeout=3000)
+                except Exception:
+                    body = ""
+                if "authenticator code" in body.lower():
+                    secret = config.get("totp_secret") or config.get("totp_secret_backup")
+                    if not secret:
+                        print("   ❌ TOTP challenged but no totp_secret in config")
+                        return "failed"
+                    import pyotp
+                    code = pyotp.TOTP(secret).now()
+                    filled = False
+                    for sel in ['#totp-code', 'input[inputmode="numeric"]',
+                                'input[autocomplete="one-time-code"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if await el.count() and await el.is_visible(timeout=2000):
+                                await el.fill(code)
+                                filled = True
+                                break
+                        except Exception:
+                            continue
+                    if not filled:  # 6 separate boxes: fill digit by digit
+                        try:
+                            boxes = page.locator('input[inputmode="numeric"], input[type="text"]')
+                            n = await boxes.count()
+                            if n >= 6:
+                                for i, d in enumerate(code[:6]):
+                                    await boxes.nth(i).fill(d)
+                                filled = True
+                        except Exception:
+                            pass
+                    if filled:
+                        print(f"   🔑 TOTP filled, clicking Verify")
+                        try:
+                            vbtn = page.get_by_role("button", name="Verify", exact=True).first
+                            if await vbtn.count():
+                                await vbtn.click(timeout=5000)
+                            else:
+                                await page.keyboard.press("Enter")
+                        except Exception:
+                            await page.keyboard.press("Enter")
+                        totp_done = True
+                        await asyncio.sleep(4)
+                    else:
+                        print("   ❌ TOTP boxes not found")
+                        return "failed"
 
         print("   ❌ Re-login did not reach dashboard")
         return "failed"
