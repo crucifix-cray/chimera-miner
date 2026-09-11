@@ -393,8 +393,9 @@ async def verify_session_projects(session_id: int, db, local_only: bool = False)
     config, cookies = await load_session_cookies(session_id)
     
     proxy = resolve_proxy()
+    headed = os.environ.get("CHIMERA_HEADED", "1") == "1"  # user wants to SEE the browser
     async with InvisiblePlaywright(
-        headless=True,  # 900MB sandbox: headed+Xwayland costs ~200MB extra
+        headless=not headed,
         proxy=proxy,
         humanize=False,
         locale='en-US',
@@ -553,8 +554,12 @@ async def main():
     if args.project:
         project = db.get_project(args.project)
         if not project:
-            print(f"❌ Project {args.project} not found in database")
-            return
+            # Local/supervisor mode (CHIMERA_NO_MEGA): synthesize minimal project
+            # from the ID instead of requiring Mega DB.
+            print(f"⚠️  Project {args.project} not in database — using direct project ID (local mode)")
+            project = {"project_id": args.project, "created_by": session_id,
+                       "usage_count": 0, "max_usage": 20,
+                       "chat_url": f"https://lovable.dev/projects/{args.project}"}
         # Verify ownership
         if project.get("created_by") != session_id:
             print(f"⚠️  Warning: Project {args.project} was created by {project.get('created_by')}, not {session_id}")
