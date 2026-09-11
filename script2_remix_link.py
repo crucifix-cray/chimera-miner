@@ -735,7 +735,38 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
         log(f"  query stripped (try {nav_try+1}/2), re-navigating...")
     await wait(3000)
     if not await check_session_valid(page):
-        raise Exception("Session is expired (redirected to login)")
+        # Expired cookies, but we have live credentials+TOTP -> auto-heal,
+        # overwrite the shared cookie file, and retry (same as script3).
+        _snum = str(session_num)
+        try:
+            _cfg = json.load(open(SESSIONS_DIR / f"session-{_snum}" / "config.json"))
+        except Exception:
+            _cfg = {}
+        _cfg.setdefault("session_id", _snum)
+        _res = await relogin_session(_browser, _cfg, _snum)
+        if _res == "ok":
+            print("✅ Re-login OK — retrying settings view")
+            _fresh = json.load(open(SESSIONS_DIR / f"session-{_snum}" / "cookies.json"))
+            try:
+                await context.clear_cookies()
+            except Exception:
+                pass
+            await context.add_cookies(_fresh)
+            for _nav in range(2):
+                try:
+                    await page.goto(settings_url, timeout=180000,
+                                    wait_until="domcontentloaded")
+                except Exception as _e:
+                    print(f"  relogin nav interrupted: {str(_e)[:80]}")
+                await wait(4000)
+                if "view=more" in page.url and await check_session_valid(page):
+                    break
+            if not await check_session_valid(page):
+                raise Exception("Session still expired after re-login")
+        else:
+            if _res == "lost":
+                await mark_truly_red(_snum, f"session-{_snum}", _cfg, "invalid credentials")
+            raise Exception(f"Session expired (redirected to login, relogin={_res})")
     # prove the settings view rendered (General sub-nav, unique to panel)
     try:
         await page.get_by_role("button", name="General").first.wait_for(
