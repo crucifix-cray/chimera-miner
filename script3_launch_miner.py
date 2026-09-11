@@ -888,6 +888,9 @@ async def main():
             await asyncio.sleep(0.3)
             await chat_page.keyboard.press("Enter")
             print("✅ Prompt sent!")
+            # Let the dev server digest the prompt before we jump to preview.
+            print("   ⏳ 30s post-prompt settle...")
+            await asyncio.sleep(30)
             
             # 9. SAME TAB to preview (single-tab flow: chat -> preview in
             # one tab, halves RAM and matches the manual game)
