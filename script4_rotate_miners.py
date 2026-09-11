@@ -31,6 +31,7 @@ DEEP_MULT = 2
 def base_env():
     e = dict(os.environ, LD_PRELOAD="")
     e["CHIMERA_NO_MEGA"] = "1"
+    e["PROXY_PORT"] = "9"  # force direct; WARP :40000 is dead (Host unreachable)
     e.setdefault("DISPLAY", ":0")
     e.setdefault("CHIMERA_SESSIONS_DIR",
                  "/home/alae/Documents/repos/automation-toolkit/scripts/sessions")
