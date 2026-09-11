@@ -132,12 +132,12 @@ def main():
     progress_file = "/tmp/script4_progress.json"
     try:
         _prog = _json.load(open(progress_file))
-        start_idx = int(_prog.get("next_idx", 0)) % len(pids)
         round_n = int(_prog.get("round", 1))
-        print(f"📌 resuming: round {round_n}, starting at #{start_idx+1} "
-              f"({pids[start_idx][:8]})", flush=True)
+        print(f"📌 resuming: round {round_n}, strict order #1→#{len(pids)}",
+              flush=True)
     except Exception:
-        start_idx, round_n = 0, 1
+        round_n = 1
+    start_idx = 0
     results = {}
     # consecutive-fail counter: 2+ fails -> next visit goes --deep (patient).
     # Persisted so restarts don't reset the memory.

