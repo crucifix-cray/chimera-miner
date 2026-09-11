@@ -130,7 +130,12 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
             print(f"   ⚠️  Setup warning: {e}")
         
         await asyncio.sleep(2)
-        
+
+        # SKIP if already mining: never kill a live worker to "re-inject".
+        if await verify_worker(preview_frame):
+            print("   ⏭️  Worker already running — skipping cmd entirely")
+            return True
+
         # Probe: wait until window.doc(cmd) actually executes (sandbox warmed up).
         # "sandbox proxy failed" / "Internal server error" right after load is
         # transient - the WebContainer proxy isn't ready yet. Poll until OK.
