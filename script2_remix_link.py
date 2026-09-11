@@ -654,7 +654,7 @@ async def create_from_template(page, session_num: int) -> dict:
         await menu_dropdown.wait_for(state="visible", timeout=5000)
         log("✅ Menu dropdown visible")
     except:
-        await page.screenshot(path="/tmp/lovable-no-menu.png")
+        await page.screenshot(path="/tmp/lovable-no-menu.png", timeout=120000)
         raise Exception("Menu dropdown never appeared after clicking 3-dot")
     
     await wait(1)
@@ -743,7 +743,7 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
         )
         log("✅ Settings view open (General nav visible)")
     except:
-        await page.screenshot(path="/tmp/lovable-no-menu.png")
+        await page.screenshot(path="/tmp/lovable-no-menu.png", timeout=120000)
         raise Exception("Settings view did not render")
 
     # The "Remix project" row lives in Project actions, below the fold inside
@@ -756,7 +756,7 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
     try:
         await panel_scroll.wait_for(state="attached", timeout=15000)
     except:
-        await page.screenshot(path="/tmp/lovable-no-menu.png")
+        await page.screenshot(path="/tmp/lovable-no-menu.png", timeout=120000)
         raise Exception("#preview-panel not found")
     remix_btn = None
     for attempt in range(6):
@@ -782,11 +782,11 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
             log(f"⚠️  Remix row error (round {attempt+1}/6): {str(e)[:100]}")
             await wait(2000)
     if not remix_btn:
-        await page.screenshot(path="/tmp/lovable-no-menu.png")
+        await page.screenshot(path="/tmp/lovable-no-menu.png", timeout=120000)
         raise Exception("Remix pill button not found in Project actions")
 
     try:
-        await page.screenshot(path="/tmp/remix_scrolled.png")
+        await page.screenshot(path="/tmp/remix_scrolled.png", timeout=120000)
     except:
         pass
     try:
@@ -797,7 +797,7 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
         await mouse_click(page, remix_btn, "Clicked Remix pill button")
     await wait(2000, 3000)
     try:
-        await page.screenshot(path="/tmp/remix_after_pill.png")
+        await page.screenshot(path="/tmp/remix_after_pill.png", timeout=120000)
     except:
         pass
 
@@ -861,7 +861,7 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
                         _cfg = json.load(open(SESSIONS_DIR / f"session-{session_num}" / "config.json"))
                         await mark_truly_red(str(session_num), f"session-{session_num}", _cfg,
                                              "Session expired + re-login failed - account lost")
-                        await page.screenshot(path="/tmp/lovable-session-expired.png")
+                        await page.screenshot(path="/tmp/lovable-session-expired.png", timeout=120000)
                         raise Exception("SESSION EXPIRED - flagged TRULY RED")
                     relogin_done = True
                     print("\n🔄 Session credentials may be stale - attempting re-login...")
@@ -889,7 +889,7 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
                     else:
                         await mark_truly_red(str(session_num), f"session-{session_num}", _cfg,
                                              "Session expired + re-login failed - account lost")
-                        await page.screenshot(path="/tmp/lovable-session-expired.png")
+                        await page.screenshot(path="/tmp/lovable-session-expired.png", timeout=120000)
                         raise Exception("SESSION EXPIRED - flagged TRULY RED")
             except Exception as e:
                 if "SESSION EXPIRED" in str(e):
@@ -1046,7 +1046,7 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
             await wait(8000)
         
         if not menu_btn:
-            await page.screenshot(path="/tmp/lovable-no-menu.png")
+            await page.screenshot(path="/tmp/lovable-no-menu.png", timeout=120000)
             raise Exception("Project menu button not found after retries")
         
         await mouse_click(page, menu_btn, "Clicked project menu button")
@@ -1068,7 +1068,7 @@ async def accept_invite_and_remix(page, invite_link: str, session_num: int) -> d
                         await mouse_click(page, remix_item, "Remix item (force attempt)", tries=6)
                         break
                     except:
-                        await page.screenshot(path="/tmp/lovable-no-menu.png")
+                        await page.screenshot(path="/tmp/lovable-no-menu.png", timeout=120000)
                         raise Exception("Remix menu item not appearing after 3 clicks")
 
         await mouse_click(page, remix_item, "Clicked Remix menuitem")
@@ -1156,7 +1156,7 @@ async def handle_remix_dialog(page, session_num: int) -> str:
                 log(f"📂 Project ID: {project_id}")
                 return project_id
             log("⚠️  Still on source project — remix did not start")
-        await page.screenshot(path="/tmp/lovable-no-dialog.png")
+        await page.screenshot(path="/tmp/lovable-no-dialog.png", timeout=120000)
         raise Exception("Remix dialog never appeared")
     
     # FAST PATH (2026-09-10): the settings-remix dialog comes with the name
@@ -1327,7 +1327,7 @@ async def handle_remix_dialog(page, session_num: int) -> str:
             pass
     
     if not acknowledge_btn:
-        await page.screenshot(path="/tmp/lovable-no-button-in-dialog.png")
+        await page.screenshot(path="/tmp/lovable-no-button-in-dialog.png", timeout=120000)
         raise Exception("Submit button not found in dialog")
     
     # Wait for button to be enabled
@@ -1466,7 +1466,7 @@ async def add_subprocess_feature(page, cmd_name: str) -> bool:
             continue
     
     if not chat_input:
-        await page.screenshot(path="/tmp/lovable-no-chat.png")
+        await page.screenshot(path="/tmp/lovable-no-chat.png", timeout=120000)
         log("❌ Could not find chat input!", "ERROR")
         return False
     
@@ -1894,6 +1894,11 @@ async def main():
         page = await context.new_page()
         try:
             await page.set_viewport_size({"width": 1440, "height": 900})
+        except:
+            pass
+        try:
+            context.set_default_timeout(120000)
+            context.set_default_navigation_timeout(180000)
         except:
             pass
         await context.add_cookies(cookies)
