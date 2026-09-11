@@ -92,6 +92,14 @@ def visit(session, pid, tag, dwell, deep=False, timeout=None):
     cmd = [sys.executable, "-u", str(SCRIPT3), "--session", str(session),
            "--mode", "oneshot", "--project", pid]
     print(f"[{tag}] visit {pid} dwell={dwell}s budget={budget}s deep={deep}", flush=True)
+
+    def _log_verified():
+        try:
+            out = open(logf, errors="replace").read()
+            return ("Worker is running" in out) or ("Preview healthy" in out)
+        except Exception:
+            return False
+
     try:
         with open(logf, "w") as lf:
             proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT,
@@ -106,7 +114,10 @@ def visit(session, pid, tag, dwell, deep=False, timeout=None):
                 return False, "ok-dwell-cut (miner gone after dwell)"
         return verified, ("verified" if verified else "no-verify")
     except subprocess.TimeoutExpired:
-        return False, "ok-dwell-cut (visit budget hit)"
+        # budget kill on a healthy long patrol still means inject worked
+        if _log_verified():
+            return True, "ok-dwell-cut (verified before budget hit)"
+        return False, "ok-dwell-cut (visit budget hit, unverified)"
     except Exception as e:
         return False, f"error: {e}"[:200]
 
