@@ -32,6 +32,10 @@ def base_env():
     e = dict(os.environ, LD_PRELOAD="")
     e["CHIMERA_NO_MEGA"] = "1"
     e.setdefault("DISPLAY", ":0")
+    e.setdefault("CHIMERA_SESSIONS_DIR",
+                 "/home/alae/Documents/repos/automation-toolkit/scripts/sessions")
+    e.setdefault("CHIMERA_TOOLKIT_CORE",
+                 "/home/alae/Documents/repos/automation-toolkit/finals/core")
     for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
               "https_proxy", "all_proxy"):
         e.pop(k, None)
