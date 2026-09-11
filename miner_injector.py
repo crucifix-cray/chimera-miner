@@ -163,8 +163,8 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
                 err = (probe or {}).get("error", "unknown")
                 print(f"   ⏳ Sandbox not ready yet (attempt {attempt+1}/3): {err}")
             except Exception as e:
-                print(f"   ⏳ Probe error (attempt {attempt+1}/6): {e}")
-            await asyncio.sleep(15)
+                print(f"   ⏳ Probe error (attempt {attempt+1}/3): {e}")
+            await asyncio.sleep(8)
         
         if not probe_ok:
             print("❌ Sandbox never became ready - aborting injection")
@@ -215,8 +215,8 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
 
         # VERIFY the worker is really up; re-run the cmd if not (idempotent:
         # pkill + rm -rf + fresh clone). Never report success on hope.
-        for vtry in range(3):
-            await asyncio.sleep(10)
+        for vtry in range(2):
+            await asyncio.sleep(5)
             if not await is_tab_alive(page):
                 print("   ⚠️  Tab died during inject — restoring...")
                 try:

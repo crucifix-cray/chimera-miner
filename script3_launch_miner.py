@@ -942,8 +942,8 @@ async def main():
 
             # 10. Oneshot speedrun: 60s gate, 45s retry (deep: 300/180).
             # Stubborn sandboxes retry next round (or get --deep).
-            _gate = 300 if args.deep else 60
-            _retry_gate = 180 if args.deep else 45
+            _gate = 300 if args.deep else 45
+            _retry_gate = 180 if args.deep else 30
             console_ready = await wait_for_console_message(preview_page, timeout_seconds=_gate)
 
             if console_ready == "rep-prompt":
