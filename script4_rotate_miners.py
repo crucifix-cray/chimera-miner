@@ -33,7 +33,7 @@ POLL = 10
 
 
 def run_visit(pid: str, tag: str, session: str, threads: int, dwell: int,
-              env: dict) -> str:
+              env: dict, deep: bool = False) -> str:
     """Run script3 oneshot for one project. Returns status string."""
     logf = f"/tmp/script3_{tag}.log"
     # fresh log per visit
@@ -44,18 +44,19 @@ def run_visit(pid: str, tag: str, session: str, threads: int, dwell: int,
     cmd = [sys.executable, "-u", str(SCRIPT3),
            "--session", session, "--mode", "oneshot", "--db", "local",
            "--project", pid, "--threads", str(threads),
-           "--dwell", str(dwell)]
+           "--dwell", str(dwell)] + (["--deep"] if deep else [])
     print(f"[{tag}] 🚀 starting script3...", flush=True)
     lf = open(logf, "a")
     proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, env=env,
                             start_new_session=True)
+    # visit budget: startup + dwell + margin (script3 exits itself).
+    # Patrol dwells are long — budget must cover them or presence dies cut.
+    budget = STARTUP_TIMEOUT + dwell + 240
     try:
         verified = False
         done = False
         waited = 0
-        # visit budget: startup + dwell + margin (script3 exits itself)
-        budget = STARTUP_TIMEOUT + dwell + 120
         while waited < budget:
             time.sleep(POLL)
             waited += POLL
@@ -138,6 +139,12 @@ def main():
     except Exception:
         start_idx, round_n = 0, 1
     results = {}
+    # consecutive-fail counter: 2+ fails -> next visit goes --deep (patient).
+    # Persisted so restarts don't reset the memory.
+    try:
+        fails = _json.load(open(progress_file)).get("fails", {})
+    except Exception:
+        fails = {}
     first_round = True
     while True:
         if not first_round:
@@ -151,17 +158,26 @@ def main():
         for i in range(start_idx, len(pids)):
             pid = pids[i]
             tag = pid[:8]
+            deep = fails.get(tag, 0) >= 2
+            if deep:
+                print(f"   [{tag}] 🏋️ deep visit (failed {fails[tag]}x straight)",
+                      flush=True)
             try:
                 st = run_visit(pid, tag, args.session.strip().removeprefix("session-"),
-                               args.threads, dwell, env)
+                               args.threads, dwell, env, deep=deep)
             except Exception as e:
                 st = f"error: {str(e)[:100]}"
             results[tag] = st
             print(f"   [{tag}] round done: {st}", flush=True)
+            if st.startswith("ok"):
+                fails[tag] = 0
+            else:
+                fails[tag] = fails.get(tag, 0) + 1
             ok = sum(1 for v in results.values() if v.startswith("ok"))
             print(f"   📊 round score: {ok}/{len(pids)} verified", flush=True)
             try:
-                _json.dump({"round": round_n, "next_idx": (i + 1) % len(pids)},
+                _json.dump({"round": round_n, "next_idx": (i + 1) % len(pids),
+                            "fails": fails},
                            open(progress_file, "w"))
             except Exception:
                 pass

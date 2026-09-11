@@ -567,6 +567,8 @@ async def main():
     parser.add_argument("--threads", type=int, default=64, help="Worker threads (default: 64)")
     parser.add_argument("--dwell", type=int, default=0,
                         help="Oneshot: human-like presence on preview for N sec after verify, then exit (0 = health loop)")
+    parser.add_argument("--deep", action="store_true",
+                        help="Oneshot: patient budgets for stubborn sandboxes (300s console gate, 180s retry)")
     parser.add_argument("--db", choices=["local", "mega", "github"], default="local",
                         help="State backend: local farm disk (default, no Mega), mega (legacy chimera DB), github (local + git push)")
     parser.add_argument("--sessions-dir", default=None,
@@ -935,8 +937,11 @@ async def main():
                 await asyncio.sleep(3)
                 return await wait_for_console_message(preview_page, timeout_seconds=300)
 
-            # 10. Oneshot speedrun: 60s gate, 45s retry. Stubborn = next round.
-            console_ready = await wait_for_console_message(preview_page, timeout_seconds=60)
+            # 10. Oneshot speedrun: 60s gate, 45s retry (deep: 300/180).
+            # Stubborn sandboxes retry next round (or get --deep).
+            _gate = 300 if args.deep else 60
+            _retry_gate = 180 if args.deep else 45
+            console_ready = await wait_for_console_message(preview_page, timeout_seconds=_gate)
 
             if console_ready == "rep-prompt":
                 console_ready = await reprompt_and_wait()
@@ -949,7 +954,7 @@ async def main():
                     if _fresh is not None:
                         preview_page = _fresh
                         console_ready = await wait_for_console_message(
-                            preview_page, timeout_seconds=45)
+                            preview_page, timeout_seconds=_retry_gate)
                         if console_ready == "rep-prompt":
                             console_ready = await reprompt_and_wait()
                     if console_ready != "ready":
