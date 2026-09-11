@@ -218,13 +218,12 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
         # Wait for dashboard (up to 90s), checking for invalid-credentials errors.
         # 2FA: our own TOTP (all 37 sessions enrolled) triggers "Enter authenticator
         # code" after password — fill it from config totp_secret and Verify.
+        # NOTE: TOTP check FIRST with short timeouts — check_lost() costs ~30s/loop
+        # (11 selectors) and starves this branch.
         print("   ⏳ Waiting for dashboard...")
         totp_done = False
         for _ in range(18):
             await asyncio.sleep(5)
-            if await check_lost():
-                print("   💀 Account is LOST (invalid credentials)")
-                return "lost"
             if any(m in page.url for m in DASHBOARD_MARKERS):
                 print("   ✅ Logged in!")
                 await save_fresh_cookies()
@@ -235,6 +234,7 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
                 except Exception:
                     body = ""
                 if "authenticator code" in body.lower():
+                    print("   🔑 TOTP challenge detected", flush=True)
                     secret = config.get("totp_secret") or config.get("totp_secret_backup")
                     if not secret:
                         print("   ❌ TOTP challenged but no totp_secret in config")
@@ -277,6 +277,9 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
                     else:
                         print("   ❌ TOTP boxes not found")
                         return "failed"
+            if await check_lost():
+                print("   💀 Account is LOST (invalid credentials)")
+                return "lost"
 
         print("   ❌ Re-login did not reach dashboard")
         return "failed"
