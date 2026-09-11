@@ -496,6 +496,7 @@ async def main():
     parser.add_argument("--warp", action="store_true", help="Use WARP proxy (not implemented yet)")
     parser.add_argument("--project", help="Optional: specify project ID to use")
     parser.add_argument("--threads", type=int, default=64, help="Worker threads (default: 64)")
+    parser.add_argument("--kernel", action="store_true", help="Use OnKernel cloud browser (KERNEL_API_KEY env or default)")
     
     args = parser.parse_args()
     
@@ -591,19 +592,52 @@ async def main():
         save_db(db)
         return
     
-    # 6. Start browser
+    # 6. Start browser (local InvisiblePlaywright, or OnKernel cloud with --kernel)
     print("\n🌐 Starting browser...")
-    
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _launch_browser():
+        if args.kernel:
+            import subprocess as _sp
+            key = os.environ.get("KERNEL_API_KEY", "sk_3d06827a-22e8-0098-1c29-e143be10a6e5.-PRxt_muShhJ0XBkekLfLtms_exGitbNREcuc5ZPpqE")
+            out = _sp.check_output(["kernel", "browsers", "create", "--stealth",
+                "--timeout", "2400", "--start-url", "https://lovable.dev/dashboard", "-o", "json"],
+                env={**os.environ, "KERNEL_API_KEY": key}, text=True, timeout=120)
+            d = json.loads(out)
+            print(f"LIVE: {d.get('browser_live_view_url')} | SID: {d['session_id']}")
+            from playwright.async_api import async_playwright
+            pw = await async_playwright().start()
+            _b = await pw.chromium.connect_over_cdp(d["cdp_ws_url"], timeout=60000)
+            try:
+                yield _b
+            finally:
+                try:
+                    await _b.close()
+                except Exception:
+                    pass
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+                _sp.run(["kernel", "browsers", "delete", d["session_id"]],
+                        env={**os.environ, "KERNEL_API_KEY": key},
+                        timeout=15, capture_output=True)
+        else:
+            proxy = resolve_proxy()
+            # CHIMERA_HEADED=1 shows the browser (default, user watches); =0 for 1GB sandbox
+            headed = os.environ.get("CHIMERA_HEADED", "1") == "1"
+            async with InvisiblePlaywright(
+                headless=not headed,
+                proxy=proxy,
+                humanize=False,
+                locale='en-US',
+            ) as _b:
+                yield _b
+
     try:
-        proxy = resolve_proxy()
-        # CHIMERA_HEADED=1 shows the browser (default, user watches); =0 for 1GB sandbox
-        headed = os.environ.get("CHIMERA_HEADED", "1") == "1"
-        async with InvisiblePlaywright(
-            headless=not headed,
-            proxy=proxy,
-            humanize=False,
-            locale='en-US',
-        ) as browser:
+        async with _launch_browser() as browser:
             context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
             
             # Create chat page
