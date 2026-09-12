@@ -1448,8 +1448,20 @@ async def _wait_remix_redirect(page) -> str:
                     await wait(5000)  # Wait longer when processing
                     continue
                 
-                fresh_btn = page.locator('div[role="dialog"] button:has-text("Remix"), div[role="dialog"] button:has-text("Continue"), div[role="dialog"] button:has-text("Acknowledge")').first
+                # Try broader selector - any button in dialog
+                fresh_btn = page.locator('div[role="dialog"] button[type="submit"]').first
+                if not await fresh_btn.is_visible(timeout=500):
+                    # Fallback to any visible button
+                    fresh_btn = page.locator('div[role="dialog"] button:visible').first
+                
                 if await fresh_btn.is_visible(timeout=1500):
+                    btn_text = await fresh_btn.inner_text(timeout=1000) if fresh_btn else "unknown"
+                    is_disabled = await fresh_btn.get_attribute("disabled")
+                    if is_disabled:
+                        log(f"⏳ Button disabled ({btn_text}), waiting...")
+                        await wait(3000)
+                        continue
+                    
                     try:
                         await fresh_btn.scroll_into_view_if_needed(timeout=2000)
                     except Exception:
