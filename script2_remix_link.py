@@ -1859,6 +1859,8 @@ async def main():
     parser.add_argument("--invite", type=str, help="Invite link for accept mode")
     parser.add_argument("--headless", type=str, default=None, choices=['old', 'new'],
                         help="Run in headless mode: --headless old (old mode), --headless new (new mode)")
+    parser.add_argument("--use-firefox", action="store_true", 
+                        help="Use regular Playwright Firefox instead of Camoufox (more stable on Railway)")
     parser.add_argument("--first-heavy", action=argparse.BooleanOptionalAction, default=True,
                         help="Remix mode: project #1 runs WITH feature (high-credit), "
                              "projects #2..N remix from #1 with SKIP_FEATURE (default: on)")
@@ -1958,17 +1960,33 @@ async def main():
         print("🎭 Using HEADED mode")
         headless_value = False
     
-    async with AsyncCamoufox(
-        headless=headless_value,
-        proxy=proxy_settings,
-        humanize=False,  # Disable humanize to reduce complexity/crashes
-        args=camoufox_args
-    ) as browser:
+    # Choose browser: regular Firefox or Camoufox
+    if args.use_firefox:
+        print("🦊 Using regular Playwright Firefox (stable mode)")
+        from playwright.async_api import async_playwright
+        pw = await async_playwright().start()
+        browser = await pw.firefox.launch(
+            headless=headless_value,
+            proxy=proxy_settings,
+            args=camoufox_args
+        )
+        context = await browser.new_context(viewport={"width": 1440, "height": 900})
+        page = await context.new_page()
+    else:
+        print("🎭 Using Camoufox (stealth mode)")
+        browser = await AsyncCamoufox(
+            headless=headless_value,
+            proxy=proxy_settings,
+            humanize=False,
+            args=camoufox_args
+        ).__aenter__()
         if browser.contexts:
             context = browser.contexts[0]
         else:
             context = await browser.new_context(viewport={"width": 1440, "height": 900})
         page = await context.new_page()
+    
+    try:
         try:
             await page.set_viewport_size({"width": 1440, "height": 900})
         except:
@@ -2182,11 +2200,21 @@ async def main():
                     print("\n🔄 Remix menu/dropdown not found or button inactive - script will be killed and re-run")
                     return "retry"
     
-    print("\n" + "=" * 60)
-    print("🎉 Script 2 complete!")
-    db.print_stats()
-    print("=" * 60)
-    return "done"
+        print("\n" + "=" * 60)
+        print("🎉 Script 2 complete!")
+        db.print_stats()
+        print("=" * 60)
+        return "done"
+    finally:
+        # Cleanup browser
+        try:
+            if args.use_firefox:
+                await browser.close()
+                await pw.stop()
+            else:
+                await browser.__aexit__(None, None, None)
+        except:
+            pass
 
 
 if __name__ == "__main__":
