@@ -291,46 +291,55 @@ async def handle_google_oauth(page, session_num: int):
     password = config["password"]
     totp_secret = config.get("totp_secret")
     
-    # Click "Continue with Google" button
+    # Click "Continue with Google" button - handles popup
     google_btn = page.locator('button:has-text("Continue with Google")').first
-    await google_btn.click()
-    log("✅ Clicked 'Continue with Google'")
+    
+    # Listen for popup
+    async with page.expect_popup() as popup_info:
+        await google_btn.click()
+        log("✅ Clicked 'Continue with Google'")
+    
+    popup = await popup_info.value
+    log(f"✅ Popup opened: {popup.url}")
+    
+    popup = await popup_info.value
+    log(f"✅ Popup opened: {popup.url}")
     
     await wait(3000, 5000)
     
-    # Wait for Google login page
+    # Wait for Google login page in popup
     try:
-        await page.wait_for_url("**/accounts.google.com/**", timeout=15000)
-        log("✅ Redirected to Google login")
+        await popup.wait_for_url("**/accounts.google.com/**", timeout=15000)
+        log("✅ Popup redirected to Google login")
     except:
-        log("⚠️  No Google redirect detected, checking current page...")
+        log(f"⚠️  No Google redirect, popup URL: {popup.url}")
     
-    # Enter email
+    # Enter email in popup
     try:
-        email_input = page.locator('input[type="email"]').first
+        email_input = popup.locator('input[type="email"]').first
         await email_input.wait_for(state="visible", timeout=10000)
         await email_input.fill(email)
         await wait(1000)
         log(f"✅ Entered email: {email}")
         
         # Click Next
-        next_btn = page.locator('button:has-text("Next"), #identifierNext').first
+        next_btn = popup.locator('button:has-text("Next"), #identifierNext').first
         await next_btn.click()
         await wait(3000, 5000)
         log("✅ Clicked Next (email)")
     except Exception as e:
         log(f"⚠️  Email step failed or skipped: {e}")
     
-    # Enter password
+    # Enter password in popup
     try:
-        password_input = page.locator('input[type="password"]').first
+        password_input = popup.locator('input[type="password"]').first
         await password_input.wait_for(state="visible", timeout=10000)
         await password_input.fill(password)
         await wait(1000)
         log("✅ Entered password")
         
         # Click Next
-        next_btn = page.locator('button:has-text("Next"), #passwordNext').first
+        next_btn = popup.locator('button:has-text("Next"), #passwordNext').first
         await next_btn.click()
         await wait(3000, 5000)
         log("✅ Clicked Next (password)")
@@ -338,10 +347,10 @@ async def handle_google_oauth(page, session_num: int):
         log(f"⚠️  Password step failed: {e}", "ERROR")
         raise Exception(f"Google OAuth password step failed: {e}")
     
-    # Handle 2FA if needed
+    # Handle 2FA if needed in popup
     if totp_secret:
         try:
-            totp_input = page.locator('input[type="tel"], input[aria-label*="code"]').first
+            totp_input = popup.locator('input[type="tel"], input[aria-label*="code"]').first
             if await totp_input.is_visible(timeout=5000):
                 import pyotp
                 totp = pyotp.TOTP(totp_secret)
@@ -350,21 +359,35 @@ async def handle_google_oauth(page, session_num: int):
                 await wait(1000)
                 log(f"✅ Entered 2FA code: {code}")
                 
-                next_btn = page.locator('button:has-text("Next")').first
+                next_btn = popup.locator('button:has-text("Next")').first
                 await next_btn.click()
                 await wait(3000, 5000)
                 log("✅ Clicked Next (2FA)")
         except:
             log("⚠️  No 2FA prompt detected")
     
-    # Wait for redirect back to Lovable
+    # Wait for popup to close (OAuth complete)
     try:
-        await page.wait_for_url("**/lovable.dev/**", timeout=30000)
-        log("✅ Redirected back to Lovable after OAuth")
+        await popup.wait_for_event("close", timeout=30000)
+        log("✅ OAuth popup closed")
     except:
-        log("⚠️  No Lovable redirect detected")
+        log("⚠️  Popup didn't close automatically")
+        try:
+            await popup.close()
+        except:
+            pass
     
     await wait(3000)
+    
+    # Check main page - auth dialog should be gone
+    try:
+        auth_dialog_gone = not await page.locator('div[role="dialog"]:has-text("Create free account")').is_visible(timeout=3000)
+        if auth_dialog_gone:
+            log("✅ Auth dialog dismissed - login successful!")
+        else:
+            log("⚠️  Auth dialog still visible after OAuth", "WARNING")
+    except:
+        log("✅ Auth dialog check completed")
     
     # Save fresh cookies
     try:
