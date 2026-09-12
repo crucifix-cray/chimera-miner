@@ -316,14 +316,14 @@ async def handle_google_oauth(page, session_num: int):
     
     # Enter email in popup
     try:
-        email_input = popup.locator('input[type="email"]').first
+        email_input = popup.locator('input[type="email"]:visible, input[autocomplete="username"]:visible, input[aria-label*="mail"]:visible').first
         await email_input.wait_for(state="visible", timeout=10000)
         await email_input.fill(email)
         await wait(1000)
         log(f"✅ Entered email: {email}")
         
         # Click Next
-        next_btn = popup.locator('button:has-text("Next"), #identifierNext').first
+        next_btn = popup.locator('button:has-text("Next"), #identifierNext, button[type="button"]:visible').first
         await next_btn.click()
         await wait(3000, 5000)
         log("✅ Clicked Next (email)")
@@ -332,14 +332,14 @@ async def handle_google_oauth(page, session_num: int):
     
     # Enter password in popup
     try:
-        password_input = popup.locator('input[type="password"]').first
+        password_input = popup.locator('input[type="password"]:visible, input[autocomplete="current-password"]:visible').first
         await password_input.wait_for(state="visible", timeout=10000)
         await password_input.fill(password)
         await wait(1000)
         log("✅ Entered password")
         
         # Click Next
-        next_btn = popup.locator('button:has-text("Next"), #passwordNext').first
+        next_btn = popup.locator('button:has-text("Next"), #passwordNext, button[type="button"]:visible').first
         await next_btn.click()
         await wait(3000, 5000)
         log("✅ Clicked Next (password)")
