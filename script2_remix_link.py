@@ -1857,7 +1857,7 @@ async def main():
                         help="Creation mode: template (default), remix, or accept")
     parser.add_argument("--source-url", type=str, help="Source project URL/ID for remix mode")
     parser.add_argument("--invite", type=str, help="Invite link for accept mode")
-    parser.add_argument("--headless", type=str, default=None, choices=[None, 'old', 'new'],
+    parser.add_argument("--headless", type=str, default=None, choices=['old', 'new'],
                         help="Run in headless mode: --headless old (old mode), --headless new (new mode)")
     parser.add_argument("--first-heavy", action=argparse.BooleanOptionalAction, default=True,
                         help="Remix mode: project #1 runs WITH feature (high-credit), "
