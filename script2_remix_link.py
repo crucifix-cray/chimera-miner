@@ -2014,7 +2014,8 @@ async def main():
                 # ALWAYS skip feature in remix mode - just clone
                 skip_feature = True
                 log("⏭️  Remix mode — skipping all features, straight to invite")
-                elif mode in ("template", "remix"):
+                
+                if not skip_feature and mode in ("template", "remix"):
                     try:
                         feature_added = await add_heavy_particles_feature(page, cmd_name)
                     except Exception as e:
