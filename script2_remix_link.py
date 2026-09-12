@@ -1423,7 +1423,7 @@ async def _wait_remix_redirect(page) -> str:
     old_project_id = re.search(r'/projects/([a-f0-9-]+)', old_url).group(1) if '/projects/' in old_url else None
     
     start_time = asyncio.get_event_loop().time()
-    timeout_seconds = 300  # 5 minutes (fallback to accepted project in accept mode; template/remix retry)
+    timeout_seconds = 600  # 10 minutes (remixing can take 5+ minutes when busy)
     
     project_id = None
     last_click = 0.0
@@ -1440,6 +1440,13 @@ async def _wait_remix_redirect(page) -> str:
         if now - last_click >= 10:
             last_click = now
             try:
+                # Check if button shows "Remixing" (processing state) - stop clicking if so
+                processing_btn = page.locator('div[role="dialog"] button:has-text("Remixing")').first
+                if await processing_btn.is_visible(timeout=1000):
+                    log("⏳ Remix in progress (Remixing button visible), waiting...")
+                    await wait(5000)  # Wait longer when processing
+                    continue
+                
                 fresh_btn = page.locator('div[role="dialog"] button:has-text("Remix"), div[role="dialog"] button:has-text("Continue"), div[role="dialog"] button:has-text("Acknowledge")').first
                 if await fresh_btn.is_visible(timeout=1500):
                     try:
