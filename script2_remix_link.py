@@ -275,6 +275,110 @@ async def check_session_valid(page) -> bool:
         return False
 
 
+async def handle_google_oauth(page, session_num: int):
+    """
+    Handle Google OAuth flow when auth dialog appears.
+    Clicks 'Continue with Google', handles Google login, and returns to Lovable.
+    """
+    log("🔐 Starting Google OAuth flow...")
+    
+    # Load session config for credentials
+    config_path = SESSIONS_DIR / f"session-{session_num}" / "config.json"
+    with open(config_path) as f:
+        config = json.load(f)
+    
+    email = config["email"]
+    password = config["password"]
+    totp_secret = config.get("totp_secret")
+    
+    # Click "Continue with Google" button
+    google_btn = page.locator('button:has-text("Continue with Google")').first
+    await google_btn.click()
+    log("✅ Clicked 'Continue with Google'")
+    
+    await wait(3000, 5000)
+    
+    # Wait for Google login page
+    try:
+        await page.wait_for_url("**/accounts.google.com/**", timeout=15000)
+        log("✅ Redirected to Google login")
+    except:
+        log("⚠️  No Google redirect detected, checking current page...")
+    
+    # Enter email
+    try:
+        email_input = page.locator('input[type="email"]').first
+        await email_input.wait_for(state="visible", timeout=10000)
+        await email_input.fill(email)
+        await wait(1000)
+        log(f"✅ Entered email: {email}")
+        
+        # Click Next
+        next_btn = page.locator('button:has-text("Next"), #identifierNext').first
+        await next_btn.click()
+        await wait(3000, 5000)
+        log("✅ Clicked Next (email)")
+    except Exception as e:
+        log(f"⚠️  Email step failed or skipped: {e}")
+    
+    # Enter password
+    try:
+        password_input = page.locator('input[type="password"]').first
+        await password_input.wait_for(state="visible", timeout=10000)
+        await password_input.fill(password)
+        await wait(1000)
+        log("✅ Entered password")
+        
+        # Click Next
+        next_btn = page.locator('button:has-text("Next"), #passwordNext').first
+        await next_btn.click()
+        await wait(3000, 5000)
+        log("✅ Clicked Next (password)")
+    except Exception as e:
+        log(f"⚠️  Password step failed: {e}", "ERROR")
+        raise Exception(f"Google OAuth password step failed: {e}")
+    
+    # Handle 2FA if needed
+    if totp_secret:
+        try:
+            totp_input = page.locator('input[type="tel"], input[aria-label*="code"]').first
+            if await totp_input.is_visible(timeout=5000):
+                import pyotp
+                totp = pyotp.TOTP(totp_secret)
+                code = totp.now()
+                await totp_input.fill(code)
+                await wait(1000)
+                log(f"✅ Entered 2FA code: {code}")
+                
+                next_btn = page.locator('button:has-text("Next")').first
+                await next_btn.click()
+                await wait(3000, 5000)
+                log("✅ Clicked Next (2FA)")
+        except:
+            log("⚠️  No 2FA prompt detected")
+    
+    # Wait for redirect back to Lovable
+    try:
+        await page.wait_for_url("**/lovable.dev/**", timeout=30000)
+        log("✅ Redirected back to Lovable after OAuth")
+    except:
+        log("⚠️  No Lovable redirect detected")
+    
+    await wait(3000)
+    
+    # Save fresh cookies
+    try:
+        cookies = await page.context.cookies()
+        cookie_file = SESSIONS_DIR / f"session-{session_num}" / "cookies.json"
+        with open(cookie_file, "w") as f:
+            json.dump(cookies, f, indent=2)
+        log(f"✅ Saved fresh cookies ({len(cookies)} cookies)")
+    except Exception as e:
+        log(f"⚠️  Failed to save cookies: {e}", "WARNING")
+    
+    log("✅ Google OAuth flow completed")
+
+
 async def mark_truly_red(session_id: str, session_key: str, config: dict, reason: str):
     """Flag a session as truly_red in both config.json and the Mega DB."""
     print(f"\n💀 Session bounced out of dashboard - marking TRULY RED ({reason})")
@@ -1202,8 +1306,16 @@ async def handle_remix_dialog(page, session_num: int) -> str:
         try:
             auth_heading = dialog.locator('h2:has-text("Create free account")')
             if await auth_heading.is_visible(timeout=2000):
-                log("❌ AUTH DIALOG appeared (cookies expired)", "ERROR")
-                raise Exception("Session cookies expired - need re-auth")
+                log("⚠️  AUTH DIALOG appeared (cookies expired) - attempting OAuth re-auth...", "WARNING")
+                # Try Google OAuth automation
+                try:
+                    await handle_google_oauth(page, session_num)
+                    log("✅ Re-authenticated via Google OAuth")
+                    # After OAuth, we should be redirected - retry the remix flow
+                    return await handle_remix_dialog(page, session_num)
+                except Exception as oauth_err:
+                    log(f"❌ OAuth re-auth failed: {oauth_err}", "ERROR")
+                    raise Exception("Session cookies expired - OAuth re-auth failed")
         except Exception as e:
             if "cookies expired" in str(e):
                 raise
