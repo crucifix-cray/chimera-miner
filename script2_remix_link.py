@@ -803,10 +803,14 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
                     break
             except:
                 pass
+            # Scroll the #preview-panel element itself (not the page)
             try:
-                await page.mouse.wheel(0, 900)
+                await panel_scroll.evaluate("el => el.scrollBy(0, 400)")
             except:
-                pass
+                try:
+                    await page.mouse.wheel(0, 900)
+                except:
+                    pass
             await wait(1500)
             log(f"⚠️  Remix pill not in view (round {attempt+1}/6)")
         except Exception as e:
