@@ -791,9 +791,10 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
         raise Exception("#preview-panel not found")
     
     # Do an initial aggressive scroll to get past Project details/Preview sections
+    # Scroll to bottom first, then search upwards if needed
     try:
-        await panel_scroll.evaluate("el => el.scrollBy(0, 1200)")
-        await wait(1000)
+        await panel_scroll.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+        await wait(1500)
     except:
         pass
     
