@@ -332,6 +332,16 @@ async def handle_google_oauth(page, session_num: int):
     
     # Enter password in popup
     try:
+        # Debug: save popup state
+        try:
+            await popup.screenshot(path="/tmp/oauth_popup.png", timeout=5000)
+            popup_html = await popup.content()
+            with open("/tmp/oauth_popup.html", "w") as f:
+                f.write(popup_html)
+            log(f"💾 Saved popup debug files ({len(popup_html)} chars)")
+        except Exception as e:
+            log(f"⚠️ Couldn't save popup debug: {e}")
+        
         password_input = popup.locator('input[type="password"]:visible, input[autocomplete="current-password"]:visible').first
         await password_input.wait_for(state="visible", timeout=10000)
         await password_input.fill(password)
@@ -345,6 +355,7 @@ async def handle_google_oauth(page, session_num: int):
         log("✅ Clicked Next (password)")
     except Exception as e:
         log(f"⚠️  Password step failed: {e}", "ERROR")
+        log(f"⚠️  Popup URL at failure: {popup.url}")
         raise Exception(f"Google OAuth password step failed: {e}")
     
     # Handle 2FA if needed in popup
