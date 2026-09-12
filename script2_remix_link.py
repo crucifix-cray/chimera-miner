@@ -789,6 +789,14 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
     except:
         await page.screenshot(path="/tmp/lovable-no-menu.png", timeout=120000)
         raise Exception("#preview-panel not found")
+    
+    # Do an initial aggressive scroll to get past Project details/Preview sections
+    try:
+        await panel_scroll.evaluate("el => el.scrollBy(0, 1200)")
+        await wait(1000)
+    except:
+        pass
+    
     remix_btn = None
     for attempt in range(6):
         try:
@@ -804,8 +812,9 @@ async def remix_existing(page, source_url: str, session_num: int) -> dict:
             except:
                 pass
             # Scroll the #preview-panel element itself (not the page)
+            # Use larger increments since Project actions is far down
             try:
-                await panel_scroll.evaluate("el => el.scrollBy(0, 400)")
+                await panel_scroll.evaluate("el => el.scrollBy(0, 600)")
             except:
                 try:
                     await page.mouse.wheel(0, 900)
