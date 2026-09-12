@@ -2011,14 +2011,9 @@ async def main():
                 cmd_name = random.choice(CMD_NAMES)
                 feature_added = False
                 test_ok = False
-                skip_feature = bool(os.environ.get("SKIP_FEATURE"))
-                if use_first_heavy:
-                    skip_feature = (i > 0)
-                    log("🔥 FIRST-HEAVY #1 — feature ON (high-credit)" if i == 0
-                        else "⏭️  FIRST-HEAVY clone — feature OFF, straight to invite")
-                if skip_feature:
-                    if not use_first_heavy:
-                        log("⏭️  SKIP_FEATURE=1 — skipping feature+test, straight to invite")
+                # ALWAYS skip feature in remix mode - just clone
+                skip_feature = True
+                log("⏭️  Remix mode — skipping all features, straight to invite")
                 elif mode in ("template", "remix"):
                     try:
                         feature_added = await add_heavy_particles_feature(page, cmd_name)
