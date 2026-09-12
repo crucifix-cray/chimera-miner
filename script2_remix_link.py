@@ -1393,8 +1393,31 @@ async def handle_remix_dialog(page, session_num: int) -> str:
     await scroll_into_view_center(page, acknowledge_btn)
     
     await wait(1)
-    await mouse_click(page, acknowledge_btn, "Click submit button")
-    log("✅ Clicked submit button")
+    
+    # Monitor network activity to detect if remix actually starts
+    remix_started = False
+    def check_remix_request(route):
+        nonlocal remix_started
+        if "remix" in route.request.url.lower() or "create" in route.request.url.lower():
+            remix_started = True
+            log(f"🌐 Detected remix API call: {route.request.url}")
+    
+    # Try JS click first (better for React event handlers)
+    try:
+        await page.route("**/*", check_remix_request)
+        await acknowledge_btn.evaluate("btn => btn.click()")
+        log("✅ Clicked submit button (JS)")
+        await wait(2000)
+        if remix_started:
+            log("✅ Remix API call detected!")
+    except Exception:
+        await mouse_click(page, acknowledge_btn, "Click submit button")
+        log("✅ Clicked submit button (mouse)")
+    finally:
+        try:
+            await page.unroute("**/*", check_remix_request)
+        except:
+            pass
     
     # Wait and check for error toast
     await wait(3000, 4000)
@@ -1466,14 +1489,21 @@ async def _wait_remix_redirect(page) -> str:
                         await fresh_btn.scroll_into_view_if_needed(timeout=2000)
                     except Exception:
                         pass
-                    box = await fresh_btn.bounding_box()
-                    if box:
-                        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-                        await wait(300)
-                        await page.mouse.down()
-                        await wait(150)
-                        await page.mouse.up()
-                        log("🔁 Re-clicked submit button (redirect not detected)")
+                    
+                    # Try JS click first (more reliable for triggering React handlers)
+                    try:
+                        await fresh_btn.evaluate("btn => btn.click()")
+                        log(f"🔁 Re-clicked submit button (JS click, {btn_text})")
+                    except Exception:
+                        # Fallback to mouse click
+                        box = await fresh_btn.bounding_box()
+                        if box:
+                            await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                            await wait(300)
+                            await page.mouse.down()
+                            await wait(150)
+                            await page.mouse.up()
+                            log(f"🔁 Re-clicked submit button (mouse, {btn_text})")
             except Exception:
                 pass
         await wait(2000)
