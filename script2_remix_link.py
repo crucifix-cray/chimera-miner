@@ -1932,7 +1932,16 @@ async def main():
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
         "--disable-features=IsolateOrigins,site-per-process",
-        "--disable-site-isolation-trials"
+        "--disable-site-isolation-trials",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-breakpad",
+        "--disable-crash-reporter",
+        "--single-process"
     ]
     
     # Handle headless modes: None (headed), 'old' (old headless), 'new' (new headless)
@@ -1952,7 +1961,7 @@ async def main():
     async with AsyncCamoufox(
         headless=headless_value,
         proxy=proxy_settings,
-        humanize=True,
+        humanize=False,  # Disable humanize to reduce complexity/crashes
         args=camoufox_args
     ) as browser:
         if browser.contexts:
