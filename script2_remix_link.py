@@ -1188,6 +1188,16 @@ async def handle_remix_dialog(page, session_num: int) -> str:
         dialog = page.locator('div[role="dialog"]')
         await dialog.first.wait_for(state="visible", timeout=45000)
         log("✅ Dialog appeared")
+        
+        # Debug: save dialog HTML
+        try:
+            dialog_html = await dialog.first.inner_html()
+            with open("/tmp/dialog_debug.html", "w") as f:
+                f.write(dialog_html)
+            log(f"💾 Saved dialog HTML ({len(dialog_html)} chars)")
+        except Exception as e:
+            log(f"⚠️ Couldn't save dialog HTML: {e}")
+        
         await wait(1000, 2000)
     except:
         # Maybe we got redirected directly — but ONLY accept a DIFFERENT
@@ -1355,8 +1365,20 @@ async def handle_remix_dialog(page, session_num: int) -> str:
     await wait(1000, 2000)
     
     dialog_fresh = page.locator('div[role="dialog"]').first
+    
+    # Debug: log all buttons in dialog
     dialog_buttons = dialog_fresh.locator('button')
     button_count = await dialog_buttons.count()
+    log(f"Found {button_count} buttons in dialog")
+    all_button_texts = []
+    for i in range(button_count):
+        try:
+            btn_text = await dialog_buttons.nth(i).inner_text(timeout=1000)
+            btn_visible = await dialog_buttons.nth(i).is_visible()
+            all_button_texts.append(f"{i}: '{btn_text}' (visible={btn_visible})")
+        except:
+            pass
+    log(f"Button texts: {' | '.join(all_button_texts)}")
     
     acknowledge_btn = None
     for i in range(button_count):
