@@ -261,6 +261,15 @@ async def check_session_valid(page) -> bool:
         current_url = page.url
         if "login" in current_url or "auth" in current_url:
             return False
+        
+        # Check for auth dialog appearing on page (Lovable shows inline auth)
+        try:
+            auth_dialog = page.locator('div[role="dialog"]:has-text("Create free account")')
+            if await auth_dialog.is_visible(timeout=2000):
+                return False
+        except:
+            pass
+        
         return True
     except:
         return False
@@ -1188,6 +1197,16 @@ async def handle_remix_dialog(page, session_num: int) -> str:
         dialog = page.locator('div[role="dialog"]')
         await dialog.first.wait_for(state="visible", timeout=45000)
         log("✅ Dialog appeared")
+        
+        # Check if it's actually an auth dialog (cookies expired)
+        try:
+            auth_heading = dialog.locator('h2:has-text("Create free account")')
+            if await auth_heading.is_visible(timeout=2000):
+                log("❌ AUTH DIALOG appeared (cookies expired)", "ERROR")
+                raise Exception("Session cookies expired - need re-auth")
+        except Exception as e:
+            if "cookies expired" in str(e):
+                raise
         
         # Debug: save dialog HTML
         try:
