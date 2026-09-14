@@ -1,0 +1,16 @@
+[phases.setup]
+nixPkgs = [
+    "xvfb-run",
+    "xorg.xorgserver",
+    "chromium"
+]
+
+[phases.install]
+cmds = [
+    "pip install -r requirements.txt",
+    "playwright install chromium",
+    "playwright install-deps chromium"
+]
+
+[start]
+cmd = "python3 run_miner.py"

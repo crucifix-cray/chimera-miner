@@ -1,0 +1,14 @@
+{
+  "email": "dakarihickmanhickman@gmail.com",
+  "password": "dakarihickmanhickman@gmail.com1",
+  "created_at": "2026-08-16T17:01:50.730319",
+  "dashboard_url": "https://lovable.dev/dashboard",
+  "verified": true,
+  "api_only": true,
+  "status": "active",
+  "last_revived_at": "2026-09-06T21:06:27.567194",
+  "session_id": 4,
+  "old_session": "session-31",
+  "totp_secret": "SQ4RE3WBKH3AT33FU6W7LMDDWUDHWL5U",
+  "2fa_live_id": "XACBVSQOIRFRRI6THICIARXGUMFRWKPU"
+}
