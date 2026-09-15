@@ -1,0 +1,7 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "railway-deploy/Dockerfile"
+
+[deploy]
+restartPolicyType = "never"
+startCommand = "/app/start.sh"
