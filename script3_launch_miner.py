@@ -122,21 +122,22 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
         with open(session_path / "cookies.json", "w") as f:
             json.dump(cookies, f, indent=2)
         print(f"   ✅ Cookies overwritten ({len(cookies)} cookies)")
-        try:
-            import subprocess
-            proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
-            env = {k: v for k, v in os.environ.items() if k not in proxy_vars}
-            remote = f"mega:lovable_sessions/session-{session_id}/cookies.json"
-            res = subprocess.run(
-                ["rclone", "copyto", str(session_path / "cookies.json"), remote],
-                capture_output=True, text=True, timeout=60, env=env,
-            )
-            if res.returncode == 0:
-                print(f"   ✅ Cookies uploaded to Mega ({remote})")
-            else:
-                print(f"   ⚠️  Mega cookies upload failed: {res.stderr[:200]}")
-        except Exception as e:
-            print(f"   ⚠️  Mega cookies upload error: {e}")
+        if not os.environ.get("CHIMERA_OFFLINE", ""):
+            try:
+                import subprocess
+                proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
+                env = {k: v for k, v in os.environ.items() if k not in proxy_vars}
+                remote = f"mega:lovable_sessions/session-{session_id}/cookies.json"
+                res = subprocess.run(
+                    ["rclone", "copyto", str(session_path / "cookies.json"), remote],
+                    capture_output=True, text=True, timeout=60, env=env,
+                )
+                if res.returncode == 0:
+                    print(f"   ✅ Cookies uploaded to Mega ({remote})")
+                else:
+                    print(f"   ⚠️  Mega cookies upload failed: {res.stderr[:200]}")
+            except Exception as e:
+                print(f"   ⚠️  Mega cookies upload error: {e}")
 
     try:
         print(f"   🌐 Re-login: opening {LOGIN_URL}")
@@ -625,7 +626,29 @@ async def main():
                     continue
             
             if not chat_input and not relogin_done:
-                print("🔑 No chat input - session may be stale, attempting re-login...")
+                # ponytail: page may just need more time on headless sandbox.
+                # Retry with waits before giving up and re-logging in.
+                for retry_wait in [8, 15]:
+                    print(f"   ⏳ Chat input not found, waiting {retry_wait}s and retrying...")
+                    await asyncio.sleep(retry_wait)
+                    try:
+                        await chat_page.reload(timeout=30000)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(5)
+                    for selector in chat_selectors:
+                        try:
+                            chat_input = await chat_page.wait_for_selector(selector, timeout=3000, state='visible')
+                            if chat_input and await chat_input.is_visible() and await chat_input.is_enabled():
+                                print(f"✅ Found chat input on retry")
+                                break
+                        except:
+                            continue
+                    if chat_input:
+                        break
+
+                if not chat_input:
+                    print("🔑 No chat input after retries - attempting re-login...")
                 try:
                     shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
                     await chat_page.screenshot(path=shot, full_page=True)
