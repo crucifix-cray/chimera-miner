@@ -265,9 +265,9 @@ async def open_browser(cdp_url):
         title = await cdp.evaluate("document.title")
         print(f"  Title: {title}", flush=True)
         is_logged = await cdp.evaluate("""
-            !document.body.innerText.includes('Sign in') &&
-            !document.body.innerText.includes('Log in') &&
-            (document.body.innerText.includes('Projects') || document.body.innerText.includes('New project'))
+            !location.href.includes('/login') &&
+            (document.body.innerText.includes('My Lovable') ||
+             document.body.innerText.includes('Dashboard'))
         """)
         print(f"  Logged in: {is_logged}", flush=True)
         if not is_logged:
