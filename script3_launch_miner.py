@@ -545,7 +545,31 @@ async def main():
         if os.environ.get("CAMOUFOX", ""):
             from camoufox.async_api import AsyncCamoufox
             print(f"🦊 Browser engine: Camoufox (headless={headless})")
-            browser_cm = AsyncCamoufox(headless=headless, proxy=proxy)
+            # ponytail: squeeze Camoufox into 1GB sandbox — block images/webrtc/webgl,
+            # disable cache, set Firefox memory limits, tiny viewport.
+            browser_cm = AsyncCamoufox(
+                headless=headless,
+                proxy=proxy,
+                block_images=True,
+                block_webrtc=True,
+                block_webgl=True,
+                enable_cache=False,
+                window=(800, 600),
+                args=[
+                    "--no-zygote",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                ],
+                firefox_user_prefs={
+                    "browser.cache.disk.enable": False,
+                    "browser.cache.memory.enable": False,
+                    "browser.cache.offline.enable": False,
+                    "dom.ipc.processCount": 1,
+                    "dom.ipc.processCount.perIsolate": 1,
+                    "media.memory_cache_max_size": 0,
+                    "image.mem.decode_bytes_at_a_time": 0,
+                },
+            )
         else:
             # minimal for weak 1GB sandbox: headless True + no humanize + small viewport
             browser_cm = InvisiblePlaywright(
@@ -555,7 +579,7 @@ async def main():
                 locale='en-US',
             )
         async with browser_cm as browser:
-            context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
+            context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 800, "height": 600})
             
             # Create chat page
             chat_page = await context.new_page()
