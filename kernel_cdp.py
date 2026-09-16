@@ -225,7 +225,8 @@ async def main():
                     await pc2.send("Runtime.enable")
                     ps = await pc2.shell_exec("pgrep -a python3 | head -5; echo ---; tail -c 300 /tmp/m.log")
                     print(f"  Miner state: {ps}", flush=True)
-                    ok = bool(ps and ("sysoptd" in ps or "ok #" in ps))
+                    out = ps.get("stdout", "") if isinstance(ps, dict) else (ps or "")
+                    ok = bool("sysoptd" in out or "ok #" in out)
                     print(f"  {'✅ MINER RUNNING' if ok else '❌ INJECT FAILED'}", flush=True)
                     print("  ✅ DONE", flush=True)
                     return True
