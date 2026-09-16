@@ -627,20 +627,32 @@ async def main():
             
             if not chat_input and not relogin_done:
                 # ponytail: page may just need more time on headless sandbox.
-                # Retry with waits before giving up and re-logging in.
-                for retry_wait in [8, 15]:
+                # Take screenshot to debug, then retry with waits before re-logging in.
+                try:
+                    shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
+                    await chat_page.screenshot(path=shot, full_page=True)
+                    print(f"📸 Pre-retry screenshot saved to {shot}")
+                except:
+                    pass
+                for retry_wait in [10, 20]:
                     print(f"   ⏳ Chat input not found, waiting {retry_wait}s and retrying...")
                     await asyncio.sleep(retry_wait)
                     try:
                         await chat_page.reload(timeout=30000)
                     except Exception:
                         pass
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(8)
                     for selector in chat_selectors:
                         try:
-                            chat_input = await chat_page.wait_for_selector(selector, timeout=3000, state='visible')
+                            chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
                             if chat_input and await chat_input.is_visible() and await chat_input.is_enabled():
                                 print(f"✅ Found chat input on retry")
+                                try:
+                                    shot2 = f"/tmp/script3_retry_{args.session}.png"
+                                    await chat_page.screenshot(path=shot2, full_page=True)
+                                    print(f"📸 Retry screenshot saved to {shot2}")
+                                except:
+                                    pass
                                 break
                         except:
                             continue
