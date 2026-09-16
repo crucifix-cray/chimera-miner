@@ -173,6 +173,19 @@ class MegaDB:
     
     def sync_from_mega(self) -> bool:
         """Download database.json from Mega."""
+        # ponytail: CHIMERA_OFFLINE=1 skips rclone entirely, loads local only.
+        if os.environ.get("CHIMERA_OFFLINE", ""):
+            print("📥 CHIMERA_OFFLINE — loading local DB only...")
+            if LOCAL_DB_PATH.exists():
+                with open(LOCAL_DB_PATH) as f:
+                    self.data = json.load(f)
+                self._ensure_schema()
+                self._update_stats()
+                self.loaded = True
+                print(f"✅ Loaded local DB: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
+                return True
+            self.loaded = True
+            return False
         print("📥 Syncing database from Mega...")
         try:
             result = subprocess.run(
@@ -196,10 +209,28 @@ class MegaDB:
                 print(f"⚠️  No database found on Mega, using empty database")
                 if result.stderr.strip():
                     print(f"   rclone stderr: {result.stderr.strip()[:500]}")
+                # ponytail: offline fallback — local seed beats empty DB.
+                if LOCAL_DB_PATH.exists():
+                    with open(LOCAL_DB_PATH) as f:
+                        self.data = json.load(f)
+                    self._ensure_schema()
+                    self._update_stats()
+                    print(f"✅ Loaded local DB: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
+                    self.loaded = True
+                    return True
                 self.loaded = True
                 return False
         except Exception as e:
             print(f"⚠️  Mega sync failed: {e}")
+            if LOCAL_DB_PATH.exists():
+                try:
+                    with open(LOCAL_DB_PATH) as f:
+                        self.data = json.load(f)
+                    self._ensure_schema()
+                    self._update_stats()
+                    print(f"✅ Loaded local DB: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
+                except Exception as e2:
+                    print(f"   local fallback failed: {e2}")
             self.loaded = True
             return False
     
@@ -213,6 +244,11 @@ class MegaDB:
             # Save locally
             with open(LOCAL_DB_PATH, "w") as f:
                 json.dump(self.data, f, indent=2)
+            
+            # ponytail: CHIMERA_OFFLINE=1 skips the Mega upload (hangs here).
+            if os.environ.get("CHIMERA_OFFLINE", ""):
+                print("✅ Database saved locally (offline mode)")
+                return True
             
             # Upload to Mega
             result = subprocess.run(

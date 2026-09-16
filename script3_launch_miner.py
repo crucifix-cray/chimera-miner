@@ -19,7 +19,7 @@ from pathlib import Path
 
 # Add paths (env-configurable for CI runners)
 TOOLKIT_CORE = os.environ.get(
-    "CHIMERA_TOOLKIT_CORE", "/home/alan/Documents/automation-toolkit/finals/core"
+    "CHIMERA_TOOLKIT_CORE", "/home/alae/Documents/repos/automation-toolkit/finals/core"
 )
 sys.path.insert(0, TOOLKIT_CORE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,7 +31,7 @@ from miner_injector import inject_miner, health_check_loop
 SESSIONS_DIR = Path(
     os.environ.get(
         "CHIMERA_SESSIONS_DIR",
-        "/home/alan/Documents/automation-toolkit/scripts/sessions",
+        "/home/alae/Documents/repos/automation-toolkit/scripts/sessions",
     )
 )
 BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
@@ -43,6 +43,10 @@ DASHBOARD_MARKERS = ["/projects", "/dashboard"]
 def resolve_proxy() -> dict | None:
     """Pick a TOR->WARP chain proxy: PROXY_PORT env first, else scan 9051-9054, 9050, 40000."""
     import socket
+    # ponytail: NO_PROXY_CHAIN=1 forces direct (stale listeners accept TCP but don't route).
+    if os.environ.get("NO_PROXY_CHAIN", ""):
+        print("⚠️  Proxy chain disabled (NO_PROXY_CHAIN); direct connection.", file=sys.stderr)
+        return None
     forced = os.environ.get("PROXY_PORT")
     ports = [int(forced)] if forced else [9051, 9052, 9053, 9054, 9050, 40000]
     for port in ports:
@@ -328,40 +332,33 @@ async def check_session_valid(page) -> bool:
         return False
 
 
-async def wait_for_console_message(page, timeout_seconds=300):
-    """Wait for 'lovable' message in console by refreshing every 40 seconds."""
-    print(f"⏳ Waiting for console 'lovable' message (refreshing every 40s, max {timeout_seconds}s)...")
-    
+async def wait_for_console_message(page, timeout_seconds=300, miner_cmd=None):
+    """Wait for shell bridge to be ready, then execute miner_cmd via /__shell."""
+    from miner_injector import shell_exec
+    print(f"⏳ Probing shell bridge (max {timeout_seconds}s)...")
+
     start_time = asyncio.get_event_loop().time()
     refresh_interval = 40
-    
+
     while True:
         elapsed = asyncio.get_event_loop().time() - start_time
-        
+
         if elapsed > timeout_seconds:
-            print(f"⚠️  Timeout waiting for console message after {timeout_seconds}s")
+            print(f"⚠️  Timeout waiting for shell bridge after {timeout_seconds}s")
             return False
-        
-        # Check console logs
-        try:
-            # Evaluate in page to check if the doc bridge (subprocess feature) is ready.
-            # window.lovable/webcontainer exist on the shell page immediately - the
-            # bridge being a callable function is the real "sandbox usable" signal.
-            result = await page.evaluate("""
-                () => {
-                    if (window.doc && typeof window.doc === 'function') {
-                        return true;
-                    }
-                    return false;
-                }
-            """)
-            
-            if result:
-                print(f"✅ Console shows lovable is ready! (after {int(elapsed)}s)")
-                return True
-        except Exception as e:
-            print(f"   ⚠️  Console check error: {e}")
-        
+
+        # Directly probe /__shell — no window.doc needed
+        if miner_cmd:
+            try:
+                r = await shell_exec(page, "pwd")
+                if r and r.get("code") == 0:
+                    print(f"✅ Shell bridge ready (after {int(elapsed)}s)")
+                    return True
+                else:
+                    print(f"   ⏳ Shell returned code {r.get('code')} ({int(elapsed)}s)")
+            except Exception as e:
+                print(f"   ⚠️  Shell probe error ({int(elapsed)}s): {e}")
+
         # Refresh page
         print(f"   🔄 Refreshing page... ({int(elapsed)}s elapsed)")
         try:
@@ -369,8 +366,7 @@ async def wait_for_console_message(page, timeout_seconds=300):
             await asyncio.sleep(5)
         except Exception as e:
             print(f"   ⚠️  Refresh error: {e}")
-        
-        # Wait before next check
+
         await asyncio.sleep(refresh_interval)
 
 
@@ -542,13 +538,22 @@ async def main():
     
     try:
         proxy = resolve_proxy()
-        # minimal for weak 1GB sandbox: headless True + no humanize + small viewport
-        async with InvisiblePlaywright(
-            headless=True,
-            proxy=proxy,
-            humanize=False,
-            locale='en-US',
-        ) as browser:
+        # ponytail: CAMOUFOX=1 swaps the stealth engine; default stays InvisiblePlaywright.
+        # HEADED=1 runs headful (needs X/DISPLAY or xvfb-run).
+        headless = not os.environ.get("HEADED", "")
+        if os.environ.get("CAMOUFOX", ""):
+            from camoufox.async_api import AsyncCamoufox
+            print(f"🦊 Browser engine: Camoufox (headless={headless})")
+            browser_cm = AsyncCamoufox(headless=headless, proxy=proxy)
+        else:
+            # minimal for weak 1GB sandbox: headless True + no humanize + small viewport
+            browser_cm = InvisiblePlaywright(
+                headless=headless,
+                proxy=proxy,
+                humanize=False,
+                locale='en-US',
+            )
+        async with browser_cm as browser:
             context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
             
             # Create chat page
@@ -608,6 +613,11 @@ async def main():
                         is_enabled = await chat_input.is_enabled()
                         if is_visible and is_enabled:
                             print(f"✅ Found chat input")
+                            try:
+                                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_1_chat.png")
+                                print(f"📸 shot 1_chat")
+                            except Exception as e:
+                                print(f"⚠️ shot failed: {e}")
                             break
                         else:
                             chat_input = None
@@ -681,40 +691,108 @@ async def main():
             await asyncio.sleep(0.3)
             await chat_page.keyboard.press("Enter")
             print("✅ Prompt sent!")
+            try:
+                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_2_prompt_sent.png")
+                print(f"📸 shot 2_prompt_sent")
+            except Exception as e:
+                print(f"⚠️ shot failed: {e}")
             
-            # 9. IMMEDIATELY open preview in NEW TAB
+            # 9. Preview is an EMBEDDED tab, not a popup. Grab the embedded
+            # iframe's exact URL (may carry sandbox token) and open it in a
+            # new tab. Fallback: direct project URL.
             print("\n🖼️  Opening preview tab...")
             preview_url = project.get("preview_url", f"https://{project['project_id']}.lovableproject.com")
-            preview_page = await context.new_page()
-            await goto_retry(preview_page, preview_url)
-            await asyncio.sleep(3)
-            print(f"✅ Preview tab opened: {preview_url}")
+            preview_page = None
+            try:
+                for f in chat_page.frames:
+                    u = f.url or ""
+                    if "lovableproject.com" in u or "/preview" in u:
+                        print(f"   🖼️ embedded frame: {u[:150]}")
+                        if len(u) > len(preview_url):
+                            preview_url = u
+                            print(f"   🔑 using embedded URL (token?)")
+                            break
+                preview_page = await context.new_page()
+                await goto_retry(preview_page, preview_url)
+                await asyncio.sleep(3)
+                print(f"✅ Preview tab opened: {preview_url[:120]}")
+            except Exception as e:
+                print(f"⚠️  Preview open failed ({str(e)[:80]})")
+                preview_page = await context.new_page()
+                await goto_retry(preview_page, preview_url)
+                await asyncio.sleep(3)
+                print(f"✅ Preview tab opened: {preview_url[:120]}")
+            try:
+                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_3_preview.png")
+                print(f"📸 shot 3_preview")
+            except Exception as e:
+                print(f"⚠️ shot failed: {e}")
             
-            # 10. Wait for console 'lovable' message (refresh every 40s)
-            console_ready = await wait_for_console_message(preview_page, timeout_seconds=300)
-            
+            # 10. Probe shell bridge. On failure, go back to chat + re-prompt.
+            max_retries = 3
+            console_ready = False
+            for attempt in range(max_retries):
+                from miner_injector import shell_exec
+                print(f"\n🔍 Probing shell bridge (attempt {attempt+1}/{max_retries})...")
+                try:
+                    r = await shell_exec(preview_page, "pwd")
+                    if r and r.get("code") == 0:
+                        print(f"✅ Shell bridge ready: {r.get('stdout','').strip()}")
+                        console_ready = True
+                        break
+                except Exception as e:
+                    print(f"   ⚠️  Shell bridge unavailable: {e}")
+
+                if attempt < max_retries - 1:
+                    print(f"🔄 Going back to chat to re-prompt (attempt {attempt+1})...")
+                    try:
+                        await chat_page.bring_to_front()
+                        await chat_page.reload(timeout=30000)
+                        await asyncio.sleep(3)
+                        # Re-find chat input after reload
+                        chat_input = None
+                        for selector in chat_selectors:
+                            try:
+                                chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
+                                if chat_input and await chat_input.is_visible() and await chat_input.is_enabled():
+                                    break
+                                chat_input = None
+                            except:
+                                continue
+                        if chat_input:
+                            prompt = random.choice(simple_prompts)
+                            print(f"   💬 Re-sending prompt: '{prompt}'")
+                            await chat_input.fill(prompt)
+                            await asyncio.sleep(0.3)
+                            await chat_page.keyboard.press("Enter")
+                            await asyncio.sleep(15)
+                        else:
+                            print("   ❌ Chat input lost after reload")
+                    except Exception as e:
+                        print(f"   ⚠️  Re-prompt error: {e}")
+
+                    # Re-open preview tab
+                    try:
+                        await preview_page.close()
+                    except:
+                        pass
+                    preview_page = await context.new_page()
+                    await goto_retry(preview_page, preview_url)
+                    await asyncio.sleep(20)
+
             if not console_ready:
-                print("❌ Console message never appeared")
+                print("❌ Shell bridge never became available - giving up")
                 if args.mode == "oneshot":
-                    print("🛑 Oneshot mode - exiting")
                     return
-                else:
-                    print("🔄 Full mode - will retry with new prompt...")
-                    # Go back to chat and try again
-                    await chat_page.bring_to_front()
-                    await chat_input.fill(random.choice(simple_prompts))
-                    await chat_page.keyboard.press("Enter")
-                    print("✅ Sent new prompt, waiting again...")
-                    await preview_page.bring_to_front()
-                    console_ready = await wait_for_console_message(preview_page, timeout_seconds=300)
-                    
-                    if not console_ready:
-                        print("❌ Still no console message after retry - giving up")
-                        return
             
             # 11. Start worker
             print("\n⚙️ Starting worker...")
             success = await inject_miner(preview_page, BRIDGE_URL, args.threads)
+            try:
+                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_4_inject.png")
+                print(f"📸 shot 4_inject (success={success})")
+            except Exception as e:
+                print(f"⚠️ shot failed: {e}")
             
             if not success:
                 print("❌ Worker start failed")
