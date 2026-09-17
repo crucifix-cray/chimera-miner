@@ -659,7 +659,16 @@ async def main():
             print(f"\n📝 Going to chat: {chat_url}")
             await goto_retry(chat_page, chat_url)
             # ponytail: proxied sandboxes need time for JS to hydrate
-            await asyncio.sleep(5)
+            try:
+                await chat_page.wait_for_load_state("networkidle", timeout=30000)
+            except:
+                pass
+            await asyncio.sleep(3)
+            print(f"🌐 Page URL: {chat_page.url}")
+            try:
+                print(f"🌐 Page title: {await chat_page.title()}")
+            except:
+                pass
             try:
                 await chat_page.screenshot(path=f"/tmp/s3_{args.session}_0_loaded.png", timeout=30000)
                 print(f"📸 shot 0_loaded ({chat_page.url})")
