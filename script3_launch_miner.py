@@ -758,7 +758,7 @@ async def main():
                             print(f"   🔑 using embedded URL (token?)")
                             break
                 preview_page = await context.new_page()
-                await goto_retry(preview_page, preview_url)
+                await goto_retry(preview_page, preview_url, timeout_ms=90000)
                 await asyncio.sleep(3)
                 # ponytail: preview bounces through auth-bridge (JS handoff,
                 # slow through proxy) — wait until it lands on the app.
@@ -767,7 +767,7 @@ async def main():
             except Exception as e:
                 print(f"⚠️  Preview open failed ({str(e)[:80]})")
                 preview_page = await context.new_page()
-                await goto_retry(preview_page, preview_url)
+                await goto_retry(preview_page, preview_url, timeout_ms=90000)
                 await asyncio.sleep(3)
                 await wait_for_bridge(preview_page)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
@@ -816,7 +816,7 @@ async def main():
                     # ponytail: context.new_page() deadlocks on the viewport
                     # handshake (no timeout, takes the context with it) — never
                     # open a 3rd tab; re-goto is the same fresh load.
-                    await goto_retry(preview_page, preview_url)
+                    await goto_retry(preview_page, preview_url, timeout_ms=90000)
                     await asyncio.sleep(3)
                     await wait_for_bridge(preview_page)
 
