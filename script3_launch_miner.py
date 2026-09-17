@@ -666,11 +666,6 @@ async def main():
                 print(f"🌐 Page title: {await chat_page.title()}")
             except:
                 pass
-            try:
-                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_0_loaded.png", timeout=30000)
-                print(f"📸 shot 0_loaded ({chat_page.url})")
-            except Exception as e:
-                print(f"⚠️ shot 0 failed: {e}")
 
             # Check if session is valid
             relogin_done = False
@@ -726,7 +721,7 @@ async def main():
                 # Take screenshot to debug, then retry with waits before re-logging in.
                 try:
                     shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
+                    await chat_page.screenshot(path=shot, timeout=30000)
                     print(f"📸 Pre-retry screenshot saved to {shot}")
                 except:
                     pass
@@ -760,7 +755,7 @@ async def main():
                     print("🔑 No chat input after retries - attempting re-login...")
                 try:
                     shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
+                    await chat_page.screenshot(path=shot, timeout=30000)
                     print(f"📸 Screenshot saved to {shot}")
                 except Exception as e:
                     print(f"⚠️ Screenshot failed: {e}")
@@ -796,7 +791,7 @@ async def main():
                         print("❌ Still no chat input after re-login")
                         try:
                             shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input_after_relogin.png"
-                            await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
+                            await chat_page.screenshot(path=shot, timeout=30000)
                             print(f"📸 Screenshot saved to {shot}")
                         except Exception as e:
                             print(f"⚠️ Screenshot failed: {e}")
@@ -809,7 +804,7 @@ async def main():
                 print("❌ Could not find chat input")
                 try:
                     shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
+                    await chat_page.screenshot(path=shot, timeout=30000)
                     print(f"📸 Screenshot saved to {shot}")
                 except Exception as e:
                     print(f"⚠️ Screenshot failed: {e}")
