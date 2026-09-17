@@ -4,6 +4,12 @@
 **Status:** Script 3 working, ready for GitHub Actions deployment  
 **Next Agent:** Continue from Task #3
 
+> **2026-09-17 Railway / Camoufox / WebShare work is NOT finished.**  
+> Live handoff for the next agent:  
+> [`docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md`](docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md)  
+> Commits on `main`: `647071a` (in-place preview), `8fbc426` (CDP OOPIF + frame `/__shell`).  
+> Sandbox trial outcome unconfirmed — SSH flaked mid-monitor.
+
 ---
 
 ## What This Project Does
