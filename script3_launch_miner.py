@@ -388,15 +388,17 @@ async def goto_retry(page, url, timeout_ms=30000, tries=3):
     return False
 
 
-async def wait_for_bridge(page, tries=40) -> bool:
+async def wait_for_bridge(page, tries=100) -> bool:
     """Poll the (sync, hang-free) URL until preview leaves auth-bridge."""
-    for _ in range(tries):
+    for i in range(tries):
         await asyncio.sleep(3)
         try:
             if "auth-bridge" not in page.url:
+                print(f"   🌉 bridge resolved -> {page.url[:100]}")
                 return True
         except Exception:
             return False
+    print("   ⚠️ bridge still on auth-bridge after ~5min, probing anyway")
     return False
 
 
@@ -780,7 +782,9 @@ async def main():
                 from miner_injector import shell_exec
                 print(f"\n🔍 Probing shell bridge (attempt {attempt+1}/{max_retries})...")
                 try:
-                    r = await shell_exec(preview_page, "pwd")
+                    # ponytail: evaluate wedges on busy SPA main threads —
+                    # fail fast so retries advance instead of hanging forever.
+                    r = await asyncio.wait_for(shell_exec(preview_page, "pwd"), timeout=90)
                     if r and r.get("code") == 0:
                         print(f"✅ Shell bridge ready: {r.get('stdout','').strip()}")
                         console_ready = True
