@@ -231,6 +231,64 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
             print("   ⌨️  No exact button found - pressing Enter on password field")
             await password_input.press("Enter")
 
+        # 2FA: if Lovable asks for an authenticator code, fill TOTP from config
+        # (mirrors finals/core lov-session-refresh-totp.py flow).
+        await asyncio.sleep(6)
+        try:
+            body_txt = await page.evaluate("() => document.body.innerText.slice(0, 800)")
+        except Exception:
+            body_txt = ""
+        if any(k in body_txt.lower() for k in ("verification code", "two-factor", "authenticator")):
+            print("   🔢 2FA code requested")
+            secrets = [s for s in (config.get("totp_secret", ""), config.get("totp_secret_backup", "")) if s]
+            if not secrets:
+                print("   ❌ 2FA required but no totp_secret in config")
+                return "failed"
+            try:
+                import pyotp
+            except ImportError:
+                print("   ❌ 2FA required but pyotp not installed (pip install pyotp)")
+                return "failed"
+            filled = False
+            for sec in secrets:
+                code = pyotp.TOTP(sec).now()
+                try:
+                    inp = page.locator('input[inputmode="numeric"], input[autocomplete="one-time-code"], input[type="text"], input:not([type])').first
+                    await inp.wait_for(state="visible", timeout=8000)
+                    await inp.fill(code)
+                    filled = True
+                    break
+                except Exception:
+                    try:
+                        await page.evaluate("""(code) => {
+                            const el = document.querySelector('#totp-code') || [...document.querySelectorAll('input')].find(i=>/code|token|otp|auth/i.test((i.placeholder||'')+(i.name||'')+(i.id||''))) || [...document.querySelectorAll('input')].find(i=>i.offsetParent!==null);
+                            if(!el) throw new Error('no totp input found');
+                            el.focus();
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('insertText', false, code); }""", code)
+                        filled = True
+                        break
+                    except Exception as e:
+                        print(f"   ⚠️  TOTP fill failed with this secret: {e}")
+                        continue
+            if not filled:
+                print("   ❌ 2FA code input not found")
+                return "failed"
+            print("   ✅ TOTP code filled")
+            await asyncio.sleep(1)
+            try:
+                await page.get_by_role("button", name="Verify").click(timeout=5000)
+                print("   🖱️  Clicked 'Verify'")
+            except Exception:
+                try:
+                    vbtn = page.locator('[data-testid="auth-submit-button"]')
+                    if await vbtn.is_visible():
+                        await vbtn.click()
+                        print("   🖱️  Clicked auth-submit")
+                except Exception:
+                    pass
+            await asyncio.sleep(6)
+
         # Wait for dashboard (up to 90s), checking for invalid-credentials errors
         print("   ⏳ Waiting for dashboard...")
         for _ in range(18):
