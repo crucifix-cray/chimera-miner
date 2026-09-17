@@ -658,8 +658,14 @@ async def main():
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
             print(f"\n📝 Going to chat: {chat_url}")
             await goto_retry(chat_page, chat_url)
-            await asyncio.sleep(1)
-            
+            # ponytail: proxied sandboxes need time for JS to hydrate
+            await asyncio.sleep(5)
+            try:
+                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_0_loaded.png", timeout=30000)
+                print(f"📸 shot 0_loaded ({chat_page.url})")
+            except Exception as e:
+                print(f"⚠️ shot 0 failed: {e}")
+
             # Check if session is valid
             relogin_done = False
             if not await check_session_valid(chat_page):
@@ -701,7 +707,7 @@ async def main():
             chat_input = None
             for selector in chat_selectors:
                 try:
-                    chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
+                    chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
                     if chat_input:
                         is_visible = await chat_input.is_visible()
                         is_enabled = await chat_input.is_enabled()
@@ -737,7 +743,7 @@ async def main():
                     await asyncio.sleep(8)
                     for selector in chat_selectors:
                         try:
-                            chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
+                            chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
                             if chat_input and await chat_input.is_visible() and await chat_input.is_enabled():
                                 print(f"✅ Found chat input on retry")
                                 try:
@@ -775,7 +781,7 @@ async def main():
                     await asyncio.sleep(2)
                     for selector in chat_selectors:
                         try:
-                            chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
+                            chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
                             if chat_input:
                                 is_visible = await chat_input.is_visible()
                                 is_enabled = await chat_input.is_enabled()
@@ -881,7 +887,7 @@ async def main():
                         chat_input = None
                         for selector in chat_selectors:
                             try:
-                                chat_input = await chat_page.wait_for_selector(selector, timeout=5000, state='visible')
+                                chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
                                 if chat_input and await chat_input.is_visible() and await chat_input.is_enabled():
                                     break
                                 chat_input = None
