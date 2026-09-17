@@ -706,6 +706,16 @@ async def main():
             # 8. Find chat input and send SIMPLE prompt immediately
             print("💬 Finding chat input...")
             
+            # ponytail: dump what elements exist near the bottom of the page
+            try:
+                dom_probe = await chat_page.evaluate("""() => {
+                    const els = document.querySelectorAll('textarea, [contenteditable], [role="textbox"], input[type="text"], [data-placeholder], [placeholder]');
+                    return Array.from(els).map(e => ({tag: e.tagName, role: e.getAttribute('role'), ce: e.contentEditable, ph: e.placeholder || e.getAttribute('data-placeholder') || '', cls: e.className.substring(0,80)}));
+                }""")
+                print(f"🔍 DOM probe: {dom_probe}")
+            except Exception as e:
+                print(f"⚠️ DOM probe failed: {e}")
+            
             chat_selectors = [
                 'div[contenteditable="true"][role="textbox"]',
                 '[contenteditable="true"]',
