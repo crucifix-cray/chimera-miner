@@ -755,12 +755,16 @@ async def main():
             print(f"🌐 chat URL now: {chat_page.url}")
             
             # 9. Preview is an EMBEDDED tab, not a popup. Grab the embedded
-            # iframe's exact URL (may carry sandbox token) and open it in a
-            # new tab. Fallback: direct project URL.
+            # iframe's exact URL (may carry sandbox token). Under SKIP_CHAT,
+            # navigate the chat tab in-place (2nd new_page was dying silently
+            # under host SIGKILL / Juggler pressure). Else open a new tab.
+            # Fallback: direct project URL.
             print("\n🖼️  Opening preview tab...")
             preview_url = project.get("preview_url", f"https://{project['project_id']}.lovableproject.com")
             preview_page = None
-            try:
+
+            async def _steal_iframe_url():
+                nonlocal preview_url
                 for f in chat_page.frames:
                     u = f.url or ""
                     if "lovableproject.com" in u or "/preview" in u:
@@ -769,23 +773,48 @@ async def main():
                             preview_url = u
                             print(f"   🔑 using embedded URL (token?)")
                             break
-                preview_page = await context.new_page()
+
+            print("   🔎 scanning chat frames for preview URL...")
+            try:
+                # ponytail: chat SPA CDP reads wedge — never let frame scan hang forever.
+                await asyncio.wait_for(_steal_iframe_url(), timeout=30)
+            except asyncio.TimeoutError:
+                print("   ⚠️ frame scan timed out (chat SPA busy) — using project preview_url")
+            except Exception as e:
+                print(f"   ⚠️ frame scan failed ({type(e).__name__}): {e} — using project preview_url")
+            print(f"   📄 preview target: {preview_url[:120]}")
+
+            async def _open_preview(page):
                 # ponytail: domcontentloaded — the app shell never fires load
                 # (endless streaming resources); DOM is enough for the bridge.
-                await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
+                await goto_retry(page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
                 await asyncio.sleep(3)
                 # ponytail: preview bounces through auth-bridge (JS handoff,
                 # slow through proxy) — wait until it lands on the app.
-                await wait_for_bridge(preview_page)
+                await wait_for_bridge(page)
+
+            try:
+                if skip_chat:
+                    print("   ⏩ SKIP_CHAT — navigating chat tab in-place (no 2nd tab)")
+                    preview_page = chat_page
+                else:
+                    print("   📑 creating preview page...")
+                    preview_page = await context.new_page()
+                    print("   ✅ preview page created")
+                await _open_preview(preview_page)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
             except Exception as e:
                 print(f"⚠️  Preview open failed ({str(e)[:80]})")
-                preview_page = await context.new_page()
-                # ponytail: domcontentloaded — the app shell never fires load
-                # (endless streaming resources); DOM is enough for the bridge.
-                await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
-                await asyncio.sleep(3)
-                await wait_for_bridge(preview_page)
+                # ponytail: never open a 3rd tab — reuse existing page or chat tab.
+                if preview_page is None:
+                    if skip_chat:
+                        preview_page = chat_page
+                    else:
+                        print("   📑 creating preview page (retry)...")
+                        preview_page = await context.new_page()
+                else:
+                    print("   🔄 re-navigating existing preview page...")
+                await _open_preview(preview_page)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
             print(f"🌐 preview URL now: {preview_page.url}")
             
