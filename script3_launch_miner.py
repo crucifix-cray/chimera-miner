@@ -373,12 +373,12 @@ async def accept_invite(page, invite_link: str) -> bool:
         return False
 
 
-async def goto_retry(page, url, timeout_ms=30000, tries=3):
+async def goto_retry(page, url, timeout_ms=30000, tries=3, wait_until="load"):
     """goto with retries - Tor/WARP links drop page loads; an unhandled
     timeout used to kill the whole session run."""
     for attempt in range(1, tries + 1):
         try:
-            await page.goto(url, timeout=timeout_ms)
+            await page.goto(url, timeout=timeout_ms, wait_until=wait_until)
             return True
         except Exception as e:
             print(f"   ⚠️  goto failed (attempt {attempt}/{tries}): {e}")
@@ -770,7 +770,9 @@ async def main():
                             print(f"   🔑 using embedded URL (token?)")
                             break
                 preview_page = await context.new_page()
-                await goto_retry(preview_page, preview_url, timeout_ms=90000)
+                # ponytail: domcontentloaded — the app shell never fires load
+                # (endless streaming resources); DOM is enough for the bridge.
+                await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
                 await asyncio.sleep(3)
                 # ponytail: preview bounces through auth-bridge (JS handoff,
                 # slow through proxy) — wait until it lands on the app.
@@ -779,7 +781,9 @@ async def main():
             except Exception as e:
                 print(f"⚠️  Preview open failed ({str(e)[:80]})")
                 preview_page = await context.new_page()
-                await goto_retry(preview_page, preview_url, timeout_ms=90000)
+                # ponytail: domcontentloaded — the app shell never fires load
+                # (endless streaming resources); DOM is enough for the bridge.
+                await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
                 await asyncio.sleep(3)
                 await wait_for_bridge(preview_page)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
@@ -830,7 +834,8 @@ async def main():
                     # ponytail: context.new_page() deadlocks on the viewport
                     # handshake (no timeout, takes the context with it) — never
                     # open a 3rd tab; re-goto is the same fresh load.
-                    await goto_retry(preview_page, preview_url, timeout_ms=90000)
+                    # ponytail: domcontentloaded — the app never fires load.
+                    await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
                     await asyncio.sleep(3)
                     await wait_for_bridge(preview_page)
 
