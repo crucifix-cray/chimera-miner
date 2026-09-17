@@ -619,7 +619,6 @@ async def main():
             browser_cm = AsyncCamoufox(
                 headless=headless,
                 proxy=proxy,
-                block_images=True,
                 block_webrtc=True,
                 block_webgl=True,
                 enable_cache=False,
@@ -663,9 +662,12 @@ async def main():
             await asyncio.sleep(8)
             print(f"🌐 Page URL: {chat_page.url}")
             try:
-                print(f"🌐 Page title: {await chat_page.title()}")
-            except:
-                pass
+                # ponytail: reads can wedge behind a busy SPA main thread —
+                # never let a diagnostic block the run; input pipeline works blind.
+                _t = await asyncio.wait_for(chat_page.title(), timeout=30)
+                print(f"🌐 Page title: {_t}")
+            except Exception as e:
+                print(f"⚠️ title skipped ({type(e).__name__}), continuing blind")
 
             # Check if session is valid
             relogin_done = False
