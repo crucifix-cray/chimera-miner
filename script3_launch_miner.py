@@ -716,7 +716,7 @@ async def main():
             ]:
                 try:
                     loc = locator_fn()
-                    chat_input = loc.wait_for(timeout=15000, state="visible")
+                    chat_input = await loc.wait_for(timeout=15000, state="visible")
                     if chat_input:
                         print(f"✅ Found chat input via locator")
                         break
@@ -749,7 +749,7 @@ async def main():
                     ]:
                         try:
                             loc = locator_fn()
-                            chat_input = loc.wait_for(timeout=15000, state="visible")
+                            chat_input = await loc.wait_for(timeout=15000, state="visible")
                             if chat_input:
                                 print(f"✅ Found chat input on retry")
                                 break
@@ -788,7 +788,7 @@ async def main():
                     ]:
                         try:
                             loc = locator_fn()
-                            chat_input = loc.wait_for(timeout=15000, state="visible")
+                            chat_input = await loc.wait_for(timeout=15000, state="visible")
                             if chat_input:
                                 print(f"✅ Found chat input after re-login")
                                 break
@@ -896,7 +896,7 @@ async def main():
                         ]:
                             try:
                                 loc = locator_fn()
-                                chat_input = loc.wait_for(timeout=15000, state="visible")
+                                chat_input = await loc.wait_for(timeout=15000, state="visible")
                                 if chat_input:
                                     break
                                 chat_input = None
