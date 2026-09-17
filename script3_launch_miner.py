@@ -402,6 +402,144 @@ async def wait_for_bridge(page, tries=100) -> bool:
     return False
 
 
+def _is_preview_target_url(url: str) -> bool:
+    u = (url or "").lower()
+    return (
+        u.startswith("http")
+        and (
+            "lovableproject.com" in u
+            or "webcontainer" in u
+            or u.startswith("https://lovable-")
+        )
+    )
+
+
+def _preview_url_score(url: str) -> int:
+    """Prefer tokenized / webcontainer URLs over bare project domain."""
+    u = url or ""
+    score = len(u)
+    if "?" in u:
+        score += 1000
+    if "token" in u.lower():
+        score += 500
+    if "webcontainer" in u.lower():
+        score += 800
+    return score
+
+
+def _shell_js(cmd: str, cwd: str | None = None) -> str:
+    payload = json.dumps({"cmd": cmd, "cwd": cwd})
+    payload_escaped = payload.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    return f"""async () => {{
+        const body = `{payload_escaped}`;
+        const r = await fetch('/__shell', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: body
+        }});
+        const text = await r.text();
+        try {{ return JSON.parse(text); }}
+        catch (e) {{
+            return {{code: -1, stdout: '', stderr: 'non-json HTTP ' + r.status + ': ' + text.slice(0, 160), cwd: ''}};
+        }}
+    }}"""
+
+
+async def cdp_steal_preview_url(page, timeout_s: int = 180) -> str | None:
+    """Steal preview URL via CDP Target.getTargets.
+
+    Lovable preview is an OOPIF — Playwright's frame tree often stays
+    about:blank (see kernel_cdp.find_preview_target). Bare
+    *.lovableproject.com has no /__shell (returns HTML → JSON.parse boom).
+    """
+    cdp = await page.context.new_cdp_session(page)
+    best = None
+    seen_same = 0
+    last_best = None
+    try:
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                result = await asyncio.wait_for(cdp.send("Target.getTargets"), timeout=30)
+            except Exception as e:
+                print(f"   ⚠️ CDP getTargets: {type(e).__name__}: {e}")
+                await asyncio.sleep(5)
+                continue
+            infos = result.get("targetInfos", [])
+            http_preview = []
+            for t in infos:
+                url = t.get("url") or ""
+                if not _is_preview_target_url(url):
+                    continue
+                http_preview.append(url)
+                if best is None or _preview_url_score(url) > _preview_url_score(best):
+                    best = url
+            if http_preview:
+                rich = best and (
+                    "?" in best
+                    or "token" in best.lower()
+                    or "webcontainer" in best.lower()
+                )
+                if rich:
+                    print(f"   🎯 CDP preview target: {best[:150]}")
+                    return best
+                if best == last_best:
+                    seen_same += 1
+                else:
+                    seen_same = 1
+                    last_best = best
+                print(f"   ⏳ CDP preview candidates (stable={seen_same}): {[u[:100] for u in http_preview[:4]]}")
+                # Bare host seen twice → OOPIF is up; caller may stay on chat.
+                if seen_same >= 2:
+                    print(f"   🎯 CDP stable preview target: {best[:150]}")
+                    return best
+            else:
+                seen_same = 0
+                last_best = None
+                print("   ⏳ CDP: waiting for lovableproject/webcontainer target...")
+            await asyncio.sleep(5)
+        if best:
+            print(f"   ⚠️ CDP timed out; best candidate: {best[:150]}")
+            return best
+        print("   ❌ CDP: no preview target found")
+        return None
+    finally:
+        try:
+            await cdp.detach()
+        except Exception:
+            pass
+
+
+async def shell_exec_preview(page, cmd: str, cwd: str | None = None) -> dict:
+    """Probe /__shell on the page and every frame (OOPIF may hold the Vite server)."""
+    js = _shell_js(cmd, cwd)
+    errors = []
+    # Main frame first
+    try:
+        r = await page.evaluate(js)
+        if isinstance(r, dict) and r.get("code") == 0:
+            return r
+        if isinstance(r, dict):
+            errors.append(f"page:{r.get('stderr') or r}")
+    except Exception as e:
+        errors.append(f"page:{type(e).__name__}:{e}")
+
+    for i, frame in enumerate(page.frames):
+        try:
+            url = frame.url or ""
+            r = await asyncio.wait_for(frame.evaluate(js), timeout=45)
+            if isinstance(r, dict) and r.get("code") == 0:
+                print(f"   ✅ shell via frame[{i}] {url[:80]}")
+                return r
+            if isinstance(r, dict):
+                err = r.get("stderr") or str(r)
+                errors.append(f"frame[{i}]({url[:60]}):{err}")
+                print(f"   ⚠️ frame[{i}] shell: {err[:120]}")
+        except Exception as e:
+            errors.append(f"frame[{i}]:{type(e).__name__}")
+    raise RuntimeError(" | ".join(errors[:6]) or "shell failed on all frames")
+
+
 async def check_session_valid(page) -> bool:
     """Check if session is still valid (not expired)."""
     try:
@@ -754,93 +892,110 @@ async def main():
             # boxes (proven by probe) — URL print instead, never screenshot.
             print(f"🌐 chat URL now: {chat_page.url}")
             
-            # 9. Preview is an EMBEDDED tab, not a popup. Grab the embedded
-            # iframe's exact URL (may carry sandbox token). Under SKIP_CHAT,
-            # navigate the chat tab in-place (2nd new_page was dying silently
-            # under host SIGKILL / Juggler pressure). Else open a new tab.
-            # Fallback: direct project URL.
+            # 9. Preview is an EMBEDDED OOPIF. Frame tree often shows about:blank —
+            # steal URL via CDP Target.getTargets (kernel_cdp pattern). Under
+            # SKIP_CHAT navigate in-place (no 2nd tab / SIGKILL). Bare domain
+            # has no /__shell — never settle for it if CDP finds nothing useful;
+            # probe frames on the chat page instead.
             print("\n🖼️  Opening preview tab...")
-            preview_url = project.get("preview_url", f"https://{project['project_id']}.lovableproject.com")
+            bare_preview = project.get(
+                "preview_url", f"https://{project['project_id']}.lovableproject.com"
+            )
+            preview_url = bare_preview
             preview_page = None
 
-            async def _steal_iframe_url():
-                nonlocal preview_url
-                for f in chat_page.frames:
-                    u = f.url or ""
-                    if "lovableproject.com" in u or "/preview" in u:
-                        print(f"   🖼️ embedded frame: {u[:150]}")
-                        if len(u) > len(preview_url):
-                            preview_url = u
-                            print(f"   🔑 using embedded URL (token?)")
-                            break
-
-            print("   🔎 scanning chat frames for preview URL...")
+            # Wake the preview panel so the OOPIF target actually spawns.
+            panel_url = f"https://lovable.dev/projects/{project['project_id']}/preview"
+            print(f"   wake preview panel: {panel_url}")
             try:
-                # ponytail: chat SPA CDP reads wedge — never let frame scan hang forever.
-                await asyncio.wait_for(_steal_iframe_url(), timeout=30)
-            except asyncio.TimeoutError:
-                print("   ⚠️ frame scan timed out (chat SPA busy) — using project preview_url")
+                await goto_retry(chat_page, panel_url, timeout_ms=90000, wait_until="domcontentloaded")
+                await asyncio.sleep(8)
             except Exception as e:
-                print(f"   ⚠️ frame scan failed ({type(e).__name__}): {e} — using project preview_url")
-            print(f"   📄 preview target: {preview_url[:120]}")
+                print(f"   ⚠️ preview panel goto failed ({type(e).__name__}): {e}")
+
+            print("   🔎 CDP steal preview URL (OOPIF)...")
+            stolen = await cdp_steal_preview_url(chat_page, timeout_s=180)
+            stay_on_chat_oopif = False
+            if stolen:
+                preview_url = stolen
+                # Bare host-only URL (no query/token): keep chat page so OOPIF
+                # stays alive and probe /__shell inside frames; top-level bare
+                # has no Vite shell.
+                if (
+                    "?" not in stolen
+                    and "token" not in stolen.lower()
+                    and "webcontainer" not in stolen.lower()
+                ):
+                    path = stolen.split("?", 1)[0].rstrip("/")
+                    bare_path = bare_preview.rstrip("/")
+                    if path == bare_path or path.endswith(".lovableproject.com"):
+                        print("   📌 CDP URL is bare — keeping chat tab, probing OOPIF frames")
+                        stay_on_chat_oopif = True
+            else:
+                print("   ⚠️ no CDP preview target — will try bare URL as last resort")
+
+            print(f"   📄 preview target: {preview_url[:150]}")
 
             async def _open_preview(page):
-                # ponytail: domcontentloaded — the app shell never fires load
-                # (endless streaming resources); DOM is enough for the bridge.
                 await goto_retry(page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
                 await asyncio.sleep(3)
-                # ponytail: preview bounces through auth-bridge (JS handoff,
-                # slow through proxy) — wait until it lands on the app.
                 await wait_for_bridge(page)
 
             try:
                 if skip_chat:
-                    print("   ⏩ SKIP_CHAT — navigating chat tab in-place (no 2nd tab)")
                     preview_page = chat_page
+                    if stay_on_chat_oopif:
+                        print("   ⏩ SKIP_CHAT — staying on chat (OOPIF shell probe)")
+                    else:
+                        print("   ⏩ SKIP_CHAT — navigating chat tab in-place (no 2nd tab)")
+                        await _open_preview(preview_page)
                 else:
                     print("   📑 creating preview page...")
                     preview_page = await context.new_page()
                     print("   ✅ preview page created")
-                await _open_preview(preview_page)
-                print(f"✅ Preview tab opened: {preview_url[:120]}")
+                    await _open_preview(preview_page)
+                print(f"✅ Preview ready: {preview_url[:120]}")
             except Exception as e:
                 print(f"⚠️  Preview open failed ({str(e)[:80]})")
-                # ponytail: never open a 3rd tab — reuse existing page or chat tab.
                 if preview_page is None:
-                    if skip_chat:
-                        preview_page = chat_page
-                    else:
-                        print("   📑 creating preview page (retry)...")
-                        preview_page = await context.new_page()
+                    preview_page = chat_page if skip_chat else await context.new_page()
                 else:
                     print("   🔄 re-navigating existing preview page...")
-                await _open_preview(preview_page)
-                print(f"✅ Preview tab opened: {preview_url[:120]}")
+                if not stay_on_chat_oopif:
+                    await _open_preview(preview_page)
+                print(f"✅ Preview ready: {preview_url[:120]}")
             print(f"🌐 preview URL now: {preview_page.url}")
             
             # 10. Probe shell bridge. On failure, go back to chat + re-prompt.
             max_retries = 3
             console_ready = False
             for attempt in range(max_retries):
-                from miner_injector import shell_exec
                 print(f"\n🔍 Probing shell bridge (attempt {attempt+1}/{max_retries})...")
                 try:
-                    # ponytail: evaluate wedges on busy SPA main threads —
-                    # fail fast so retries advance instead of hanging forever.
-                    r = await asyncio.wait_for(shell_exec(preview_page, "pwd"), timeout=90)
+                    # Frame-aware probe: Vite /__shell lives in the OOPIF, not
+                    # always on the top-level document.
+                    r = await asyncio.wait_for(
+                        shell_exec_preview(preview_page, "pwd"), timeout=90
+                    )
                     if r and r.get("code") == 0:
                         print(f"✅ Shell bridge ready: {r.get('stdout','').strip()}")
                         console_ready = True
                         break
+                    print(f"   ⚠️  Shell returned: {r}")
                 except Exception as e:
                     print(f"   ⚠️  Shell bridge unavailable: {e}")
 
                 if attempt < max_retries - 1:
                     if skip_chat:
-                        # ponytail: chat SPA wedges reads — don't touch it.
-                        # The bridge resolves on its own; just re-wait + re-goto.
-                        print(f"🔄 SKIP_CHAT — re-waiting on bridge (attempt {attempt+1})...")
-                        await asyncio.sleep(30)
+                        print(f"🔄 SKIP_CHAT — re-steal CDP + re-wait (attempt {attempt+1})...")
+                        await asyncio.sleep(20)
+                        stolen2 = await cdp_steal_preview_url(preview_page, timeout_s=60)
+                        if stolen2 and stolen2 != preview_url:
+                            preview_url = stolen2
+                            print(f"   📄 updated preview target: {preview_url[:120]}")
+                            if "?" in stolen2 or "webcontainer" in stolen2.lower():
+                                stay_on_chat_oopif = False
+                                await _open_preview(preview_page)
                     else:
                         print(f"🔄 Going back to chat to re-prompt (attempt {attempt+1})...")
                         try:
@@ -859,14 +1014,14 @@ async def main():
                         except Exception as e:
                             print(f"   ⚠️  Re-prompt error: {e}")
 
-                    # Re-navigate the existing preview tab in place.
-                    # ponytail: context.new_page() deadlocks on the viewport
-                    # handshake (no timeout, takes the context with it) — never
-                    # open a 3rd tab; re-goto is the same fresh load.
-                    # ponytail: domcontentloaded — the app never fires load.
-                    await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
-                    await asyncio.sleep(3)
-                    await wait_for_bridge(preview_page)
+                        # Re-navigate the existing preview tab in place.
+                        # ponytail: context.new_page() deadlocks on the viewport
+                        # handshake (no timeout, takes the context with it) — never
+                        # open a 3rd tab; re-goto is the same fresh load.
+                        # ponytail: domcontentloaded — the app never fires load.
+                        await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
+                        await asyncio.sleep(3)
+                        await wait_for_bridge(preview_page)
 
             if not console_ready:
                 print("❌ Shell bridge never became available - giving up")

