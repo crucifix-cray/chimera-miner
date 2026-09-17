@@ -695,131 +695,30 @@ async def main():
                     await mark_truly_red(args.session, session_id, cfg, reason)
                     return
             
-            # 8. Find chat input and send SIMPLE prompt immediately
-            print("💬 Finding chat input...")
-            
-            # ponytail: Lovable UI changed — try Playwright role locators first, then broad selectors
-            chat_input = None
-            for locator_fn in [
-                lambda: chat_page.get_by_role("textbox"),
-                lambda: chat_page.locator('[contenteditable="true"]').first,
-                lambda: chat_page.locator('div[role="textbox"]').first,
-                lambda: chat_page.locator('textarea').first,
-            ]:
-                try:
-                    loc = locator_fn()
-                    chat_input = await loc.wait_for(timeout=15000, state="visible")
-                    if chat_input:
-                        print(f"✅ Found chat input via locator")
-                        break
-                    chat_input = None
-                except:
-                    continue
-            
-            if not chat_input and not relogin_done:
-                # ponytail: page may just need more time on headless sandbox.
-                # Take screenshot to debug, then retry with waits before re-logging in.
-                try:
-                    shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, timeout=30000)
-                    print(f"📸 Pre-retry screenshot saved to {shot}")
-                except:
-                    pass
-                for retry_wait in [10, 20]:
-                    print(f"   ⏳ Chat input not found, waiting {retry_wait}s and retrying...")
-                    await asyncio.sleep(retry_wait)
-                    try:
-                        await chat_page.reload(timeout=30000)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(8)
-                    for locator_fn in [
-                        lambda: chat_page.get_by_role("textbox"),
-                        lambda: chat_page.locator('[contenteditable="true"]').first,
-                        lambda: chat_page.locator('div[role="textbox"]').first,
-                        lambda: chat_page.locator('textarea').first,
-                    ]:
-                        try:
-                            loc = locator_fn()
-                            chat_input = await loc.wait_for(timeout=15000, state="visible")
-                            if chat_input:
-                                print(f"✅ Found chat input on retry")
-                                break
-                            chat_input = None
-                        except:
-                            continue
-                    if chat_input:
-                        break
-
-                if not chat_input:
-                    print("🔑 No chat input after retries - attempting re-login...")
-                try:
-                    shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, timeout=30000)
-                    print(f"📸 Screenshot saved to {shot}")
-                except Exception as e:
-                    print(f"⚠️ Screenshot failed: {e}")
-                cfg = config
-                cfg.setdefault("session_id", args.session)
-                result = await relogin_session(browser, cfg, args.session)
-                if result == "ok":
-                    print("✅ Re-login OK - retrying chat with fresh cookies")
-                    fresh = json.load(open(SESSIONS_DIR / f"session-{args.session}" / "cookies.json"))
-                    try:
-                        await context.clear_cookies()
-                    except:
-                        pass
-                    await context.add_cookies(fresh)
-                    await goto_retry(chat_page, chat_url)
-                    await asyncio.sleep(2)
-                    for locator_fn in [
-                        lambda: chat_page.get_by_role("textbox"),
-                        lambda: chat_page.locator('[contenteditable="true"]').first,
-                        lambda: chat_page.locator('div[role="textbox"]').first,
-                        lambda: chat_page.locator('textarea').first,
-                    ]:
-                        try:
-                            loc = locator_fn()
-                            chat_input = await loc.wait_for(timeout=15000, state="visible")
-                            if chat_input:
-                                print(f"✅ Found chat input after re-login")
-                                break
-                            chat_input = None
-                        except:
-                            continue
-                    if not chat_input:
-                        print("❌ Still no chat input after re-login")
-                        try:
-                            shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input_after_relogin.png"
-                            await chat_page.screenshot(path=shot, timeout=30000)
-                            print(f"📸 Screenshot saved to {shot}")
-                        except Exception as e:
-                            print(f"⚠️ Screenshot failed: {e}")
-                        return
-                else:
-                    reason = "invalid credentials - account lost" if result == "lost" else f"re-login failed ({result})"
-                    await mark_truly_red(args.session, session_id, cfg, reason)
-                    return
-            elif not chat_input:
-                print("❌ Could not find chat input")
-                try:
-                    shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, timeout=30000)
-                    print(f"📸 Screenshot saved to {shot}")
-                except Exception as e:
-                    print(f"⚠️ Screenshot failed: {e}")
-                return
-            
-            # Send simple prompt
+            # 8. Send prompt — bypass element-finding entirely.
+            # Camoufox CDP timeouts hang through proxy, so we click the
+            # page to focus it, then type directly via keyboard.
             import random
             simple_prompts = ["say 'a'", "1+1?", "say 'x'", "2+2?"]
             prompt = random.choice(simple_prompts)
             
             print(f"💬 Sending prompt: '{prompt}'")
-            await chat_input.fill(prompt)
-            await asyncio.sleep(0.3)
-            await chat_page.keyboard.press("Enter")
-            print("✅ Prompt sent!")
+            try:
+                # Click the "Build" area to focus the chat input
+                await chat_page.get_by_text("Build", exact=False).first.click(timeout=10000)
+                await asyncio.sleep(1)
+            except:
+                # Fallback: click center-bottom of viewport
+                await chat_page.mouse.click(200, 560)
+                await asyncio.sleep(1)
+            try:
+                await chat_page.keyboard.type(prompt, delay=20)
+                await asyncio.sleep(0.3)
+                await chat_page.keyboard.press("Enter")
+                print("✅ Prompt sent!")
+            except Exception as e:
+                print(f"⚠️ Keyboard type failed: {e}")
+                return
             try:
                 await chat_page.screenshot(path=f"/tmp/s3_{args.session}_2_prompt_sent.png", timeout=30000)
                 print(f"📸 shot 2_prompt_sent")
@@ -877,32 +776,19 @@ async def main():
                     try:
                         await chat_page.bring_to_front()
                         await chat_page.reload(timeout=30000)
-                        await asyncio.sleep(3)
-                        # Re-find chat input after reload
-                        chat_input = None
-                        for locator_fn in [
-                            lambda: chat_page.get_by_role("textbox"),
-                            lambda: chat_page.locator('[contenteditable="true"]').first,
-                            lambda: chat_page.locator('div[role="textbox"]').first,
-                            lambda: chat_page.locator('textarea').first,
-                        ]:
-                            try:
-                                loc = locator_fn()
-                                chat_input = await loc.wait_for(timeout=15000, state="visible")
-                                if chat_input:
-                                    break
-                                chat_input = None
-                            except:
-                                continue
-                        if chat_input:
-                            prompt = random.choice(simple_prompts)
-                            print(f"   💬 Re-sending prompt: '{prompt}'")
-                            await chat_input.fill(prompt)
-                            await asyncio.sleep(0.3)
-                            await chat_page.keyboard.press("Enter")
-                            await asyncio.sleep(15)
-                        else:
-                            print("   ❌ Chat input lost after reload")
+                        await asyncio.sleep(8)
+                        # Click to focus chat area, type directly
+                        try:
+                            await chat_page.get_by_text("Build", exact=False).first.click(timeout=10000)
+                        except:
+                            await chat_page.mouse.click(200, 560)
+                        await asyncio.sleep(1)
+                        prompt = random.choice(simple_prompts)
+                        print(f"   💬 Re-sending prompt: '{prompt}'")
+                        await chat_page.keyboard.type(prompt, delay=20)
+                        await asyncio.sleep(0.3)
+                        await chat_page.keyboard.press("Enter")
+                        await asyncio.sleep(15)
                     except Exception as e:
                         print(f"   ⚠️  Re-prompt error: {e}")
 
