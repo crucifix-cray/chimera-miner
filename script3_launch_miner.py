@@ -703,14 +703,10 @@ async def main():
             prompt = random.choice(simple_prompts)
             
             print(f"💬 Sending prompt: '{prompt}'")
-            try:
-                # Click the "Build" area to focus the chat input
-                await chat_page.get_by_text("Build", exact=False).first.click(timeout=10000)
-                await asyncio.sleep(1)
-            except:
-                # Fallback: click center-bottom of viewport
-                await chat_page.mouse.click(200, 560)
-                await asyncio.sleep(1)
+            # ponytail: all Playwright locators hang through Camoufox+proxy CDP.
+            # Raw mouse click at coordinates + keyboard is the only reliable path.
+            await chat_page.mouse.click(200, 560)
+            await asyncio.sleep(1)
             try:
                 await chat_page.keyboard.type(prompt, delay=20)
                 await asyncio.sleep(0.3)
@@ -777,11 +773,8 @@ async def main():
                         await chat_page.bring_to_front()
                         await chat_page.reload(timeout=30000)
                         await asyncio.sleep(8)
-                        # Click to focus chat area, type directly
-                        try:
-                            await chat_page.get_by_text("Build", exact=False).first.click(timeout=10000)
-                        except:
-                            await chat_page.mouse.click(200, 560)
+                        # Raw mouse click at coordinates
+                        await chat_page.mouse.click(200, 560)
                         await asyncio.sleep(1)
                         prompt = random.choice(simple_prompts)
                         print(f"   💬 Re-sending prompt: '{prompt}'")
