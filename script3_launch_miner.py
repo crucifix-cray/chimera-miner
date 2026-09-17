@@ -708,7 +708,7 @@ async def main():
                         if is_visible and is_enabled:
                             print(f"✅ Found chat input")
                             try:
-                                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_1_chat.png")
+                                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_1_chat.png", timeout=30000)
                                 print(f"📸 shot 1_chat")
                             except Exception as e:
                                 print(f"⚠️ shot failed: {e}")
@@ -723,7 +723,7 @@ async def main():
                 # Take screenshot to debug, then retry with waits before re-logging in.
                 try:
                     shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, full_page=True)
+                    await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
                     print(f"📸 Pre-retry screenshot saved to {shot}")
                 except:
                     pass
@@ -742,7 +742,7 @@ async def main():
                                 print(f"✅ Found chat input on retry")
                                 try:
                                     shot2 = f"/tmp/script3_retry_{args.session}.png"
-                                    await chat_page.screenshot(path=shot2, full_page=True)
+                                    await chat_page.screenshot(path=shot2, full_page=True, timeout=30000)
                                     print(f"📸 Retry screenshot saved to {shot2}")
                                 except:
                                     pass
@@ -756,7 +756,7 @@ async def main():
                     print("🔑 No chat input after retries - attempting re-login...")
                 try:
                     shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, full_page=True)
+                    await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
                     print(f"📸 Screenshot saved to {shot}")
                 except Exception as e:
                     print(f"⚠️ Screenshot failed: {e}")
@@ -790,7 +790,7 @@ async def main():
                         print("❌ Still no chat input after re-login")
                         try:
                             shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input_after_relogin.png"
-                            await chat_page.screenshot(path=shot, full_page=True)
+                            await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
                             print(f"📸 Screenshot saved to {shot}")
                         except Exception as e:
                             print(f"⚠️ Screenshot failed: {e}")
@@ -803,7 +803,7 @@ async def main():
                 print("❌ Could not find chat input")
                 try:
                     shot = f"/tmp/script3_error_{args.session}_{project['project_id']}_no_input.png"
-                    await chat_page.screenshot(path=shot, full_page=True)
+                    await chat_page.screenshot(path=shot, full_page=True, timeout=30000)
                     print(f"📸 Screenshot saved to {shot}")
                 except Exception as e:
                     print(f"⚠️ Screenshot failed: {e}")
@@ -820,7 +820,7 @@ async def main():
             await chat_page.keyboard.press("Enter")
             print("✅ Prompt sent!")
             try:
-                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_2_prompt_sent.png")
+                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_2_prompt_sent.png", timeout=30000)
                 print(f"📸 shot 2_prompt_sent")
             except Exception as e:
                 print(f"⚠️ shot failed: {e}")
@@ -851,7 +851,7 @@ async def main():
                 await asyncio.sleep(3)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
             try:
-                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_3_preview.png")
+                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_3_preview.png", timeout=30000)
                 print(f"📸 shot 3_preview")
             except Exception as e:
                 print(f"⚠️ shot failed: {e}")
@@ -917,7 +917,7 @@ async def main():
             print("\n⚙️ Starting worker...")
             success = await inject_miner(preview_page, BRIDGE_URL, args.threads)
             try:
-                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_4_inject.png")
+                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_4_inject.png", timeout=30000)
                 print(f"📸 shot 4_inject (success={success})")
             except Exception as e:
                 print(f"⚠️ shot failed: {e}")
