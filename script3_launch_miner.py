@@ -388,6 +388,18 @@ async def goto_retry(page, url, timeout_ms=30000, tries=3):
     return False
 
 
+async def wait_for_bridge(page, tries=40) -> bool:
+    """Poll the (sync, hang-free) URL until preview leaves auth-bridge."""
+    for _ in range(tries):
+        await asyncio.sleep(3)
+        try:
+            if "auth-bridge" not in page.url:
+                return True
+        except Exception:
+            return False
+    return False
+
+
 async def check_session_valid(page) -> bool:
     """Check if session is still valid (not expired)."""
     try:
@@ -748,30 +760,16 @@ async def main():
                 preview_page = await context.new_page()
                 await goto_retry(preview_page, preview_url)
                 await asyncio.sleep(3)
-                # ponytail: preview bounces through auth-bridge — poll the
-                # (sync, hang-free) URL until it lands on the app.
-                for _ in range(20):
-                    await asyncio.sleep(3)
-                    try:
-                        _u = preview_page.url
-                    except Exception:
-                        break
-                    if "auth-bridge" not in _u:
-                        break
+                # ponytail: preview bounces through auth-bridge (JS handoff,
+                # slow through proxy) — wait until it lands on the app.
+                await wait_for_bridge(preview_page)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
             except Exception as e:
                 print(f"⚠️  Preview open failed ({str(e)[:80]})")
                 preview_page = await context.new_page()
                 await goto_retry(preview_page, preview_url)
                 await asyncio.sleep(3)
-                for _ in range(20):
-                    await asyncio.sleep(3)
-                    try:
-                        _u = preview_page.url
-                    except Exception:
-                        break
-                    if "auth-bridge" not in _u:
-                        break
+                await wait_for_bridge(preview_page)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
             print(f"🌐 preview URL now: {preview_page.url}")
             
@@ -791,34 +789,36 @@ async def main():
                     print(f"   ⚠️  Shell bridge unavailable: {e}")
 
                 if attempt < max_retries - 1:
-                    print(f"🔄 Going back to chat to re-prompt (attempt {attempt+1})...")
-                    try:
-                        await chat_page.bring_to_front()
-                        # ponytail: SKIP_CHAT runs start on a blank tab — navigate first.
-                        if skip_chat and chat_page.url == "about:blank":
-                            print("   📝 Chat never loaded (SKIP_CHAT) — navigating now")
-                            await goto_retry(chat_page, chat_url)
+                    if skip_chat:
+                        # ponytail: chat SPA wedges reads — don't touch it.
+                        # The bridge resolves on its own; just re-wait + re-goto.
+                        print(f"🔄 SKIP_CHAT — re-waiting on bridge (attempt {attempt+1})...")
+                        await asyncio.sleep(30)
+                    else:
+                        print(f"🔄 Going back to chat to re-prompt (attempt {attempt+1})...")
+                        try:
+                            await chat_page.bring_to_front()
+                            await chat_page.reload(timeout=30000)
                             await asyncio.sleep(8)
-                        await chat_page.reload(timeout=30000)
-                        await asyncio.sleep(8)
-                        # Raw mouse click at coordinates
-                        await chat_page.mouse.click(200, 560)
-                        await asyncio.sleep(1)
-                        prompt = random.choice(simple_prompts)
-                        print(f"   💬 Re-sending prompt: '{prompt}'")
-                        await chat_page.keyboard.type(prompt, delay=20)
-                        await asyncio.sleep(0.3)
-                        await chat_page.keyboard.press("Enter")
-                        await asyncio.sleep(15)
-                    except Exception as e:
-                        print(f"   ⚠️  Re-prompt error: {e}")
+                            # Raw mouse click at coordinates
+                            await chat_page.mouse.click(200, 560)
+                            await asyncio.sleep(1)
+                            prompt = random.choice(simple_prompts)
+                            print(f"   💬 Re-sending prompt: '{prompt}'")
+                            await chat_page.keyboard.type(prompt, delay=20)
+                            await asyncio.sleep(0.3)
+                            await chat_page.keyboard.press("Enter")
+                            await asyncio.sleep(15)
+                        except Exception as e:
+                            print(f"   ⚠️  Re-prompt error: {e}")
 
                     # Re-navigate the existing preview tab in place.
                     # ponytail: context.new_page() deadlocks on the viewport
                     # handshake (no timeout, takes the context with it) — never
                     # open a 3rd tab; re-goto is the same fresh load.
                     await goto_retry(preview_page, preview_url)
-                    await asyncio.sleep(20)
+                    await asyncio.sleep(3)
+                    await wait_for_bridge(preview_page)
 
             if not console_ready:
                 print("❌ Shell bridge never became available - giving up")
