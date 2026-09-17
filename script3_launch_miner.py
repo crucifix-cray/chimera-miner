@@ -41,8 +41,19 @@ DASHBOARD_MARKERS = ["/projects", "/dashboard"]
 
 
 def resolve_proxy() -> dict | None:
-    """Pick a TOR->WARP chain proxy: PROXY_PORT env first, else scan 9051-9054, 9050, 40000."""
+    """HTTP_PROXY_URL (http://user:pass@host:port) first, else TOR->WARP chain scan."""
     import socket
+    from urllib.parse import urlparse, unquote
+    hp = os.environ.get("HTTP_PROXY_URL", "").strip()
+    if hp:
+        p = urlparse(hp)
+        d = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+        if p.username:
+            d["username"] = unquote(p.username)
+        if p.password:
+            d["password"] = unquote(p.password)
+        print(f"✅ Using HTTP proxy {p.hostname}:{p.port}", file=sys.stderr)
+        return d
     # ponytail: NO_PROXY_CHAIN=1 forces direct (stale listeners accept TCP but don't route).
     if os.environ.get("NO_PROXY_CHAIN", ""):
         print("⚠️  Proxy chain disabled (NO_PROXY_CHAIN); direct connection.", file=sys.stderr)
