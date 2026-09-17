@@ -465,6 +465,15 @@ async def full_mode():
                 print("  ⚠️ miner down/missing — ensuring...", flush=True)
                 ok = await ensure_mining(ws, cdp)
                 print(f"  {'✅ MINER RUNNING' if ok else '❌ ensure failed'}", flush=True)
+                if not ok:
+                    # Stale UI state often persists per browser — retry fresh.
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    ws, cdp = None, None
+                    await asyncio.sleep(30)
+                    continue
             await asyncio.sleep(CHECK_INTERVAL)
         except Exception as e:
             print(f"  🔄 reset ({type(e).__name__}: {str(e)[:120]})", flush=True)
