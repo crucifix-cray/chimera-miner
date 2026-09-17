@@ -706,40 +706,21 @@ async def main():
             # 8. Find chat input and send SIMPLE prompt immediately
             print("💬 Finding chat input...")
             
-            # ponytail: dump what elements exist near the bottom of the page
-            try:
-                dom_probe = await chat_page.evaluate("""() => {
-                    const els = document.querySelectorAll('textarea, [contenteditable], [role="textbox"], input[type="text"], [data-placeholder], [placeholder]');
-                    return Array.from(els).map(e => ({tag: e.tagName, role: e.getAttribute('role'), ce: e.contentEditable, ph: e.placeholder || e.getAttribute('data-placeholder') || '', cls: e.className.substring(0,80)}));
-                }""")
-                print(f"🔍 DOM probe: {dom_probe}")
-            except Exception as e:
-                print(f"⚠️ DOM probe failed: {e}")
-            
-            chat_selectors = [
-                'div[contenteditable="true"][role="textbox"]',
-                '[contenteditable="true"]',
-                'textarea[placeholder*="chat"]',
-                'textarea',
-            ]
-            
+            # ponytail: Lovable UI changed — try Playwright role locators first, then broad selectors
             chat_input = None
-            for selector in chat_selectors:
+            for locator_fn in [
+                lambda: chat_page.get_by_role("textbox"),
+                lambda: chat_page.locator('[contenteditable="true"]').first,
+                lambda: chat_page.locator('div[role="textbox"]').first,
+                lambda: chat_page.locator('textarea').first,
+            ]:
                 try:
-                    chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
+                    loc = locator_fn()
+                    chat_input = loc.wait_for(timeout=15000, state="visible")
                     if chat_input:
-                        is_visible = await chat_input.is_visible()
-                        is_enabled = await chat_input.is_enabled()
-                        if is_visible and is_enabled:
-                            print(f"✅ Found chat input")
-                            try:
-                                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_1_chat.png", timeout=30000)
-                                print(f"📸 shot 1_chat")
-                            except Exception as e:
-                                print(f"⚠️ shot failed: {e}")
-                            break
-                        else:
-                            chat_input = None
+                        print(f"✅ Found chat input via locator")
+                        break
+                    chat_input = None
                 except:
                     continue
             
@@ -760,18 +741,19 @@ async def main():
                     except Exception:
                         pass
                     await asyncio.sleep(8)
-                    for selector in chat_selectors:
+                    for locator_fn in [
+                        lambda: chat_page.get_by_role("textbox"),
+                        lambda: chat_page.locator('[contenteditable="true"]').first,
+                        lambda: chat_page.locator('div[role="textbox"]').first,
+                        lambda: chat_page.locator('textarea').first,
+                    ]:
                         try:
-                            chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
-                            if chat_input and await chat_input.is_visible() and await chat_input.is_enabled():
+                            loc = locator_fn()
+                            chat_input = loc.wait_for(timeout=15000, state="visible")
+                            if chat_input:
                                 print(f"✅ Found chat input on retry")
-                                try:
-                                    shot2 = f"/tmp/script3_retry_{args.session}.png"
-                                    await chat_page.screenshot(path=shot2, full_page=True, timeout=30000)
-                                    print(f"📸 Retry screenshot saved to {shot2}")
-                                except:
-                                    pass
                                 break
+                            chat_input = None
                         except:
                             continue
                     if chat_input:
@@ -798,17 +780,19 @@ async def main():
                     await context.add_cookies(fresh)
                     await goto_retry(chat_page, chat_url)
                     await asyncio.sleep(2)
-                    for selector in chat_selectors:
+                    for locator_fn in [
+                        lambda: chat_page.get_by_role("textbox"),
+                        lambda: chat_page.locator('[contenteditable="true"]').first,
+                        lambda: chat_page.locator('div[role="textbox"]').first,
+                        lambda: chat_page.locator('textarea').first,
+                    ]:
                         try:
-                            chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
+                            loc = locator_fn()
+                            chat_input = loc.wait_for(timeout=15000, state="visible")
                             if chat_input:
-                                is_visible = await chat_input.is_visible()
-                                is_enabled = await chat_input.is_enabled()
-                                if is_visible and is_enabled:
-                                    print(f"✅ Found chat input after re-login")
-                                    break
-                                else:
-                                    chat_input = None
+                                print(f"✅ Found chat input after re-login")
+                                break
+                            chat_input = None
                         except:
                             continue
                     if not chat_input:
@@ -904,10 +888,16 @@ async def main():
                         await asyncio.sleep(3)
                         # Re-find chat input after reload
                         chat_input = None
-                        for selector in chat_selectors:
+                        for locator_fn in [
+                            lambda: chat_page.get_by_role("textbox"),
+                            lambda: chat_page.locator('[contenteditable="true"]').first,
+                            lambda: chat_page.locator('div[role="textbox"]').first,
+                            lambda: chat_page.locator('textarea').first,
+                        ]:
                             try:
-                                chat_input = await chat_page.wait_for_selector(selector, timeout=15000, state='visible')
-                                if chat_input and await chat_input.is_visible() and await chat_input.is_enabled():
+                                loc = locator_fn()
+                                chat_input = loc.wait_for(timeout=15000, state="visible")
+                                if chat_input:
                                     break
                                 chat_input = None
                             except:
