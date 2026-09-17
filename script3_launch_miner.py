@@ -658,12 +658,9 @@ async def main():
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
             print(f"\n📝 Going to chat: {chat_url}")
             await goto_retry(chat_page, chat_url)
-            # ponytail: proxied sandboxes need time for JS to hydrate
-            try:
-                await chat_page.wait_for_load_state("networkidle", timeout=30000)
-            except:
-                pass
-            await asyncio.sleep(3)
+            # ponytail: skip networkidle — Lovable SPA never goes idle (WebSocket keepalive)
+            # goto_retry already waited for initial load; give JS time to hydrate
+            await asyncio.sleep(8)
             print(f"🌐 Page URL: {chat_page.url}")
             try:
                 print(f"🌐 Page title: {await chat_page.title()}")
