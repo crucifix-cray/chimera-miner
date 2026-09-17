@@ -661,7 +661,10 @@ async def main():
                 locale='en-US',
             )
         async with browser_cm as browser:
-            context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 800, "height": 600})
+            # ponytail: never pass an explicit viewport — a viewport that can't
+            # fit the spoofed window geometry deadlocks the Juggler handshake
+            # with NO timeout (upstream #666/#673). no_viewport measures instead.
+            context = browser.contexts[0] if browser.contexts else await browser.new_context(no_viewport=True)
             
             # Create chat page
             chat_page = await context.new_page()
