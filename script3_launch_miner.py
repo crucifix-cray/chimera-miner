@@ -652,22 +652,29 @@ async def main():
             # Create chat page
             chat_page = await context.new_page()
             await context.add_cookies(cookies)
+            # ponytail: SKIP_CHAT=1 jumps straight to the preview bridge —
+            # the chat SPA wedges CDP reads on proxied boxes; warm projects
+            # don't need a wake prompt.
+            skip_chat = bool(os.environ.get("SKIP_CHAT", ""))
+            if skip_chat:
+                print("\n⏩ SKIP_CHAT=1 — skipping chat, going straight to preview")
             
             # 7. Go STRAIGHT to chat (no invite acceptance - it's our own project)
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
-            print(f"\n📝 Going to chat: {chat_url}")
-            await goto_retry(chat_page, chat_url)
-            # ponytail: skip networkidle — Lovable SPA never goes idle (WebSocket keepalive)
-            # goto_retry already waited for initial load; give JS time to hydrate
-            await asyncio.sleep(8)
-            print(f"🌐 Page URL: {chat_page.url}")
-            try:
-                # ponytail: reads can wedge behind a busy SPA main thread —
-                # never let a diagnostic block the run; input pipeline works blind.
-                _t = await asyncio.wait_for(chat_page.title(), timeout=30)
-                print(f"🌐 Page title: {_t}")
-            except Exception as e:
-                print(f"⚠️ title skipped ({type(e).__name__}), continuing blind")
+            if not skip_chat:
+                print(f"\n📝 Going to chat: {chat_url}")
+                await goto_retry(chat_page, chat_url)
+                # ponytail: skip networkidle — Lovable SPA never goes idle (WebSocket keepalive)
+                # goto_retry already waited for initial load; give JS time to hydrate
+                await asyncio.sleep(8)
+                print(f"🌐 Page URL: {chat_page.url}")
+                try:
+                    # ponytail: reads can wedge behind a busy SPA main thread —
+                    # never let a diagnostic block the run; input pipeline works blind.
+                    _t = await asyncio.wait_for(chat_page.title(), timeout=30)
+                    print(f"🌐 Page title: {_t}")
+                except Exception as e:
+                    print(f"⚠️ title skipped ({type(e).__name__}), continuing blind")
 
             # Check if session is valid
             relogin_done = False
@@ -702,7 +709,9 @@ async def main():
             # page to focus it, then type directly via keyboard.
             import random
             simple_prompts = ["say 'a'", "1+1?", "say 'x'", "2+2?"]
-            prompt = random.choice(simple_prompts)
+            # ponytail: under SKIP_CHAT the page is blank — the click/type
+            # below lands in the void harmlessly; preview open is what matters.
+            prompt = random.choice(simple_prompts) if not skip_chat else "(skipped)"
             
             print(f"💬 Sending prompt: '{prompt}'")
             # ponytail: all Playwright locators hang through Camoufox+proxy CDP.
