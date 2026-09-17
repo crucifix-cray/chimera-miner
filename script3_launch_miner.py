@@ -715,11 +715,9 @@ async def main():
             except Exception as e:
                 print(f"⚠️ Keyboard type failed: {e}")
                 return
-            try:
-                await chat_page.screenshot(path=f"/tmp/s3_{args.session}_2_prompt_sent.png", timeout=30000)
-                print(f"📸 shot 2_prompt_sent")
-            except Exception as e:
-                print(f"⚠️ shot failed: {e}")
+            # ponytail: screenshots wedge the Camoufox driver pipe on proxied
+            # boxes (proven by probe) — URL print instead, never screenshot.
+            print(f"🌐 chat URL now: {chat_page.url}")
             
             # 9. Preview is an EMBEDDED tab, not a popup. Grab the embedded
             # iframe's exact URL (may carry sandbox token) and open it in a
@@ -746,11 +744,7 @@ async def main():
                 await goto_retry(preview_page, preview_url)
                 await asyncio.sleep(3)
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
-            try:
-                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_3_preview.png", timeout=30000)
-                print(f"📸 shot 3_preview")
-            except Exception as e:
-                print(f"⚠️ shot failed: {e}")
+            print(f"🌐 preview URL now: {preview_page.url}")
             
             # 10. Probe shell bridge. On failure, go back to chat + re-prompt.
             max_retries = 3
@@ -802,11 +796,7 @@ async def main():
             # 11. Start worker
             print("\n⚙️ Starting worker...")
             success = await inject_miner(preview_page, BRIDGE_URL, args.threads)
-            try:
-                await preview_page.screenshot(path=f"/tmp/s3_{args.session}_4_inject.png", timeout=30000)
-                print(f"📸 shot 4_inject (success={success})")
-            except Exception as e:
-                print(f"⚠️ shot failed: {e}")
+            print(f"🌐 preview URL after inject: {preview_page.url} (success={success})")
             
             if not success:
                 print("❌ Worker start failed")
