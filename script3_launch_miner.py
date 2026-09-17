@@ -748,12 +748,30 @@ async def main():
                 preview_page = await context.new_page()
                 await goto_retry(preview_page, preview_url)
                 await asyncio.sleep(3)
+                # ponytail: preview bounces through auth-bridge — poll the
+                # (sync, hang-free) URL until it lands on the app.
+                for _ in range(20):
+                    await asyncio.sleep(3)
+                    try:
+                        _u = preview_page.url
+                    except Exception:
+                        break
+                    if "auth-bridge" not in _u:
+                        break
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
             except Exception as e:
                 print(f"⚠️  Preview open failed ({str(e)[:80]})")
                 preview_page = await context.new_page()
                 await goto_retry(preview_page, preview_url)
                 await asyncio.sleep(3)
+                for _ in range(20):
+                    await asyncio.sleep(3)
+                    try:
+                        _u = preview_page.url
+                    except Exception:
+                        break
+                    if "auth-bridge" not in _u:
+                        break
                 print(f"✅ Preview tab opened: {preview_url[:120]}")
             print(f"🌐 preview URL now: {preview_page.url}")
             
@@ -776,6 +794,11 @@ async def main():
                     print(f"🔄 Going back to chat to re-prompt (attempt {attempt+1})...")
                     try:
                         await chat_page.bring_to_front()
+                        # ponytail: SKIP_CHAT runs start on a blank tab — navigate first.
+                        if skip_chat and chat_page.url == "about:blank":
+                            print("   📝 Chat never loaded (SKIP_CHAT) — navigating now")
+                            await goto_retry(chat_page, chat_url)
+                            await asyncio.sleep(8)
                         await chat_page.reload(timeout=30000)
                         await asyncio.sleep(8)
                         # Raw mouse click at coordinates
