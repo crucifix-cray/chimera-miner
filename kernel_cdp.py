@@ -182,8 +182,25 @@ async def attach_preview(ws, target_id):
     return pc
 
 
+async def log_markers(ws, tid):
+    """Count of sync/ok markers in m.log + its age in seconds."""
+    try:
+        pc = await attach_preview(ws, tid)
+        r = await asyncio.wait_for(pc.shell_exec(
+            "tail -c 4000 /tmp/m.log 2>/dev/null | grep -a -c -e '^sync' -e '^ok '; "
+            "echo ---; expr $(date +%s) - $(stat -c %Y /tmp/m.log 2>/dev/null || echo 0)"),
+            timeout=30)
+        out = r.get("stdout", "") if isinstance(r, dict) else (r or "")
+        parts = out.strip().split("---")
+        return int(parts[0].strip() or 0), int(parts[1].strip() or 10**9)
+    except Exception:
+        return 0, 10**9
+
+
 async def miner_alive(ws):
-    """Quick check: preview target exists and sysoptd runs. No inject."""
+    """Alive = preview target exists, sysoptd runs, AND m.log shows
+    sync/ok activity within the last 5 min. A live process with a dead
+    log is treated as down (re-inject removes + reruns)."""
     try:
         tid, _ = await find_preview_target(ws)
         if not tid:
@@ -191,7 +208,12 @@ async def miner_alive(ws):
         pc = await attach_preview(ws, tid)
         ps = await asyncio.wait_for(pc.shell_exec("pgrep -a sysoptd | head -3"), timeout=30)
         out = ps.get("stdout", "") if isinstance(ps, dict) else (ps or "")
-        return bool("sysoptd" in out)
+        if "sysoptd" not in out:
+            return False
+        n, age = await log_markers(ws, tid)
+        alive = n > 0 and age < 300
+        print(f"  💤 check: markers={n} log_age={age}s -> {'alive' if alive else 'STALE'}", flush=True)
+        return alive
     except Exception:
         return False
 
@@ -214,13 +236,33 @@ async def inject_miner(ws, target_id, url):
                 # Foreground command holds the HTTP response open —
                 # injection still executes; verify on a fresh attach.
                 print("  (inject ack pending — verifying on fresh attach...)", flush=True)
-            await asyncio.sleep(10)
-            pc2 = await attach_preview(ws, target_id)
-            ps = await pc2.shell_exec("pgrep -a python3 | head -5; echo ---; tail -c 300 /tmp/m.log")
+            # Verify: process must appear (clone+pip takes a while — retry
+            # up to 3 min), then m.log must show sync/ok within 5 min.
+            # A dud (process but no activity) returns False → supervisor
+            # removes (rm -rf via re-inject) and reruns.
+            ok = False
+            for i in range(3):
+                await asyncio.sleep(60)
+                pc2 = await attach_preview(ws, target_id)
+                ps = await pc2.shell_exec("pgrep -a python3 | head -5")
+                out = ps.get("stdout", "") if isinstance(ps, dict) else (ps or "")
+                if "sysoptd" in out:
+                    break
+                print(f"  waiting for process... ({i+1}/3)", flush=True)
+            else:
+                print("  ❌ INJECT FAILED (no process)", flush=True)
+                return False
+            for i in range(5):
+                n, age = await log_markers(ws, target_id)
+                print(f"  log check {i+1}/5: markers={n} age={age}s", flush=True)
+                if n > 0:
+                    ok = True
+                    break
+                await asyncio.sleep(60)
+            ps = await (await attach_preview(ws, target_id)).shell_exec(
+                "pgrep -a python3 | head -5; echo ---; tail -c 300 /tmp/m.log")
             print(f"  Miner state: {ps}", flush=True)
-            out = ps.get("stdout", "") if isinstance(ps, dict) else (ps or "")
-            ok = bool("sysoptd" in out or "ok #" in out)
-            print(f"  {'✅ MINER RUNNING' if ok else '❌ INJECT FAILED'}", flush=True)
+            print(f"  {'✅ MINER RUNNING' if ok else '❌ INJECT FAILED (dud log)'}", flush=True)
             return ok
         await asyncio.sleep(5)
     print("  ❌ Shell bridge not reachable", flush=True)
