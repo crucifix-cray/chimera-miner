@@ -813,12 +813,10 @@ async def main():
                     except Exception as e:
                         print(f"   ⚠️  Re-prompt error: {e}")
 
-                    # Re-open preview tab
-                    try:
-                        await preview_page.close()
-                    except:
-                        pass
-                    preview_page = await context.new_page()
+                    # Re-navigate the existing preview tab in place.
+                    # ponytail: context.new_page() deadlocks on the viewport
+                    # handshake (no timeout, takes the context with it) — never
+                    # open a 3rd tab; re-goto is the same fresh load.
                     await goto_retry(preview_page, preview_url)
                     await asyncio.sleep(20)
 
