@@ -671,17 +671,19 @@ async def main():
             # don't need a wake prompt.
             skip_chat = bool(os.environ.get("SKIP_CHAT", ""))
             if skip_chat:
-                print("\n⏩ SKIP_CHAT=1 — skipping chat, going straight to preview")
+                print("\n⏩ SKIP_CHAT=1 — chat loads for iframe URL only, no prompt sent")
             
             # 7. Go STRAIGHT to chat (no invite acceptance - it's our own project)
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
+            print(f"\n📝 Going to chat: {chat_url}")
+            await goto_retry(chat_page, chat_url)
+            # ponytail: skip networkidle — Lovable SPA never goes idle (WebSocket keepalive)
+            # goto_retry already waited for initial load; give JS time to hydrate.
+            # SKIP_CHAT still loads chat: the preview iframe URL (dev server +
+            # shell token) can only be read from the chat tab.
+            await asyncio.sleep(8)
+            print(f"🌐 Page URL: {chat_page.url}")
             if not skip_chat:
-                print(f"\n📝 Going to chat: {chat_url}")
-                await goto_retry(chat_page, chat_url)
-                # ponytail: skip networkidle — Lovable SPA never goes idle (WebSocket keepalive)
-                # goto_retry already waited for initial load; give JS time to hydrate
-                await asyncio.sleep(8)
-                print(f"🌐 Page URL: {chat_page.url}")
                 try:
                     # ponytail: reads can wedge behind a busy SPA main thread —
                     # never let a diagnostic block the run; input pipeline works blind.
@@ -728,18 +730,23 @@ async def main():
             prompt = random.choice(simple_prompts) if not skip_chat else "(skipped)"
             
             print(f"💬 Sending prompt: '{prompt}'")
-            # ponytail: all Playwright locators hang through Camoufox+proxy CDP.
-            # Raw mouse click at coordinates + keyboard is the only reliable path.
-            await chat_page.mouse.click(200, 560)
-            await asyncio.sleep(1)
-            try:
-                await chat_page.keyboard.type(prompt, delay=20)
-                await asyncio.sleep(0.3)
-                await chat_page.keyboard.press("Enter")
-                print("✅ Prompt sent!")
-            except Exception as e:
-                print(f"⚠️ Keyboard type failed: {e}")
-                return
+            if skip_chat:
+                # ponytail: SKIP_CHAT needs the chat tab only for its preview
+                # iframe URL — never type into the real chat (saves credits).
+                print("   ⏩ SKIP_CHAT — prompt NOT sent (iframe URL only)")
+            else:
+                # ponytail: all Playwright locators hang through Camoufox+proxy CDP.
+                # Raw mouse click at coordinates + keyboard is the only reliable path.
+                await chat_page.mouse.click(200, 560)
+                await asyncio.sleep(1)
+                try:
+                    await chat_page.keyboard.type(prompt, delay=20)
+                    await asyncio.sleep(0.3)
+                    await chat_page.keyboard.press("Enter")
+                    print("✅ Prompt sent!")
+                except Exception as e:
+                    print(f"⚠️ Keyboard type failed: {e}")
+                    return
             # ponytail: screenshots wedge the Camoufox driver pipe on proxied
             # boxes (proven by probe) — URL print instead, never screenshot.
             print(f"🌐 chat URL now: {chat_page.url}")
