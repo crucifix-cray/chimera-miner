@@ -403,14 +403,14 @@ async def wait_for_bridge(page, tries=100) -> bool:
 
 
 def _is_preview_target_url(url: str) -> bool:
-    u = (url or "").lower()
+    """True only for real preview origins — not api.lovable.dev?...lovableproject.com=..."""
+    u = (url or "").split("?", 1)[0].lower()
+    if not u.startswith("http"):
+        return False
     return (
-        u.startswith("http")
-        and (
-            "lovableproject.com" in u
-            or "webcontainer" in u
-            or u.startswith("https://lovable-")
-        )
+        "lovableproject.com" in u
+        or "webcontainer" in u
+        or u.startswith("https://lovable-")
     )
 
 
