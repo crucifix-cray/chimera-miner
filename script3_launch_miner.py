@@ -445,26 +445,11 @@ def _shell_js(cmd: str, cwd: str | None = None) -> str:
     }}"""
 
 
-async def _dom_iframe_srcs(page) -> list[str]:
-    """Best-effort iframe[src] read. Chat SPA evaluate can wedge — hard timeout."""
-    js = """() => Array.from(document.querySelectorAll('iframe'))
-        .map(i => i.src || i.getAttribute('src') || '')
-        .filter(Boolean)"""
-    try:
-        srcs = await asyncio.wait_for(page.evaluate(js), timeout=15)
-        return list(srcs or [])
-    except Exception as e:
-        print(f"   ⚠️ DOM iframe scan skipped ({type(e).__name__})")
-        return []
-
-
 async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
-    """Steal preview URL via Playwright frames + short DOM scan.
+    """Steal preview URL via Playwright frames only (Firefox / Camoufox).
 
-    Camoufox is Firefox — BrowserContext.new_cdp_session is Chromium-only
-    (crashes with 'CDP session is only available in Chromium'). Do NOT use CDP.
-    Stay on the chat page: top-level bare *.lovableproject.com has no Vite
-    /__shell; the live sandbox is the embedded frame (probe it in place).
+    Camoufox has no Chromium CDP. DOM evaluate on the Lovable chat SPA wedges
+    (TimeoutError) — do not call it. Poll page.frames only.
     """
     best = None
     seen_same = 0
@@ -479,22 +464,12 @@ async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
                 u = f.url or ""
                 if _is_preview_target_url(u):
                     candidates.append(u)
+                elif tick == 1 or tick % 6 == 0:
+                    # rare diagnostic — non-blank child frames
+                    if u and u not in ("about:blank", "about:srcdoc") and "lovable.dev" not in u:
+                        print(f"   · other frame: {u[:100]}")
         except Exception as e:
             print(f"   ⚠️ frames read: {type(e).__name__}: {e}")
-
-        # Periodic DOM scan (may wedge — timed). Also blind-click to wake Preview.
-        if tick == 1 or tick % 4 == 0:
-            for src in await _dom_iframe_srcs(page):
-                if _is_preview_target_url(src) or "lovableproject.com" in src or "/preview" in src:
-                    candidates.append(src)
-            if tick in (2, 6, 10):
-                # Input pipeline works blind — nudge Preview chrome on the right.
-                for x, y in ((1050, 70), (960, 90), (880, 50)):
-                    try:
-                        await page.mouse.click(x, y)
-                        await asyncio.sleep(0.4)
-                    except Exception:
-                        pass
 
         for u in candidates:
             if best is None or _preview_url_score(u) > _preview_url_score(best):
@@ -522,7 +497,7 @@ async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
             seen_same = 0
             last_best = None
             if tick == 1 or tick % 3 == 0:
-                print("   ⏳ waiting for lovableproject/webcontainer frame...")
+                print(f"   ⏳ waiting for preview frame... ({tick}, frames={len(page.frames)})")
         await asyncio.sleep(5)
 
     if best:
@@ -530,6 +505,40 @@ async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
         return best
     print("   ❌ no preview frame found")
     return None
+
+
+async def soft_wake_preview(page) -> None:
+    """One cheap chat keystroke to force Lovable to mount the preview iframe.
+
+    SKIP_CHAT normally avoids burning credits, but without a preview frame
+    /__shell is unreachable on Camoufox (no CDP OOPIF attach).
+    """
+    print("   ⚡ soft-wake: typing one tiny prompt so Preview iframe mounts...")
+    try:
+        await page.mouse.click(200, 560)
+        await asyncio.sleep(1)
+        await page.keyboard.type("say 'a'", delay=20)
+        await asyncio.sleep(0.3)
+        await page.keyboard.press("Enter")
+        print("   ✅ soft-wake prompt sent")
+    except Exception as e:
+        print(f"   ⚠️ soft-wake failed ({type(e).__name__}): {e}")
+    await asyncio.sleep(25)
+    # Also try /preview with commit (don't wait for full DOM — timed out before).
+    try:
+        pid = None
+        u = page.url or ""
+        if "/projects/" in u:
+            pid = u.split("/projects/")[1].split("/")[0].split("?")[0]
+        if pid:
+            panel = f"https://lovable.dev/projects/{pid}/preview"
+            print(f"   ⚡ soft-wake: commit-nav to {panel}")
+            await page.goto(panel, timeout=60000, wait_until="commit")
+            await asyncio.sleep(15)
+            print(f"   🌐 after commit-nav: {page.url}")
+    except Exception as e:
+        print(f"   ⚠️ commit-nav failed ({type(e).__name__}): {e}")
+
 
 
 async def shell_exec_preview(page, cmd: str, cwd: str | None = None, skip_main: bool = False) -> dict:
@@ -941,8 +950,12 @@ async def main():
             preview_url = bare_preview
             preview_page = None
 
-            print("   🔎 steal preview URL (frames/DOM — Firefox-safe)...")
-            stolen = await steal_preview_url(chat_page, timeout_s=180)
+            print("   🔎 steal preview URL (frames — Firefox-safe)...")
+            stolen = await steal_preview_url(chat_page, timeout_s=90)
+            if not stolen and skip_chat:
+                await soft_wake_preview(chat_page)
+                print("   🔎 re-steal after soft-wake...")
+                stolen = await steal_preview_url(chat_page, timeout_s=120)
             # Default: stay on chat and probe OOPIF frames (works even for bare).
             stay_on_chat_oopif = bool(skip_chat)
             if stolen:
@@ -960,6 +973,7 @@ async def main():
                     print("   📌 keeping chat tab — will probe /__shell in frames")
             else:
                 print("   ⚠️ no preview frame yet — staying on chat, probing frames anyway")
+
 
             print(f"   📄 preview target: {preview_url[:150]}")
 
