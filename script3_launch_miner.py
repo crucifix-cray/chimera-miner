@@ -445,11 +445,11 @@ def _shell_js(cmd: str, cwd: str | None = None) -> str:
     }}"""
 
 
-async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
-    """Steal preview URL via Playwright frames only (Firefox / Camoufox).
+async def steal_preview_url(page, timeout_s: int = 180, captured: list[str] | None = None) -> str | None:
+    """Steal preview URL via Playwright frames + optional network capture list.
 
-    Camoufox has no Chromium CDP. DOM evaluate on the Lovable chat SPA wedges
-    (TimeoutError) — do not call it. Poll page.frames only.
+    Camoufox has no Chromium CDP. DOM evaluate on the Lovable chat SPA wedges.
+    Prefer URLs observed via request/response/framenavigated hooks.
     """
     best = None
     seen_same = 0
@@ -459,17 +459,27 @@ async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
     while asyncio.get_event_loop().time() < deadline:
         tick += 1
         candidates: list[str] = []
+        if captured:
+            candidates.extend(captured)
         try:
             for f in page.frames:
                 u = f.url or ""
                 if _is_preview_target_url(u):
                     candidates.append(u)
                 elif tick == 1 or tick % 6 == 0:
-                    # rare diagnostic — non-blank child frames
                     if u and u not in ("about:blank", "about:srcdoc") and "lovable.dev" not in u:
                         print(f"   · other frame: {u[:100]}")
         except Exception as e:
             print(f"   ⚠️ frames read: {type(e).__name__}: {e}")
+
+        # dedupe preserve order
+        seen = set()
+        uniq = []
+        for u in candidates:
+            if u not in seen:
+                seen.add(u)
+                uniq.append(u)
+        candidates = uniq
 
         for u in candidates:
             if best is None or _preview_url_score(u) > _preview_url_score(best):
@@ -497,7 +507,12 @@ async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
             seen_same = 0
             last_best = None
             if tick == 1 or tick % 3 == 0:
-                print(f"   ⏳ waiting for preview frame... ({tick}, frames={len(page.frames)})")
+                nframes = 0
+                try:
+                    nframes = len(page.frames)
+                except Exception:
+                    pass
+                print(f"   ⏳ waiting for preview frame... ({tick}, frames={nframes}, captured={len(captured or [])})")
         await asyncio.sleep(5)
 
     if best:
@@ -862,12 +877,47 @@ async def main():
             # Create chat page
             chat_page = await context.new_page()
             await context.add_cookies(cookies)
+
+            # Camoufox frame tree often stays at 1 frame even when Preview
+            # loads — capture lovableproject/webcontainer URLs from network
+            # + framenavigated (Firefox-safe; no CDP).
+            captured_preview_urls: list[str] = []
+
+            def _capture_url(u: str, src: str):
+                if not u or not _is_preview_target_url(u):
+                    return
+                if u not in captured_preview_urls:
+                    captured_preview_urls.append(u)
+                    print(f"   📡 {src}: {u[:140]}")
+
+            def _on_request(request):
+                try:
+                    _capture_url(request.url or "", "req")
+                except Exception:
+                    pass
+
+            def _on_response(response):
+                try:
+                    _capture_url(response.url or "", "resp")
+                except Exception:
+                    pass
+
+            def _on_frame(frame):
+                try:
+                    _capture_url(frame.url or "", "frame")
+                except Exception:
+                    pass
+
+            chat_page.on("request", _on_request)
+            chat_page.on("response", _on_response)
+            chat_page.on("framenavigated", _on_frame)
             # ponytail: SKIP_CHAT=1 jumps straight to the preview bridge —
             # the chat SPA wedges CDP reads on proxied boxes; warm projects
             # don't need a wake prompt.
             skip_chat = bool(os.environ.get("SKIP_CHAT", ""))
             if skip_chat:
                 print("\n⏩ SKIP_CHAT=1 — chat loads for iframe URL only, no prompt sent")
+
             
             # 7. Go STRAIGHT to chat (no invite acceptance - it's our own project)
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
@@ -959,11 +1009,11 @@ async def main():
             preview_page = None
 
             print("   🔎 steal preview URL (frames — Firefox-safe)...")
-            stolen = await steal_preview_url(chat_page, timeout_s=90)
+            stolen = await steal_preview_url(chat_page, timeout_s=90, captured=captured_preview_urls)
             if not stolen and skip_chat:
                 await soft_wake_preview(chat_page)
                 print("   🔎 re-steal after soft-wake...")
-                stolen = await steal_preview_url(chat_page, timeout_s=120)
+                stolen = await steal_preview_url(chat_page, timeout_s=120, captured=captured_preview_urls)
             # Default: stay on chat and probe OOPIF frames (works even for bare).
             stay_on_chat_oopif = bool(skip_chat)
             if stolen:
@@ -1041,7 +1091,9 @@ async def main():
                     if skip_chat:
                         print(f"🔄 SKIP_CHAT — re-steal frames + re-wait (attempt {attempt+1})...")
                         await asyncio.sleep(20)
-                        stolen2 = await steal_preview_url(preview_page, timeout_s=60)
+                        stolen2 = await steal_preview_url(
+                            preview_page, timeout_s=60, captured=captured_preview_urls
+                        )
                         if stolen2 and stolen2 != preview_url:
                             preview_url = stolen2
                             print(f"   📄 updated preview target: {preview_url[:120]}")
