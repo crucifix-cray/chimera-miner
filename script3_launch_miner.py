@@ -392,9 +392,10 @@ async def goto_retry(page, url, timeout_ms=30000, tries=3, wait_until="load"):
             except Exception:
                 pass
             aborted = "NS_BINDING_ABORTED" in msg or "ERR_ABORTED" in msg or "Navigation interrupted" in msg
+            # Must actually leave lovable.dev chat — staying on /projects is NOT success.
             landed = any(
                 x in cur
-                for x in ("lovableproject.com", "auth-bridge", "auth-token", "lovable.dev")
+                for x in ("lovableproject.com", "auth-bridge", "auth-token")
             )
             if aborted and landed:
                 print(f"   ↪️  goto aborted but landed on {cur[:100]} — continuing")
@@ -407,16 +408,24 @@ async def goto_retry(page, url, timeout_ms=30000, tries=3, wait_until="load"):
 
 
 async def wait_for_bridge(page, tries=100) -> bool:
-    """Poll the (sync, hang-free) URL until preview leaves auth-bridge."""
+    """Poll until preview leaves auth-bridge and is on lovableproject.com."""
     for i in range(tries):
         await asyncio.sleep(3)
         try:
-            if "auth-bridge" not in page.url:
-                print(f"   🌉 bridge resolved -> {page.url[:100]}")
+            u = page.url or ""
+            if "auth-bridge" in u or "auth-token" in u:
+                if i % 5 == 0:
+                    print(f"   ⏳ still bridging... {u[:100]}")
+                continue
+            if "lovableproject.com" in u:
+                print(f"   🌉 bridge resolved -> {u[:100]}")
                 return True
+            # Wrong host (e.g. still on lovable.dev chat) — keep waiting briefly
+            if i % 5 == 0:
+                print(f"   ⏳ waiting for lovableproject.com (now {u[:80]})")
         except Exception:
             return False
-    print("   ⚠️ bridge still on auth-bridge after ~5min, probing anyway")
+    print("   ⚠️ bridge did not reach lovableproject.com after ~5min, probing anyway")
     return False
 
 
@@ -1022,9 +1031,26 @@ async def main():
             async def _open_preview(page):
                 print(f"   📄 goto {preview_url}")
                 # commit: auth-bridge redirects abort domcontentloaded (NS_BINDING_ABORTED)
-                await goto_retry(page, preview_url, timeout_ms=120000, wait_until="commit")
-                await asyncio.sleep(5)
+                for nav_try in range(1, 4):
+                    await goto_retry(page, preview_url, timeout_ms=120000, wait_until="commit")
+                    await asyncio.sleep(3)
+                    cur = ""
+                    try:
+                        cur = page.url or ""
+                    except Exception:
+                        pass
+                    if "lovableproject.com" in cur or "auth-bridge" in cur or "auth-token" in cur:
+                        break
+                    print(f"   ⚠️ still on {cur[:90]} after goto — retry {nav_try}/3")
+                    await asyncio.sleep(5)
                 await wait_for_bridge(page)
+                # Final hard check: must be on lovableproject.com
+                cur = page.url or ""
+                if "lovableproject.com" not in cur:
+                    print(f"   🔁 force re-goto (stuck on {cur[:90]})")
+                    await goto_retry(page, preview_url, timeout_ms=120000, wait_until="commit")
+                    await asyncio.sleep(5)
+                    await wait_for_bridge(page)
                 print(f"   🌐 after bridge: {page.url}")
 
             try:
