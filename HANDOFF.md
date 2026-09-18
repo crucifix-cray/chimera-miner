@@ -4,11 +4,12 @@
 **Status:** Script 3 working, ready for GitHub Actions deployment  
 **Next Agent:** Continue from Task #3
 
-> **2026-09-17 Railway / Camoufox / WebShare work is NOT finished.**  
-> Live handoff for the next agent:  
-> [`docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md`](docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md)  
-> Commits on `main`: `647071a` (in-place preview), `8fbc426` (CDP OOPIF + frame `/__shell`).  
-> Sandbox trial outcome unconfirmed — SSH flaked mid-monitor.
+> **2026-09-18 Railway Camoufox/WebShare: PROVEN on `railway sandbox`.**  
+> Full runbook: [`docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md`](docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md)  
+> **Stack:** `railway sandbox create` + keepalive + Camoufox + **`HEADED=1`** + WebShare + session-3 + **real chat prompt (no SKIP_CHAT)** + bare `*.lovableproject.com` → `Shell bridge ready` / worker with `--bridge chimera-bridge…`.  
+> **Current sandbox:** `3ebaf5e7-…` on Railway CLI session-7 (`s2d6bjrla38o@emalupe.com`). Old `jzwvvhj…` / `test-ubuntu-6` sandbox destroyed + account restricted.  
+> Project: `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`. **Never** trial on overloaded service `Ubuntu 24.04`.
+
 
 ---
 

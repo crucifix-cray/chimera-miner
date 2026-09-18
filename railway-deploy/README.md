@@ -1,5 +1,10 @@
 # Railway Deployment Package
 
+> **Proven path (2026-09-18):** use **`railway sandbox`**, not this Dockerfile/`Ubuntu 24.04` service, for Camoufox+WebShare script3.  
+> Runbook: [`docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md`](../docs/HANDOFF-RAILWAY-SCRIPT3-2026-09-17.md)  
+> (`CAMOUFOX=1`, WebShare proxy, session-3, **no SKIP_CHAT**, bare `*.lovableproject.com` → worker + rate lines.)
+
+
 This directory contains everything needed to deploy the chimera miner to Railway.
 
 ## Files
