@@ -31,8 +31,8 @@ async def shell_exec(page, cmd: str, cwd: str = None) -> dict:
     Bypasses window.doc entirely — works even when Camoufox doesn't
     evaluate the Vite module scripts that define window.doc.
 
-    Tries the page main frame first, then every child frame (Lovable
-    preview is an OOPIF; top-level often lacks /__shell).
+    Prefers preview frames (lovableproject / webcontainer / blank OOPIF)
+    before the Lovable chat SPA main frame (evaluate wedges there).
 
     Returns: {"stdout": str, "stderr": str, "code": int, "cwd": str}
     """
@@ -53,20 +53,34 @@ async def shell_exec(page, cmd: str, cwd: str = None) -> dict:
         }}
     }}"""
     errors = []
-    targets = [page]
+    frames = []
     try:
-        targets.extend(list(page.frames))
+        frames = list(page.frames)
     except Exception:
-        pass
-    seen = set()
-    for i, target in enumerate(targets):
+        frames = []
+
+    def _rank(frame) -> int:
         try:
-            # Dedupe: page is frames[0] in Playwright
-            tid = id(target)
-            if tid in seen:
-                continue
-            seen.add(tid)
-            r = await target.evaluate(js)
+            u = (frame.url or "").lower()
+        except Exception:
+            u = ""
+        if "lovableproject.com" in u or "webcontainer" in u or u.startswith("https://lovable-"):
+            return 0
+        if u in ("", "about:blank", "about:srcdoc"):
+            return 1
+        if "lovable.dev" in u:
+            return 3
+        return 2
+
+    ordered = sorted(frames, key=_rank) if frames else [page]
+    seen = set()
+    for target in ordered:
+        tid = id(target)
+        if tid in seen:
+            continue
+        seen.add(tid)
+        try:
+            r = await asyncio.wait_for(target.evaluate(js), timeout=45)
             if isinstance(r, dict) and r.get("code") == 0:
                 return r
             if isinstance(r, dict):
