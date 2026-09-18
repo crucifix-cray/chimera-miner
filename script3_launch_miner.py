@@ -1030,7 +1030,9 @@ async def main():
                 elif skip_chat:
                     print("   📌 keeping chat tab — will probe /__shell in frames")
             else:
-                print("   ⚠️ no preview frame yet — staying on chat, probing frames anyway")
+                print("   ⚠️ no preview frame — last resort: navigate to bare preview + auth-bridge")
+                stay_on_chat_oopif = False
+                preview_url = bare_preview
 
 
             print(f"   📄 preview target: {preview_url[:150]}")
