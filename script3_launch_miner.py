@@ -445,88 +445,124 @@ def _shell_js(cmd: str, cwd: str | None = None) -> str:
     }}"""
 
 
-async def cdp_steal_preview_url(page, timeout_s: int = 180) -> str | None:
-    """Steal preview URL via CDP Target.getTargets.
+async def _dom_iframe_srcs(page) -> list[str]:
+    """Best-effort iframe[src] read. Chat SPA evaluate can wedge — hard timeout."""
+    js = """() => Array.from(document.querySelectorAll('iframe'))
+        .map(i => i.src || i.getAttribute('src') || '')
+        .filter(Boolean)"""
+    try:
+        srcs = await asyncio.wait_for(page.evaluate(js), timeout=15)
+        return list(srcs or [])
+    except Exception as e:
+        print(f"   ⚠️ DOM iframe scan skipped ({type(e).__name__})")
+        return []
 
-    Lovable preview is an OOPIF — Playwright's frame tree often stays
-    about:blank (see kernel_cdp.find_preview_target). Bare
-    *.lovableproject.com has no /__shell (returns HTML → JSON.parse boom).
+
+async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
+    """Steal preview URL via Playwright frames + short DOM scan.
+
+    Camoufox is Firefox — BrowserContext.new_cdp_session is Chromium-only
+    (crashes with 'CDP session is only available in Chromium'). Do NOT use CDP.
+    Stay on the chat page: top-level bare *.lovableproject.com has no Vite
+    /__shell; the live sandbox is the embedded frame (probe it in place).
     """
-    cdp = await page.context.new_cdp_session(page)
     best = None
     seen_same = 0
     last_best = None
-    try:
-        deadline = asyncio.get_event_loop().time() + timeout_s
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                result = await asyncio.wait_for(cdp.send("Target.getTargets"), timeout=30)
-            except Exception as e:
-                print(f"   ⚠️ CDP getTargets: {type(e).__name__}: {e}")
-                await asyncio.sleep(5)
-                continue
-            infos = result.get("targetInfos", [])
-            http_preview = []
-            for t in infos:
-                url = t.get("url") or ""
-                if not _is_preview_target_url(url):
-                    continue
-                http_preview.append(url)
-                if best is None or _preview_url_score(url) > _preview_url_score(best):
-                    best = url
-            if http_preview:
-                rich = best and (
-                    "?" in best
-                    or "token" in best.lower()
-                    or "webcontainer" in best.lower()
-                )
-                if rich:
-                    print(f"   🎯 CDP preview target: {best[:150]}")
-                    return best
-                if best == last_best:
-                    seen_same += 1
-                else:
-                    seen_same = 1
-                    last_best = best
-                print(f"   ⏳ CDP preview candidates (stable={seen_same}): {[u[:100] for u in http_preview[:4]]}")
-                # Bare host seen twice → OOPIF is up; caller may stay on chat.
-                if seen_same >= 2:
-                    print(f"   🎯 CDP stable preview target: {best[:150]}")
-                    return best
-            else:
-                seen_same = 0
-                last_best = None
-                print("   ⏳ CDP: waiting for lovableproject/webcontainer target...")
-            await asyncio.sleep(5)
-        if best:
-            print(f"   ⚠️ CDP timed out; best candidate: {best[:150]}")
-            return best
-        print("   ❌ CDP: no preview target found")
-        return None
-    finally:
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    tick = 0
+    while asyncio.get_event_loop().time() < deadline:
+        tick += 1
+        candidates: list[str] = []
         try:
-            await cdp.detach()
-        except Exception:
-            pass
+            for f in page.frames:
+                u = f.url or ""
+                if _is_preview_target_url(u):
+                    candidates.append(u)
+        except Exception as e:
+            print(f"   ⚠️ frames read: {type(e).__name__}: {e}")
+
+        # Periodic DOM scan (may wedge — timed). Also blind-click to wake Preview.
+        if tick == 1 or tick % 4 == 0:
+            for src in await _dom_iframe_srcs(page):
+                if _is_preview_target_url(src) or "lovableproject.com" in src or "/preview" in src:
+                    candidates.append(src)
+            if tick in (2, 6, 10):
+                # Input pipeline works blind — nudge Preview chrome on the right.
+                for x, y in ((1050, 70), (960, 90), (880, 50)):
+                    try:
+                        await page.mouse.click(x, y)
+                        await asyncio.sleep(0.4)
+                    except Exception:
+                        pass
+
+        for u in candidates:
+            if best is None or _preview_url_score(u) > _preview_url_score(best):
+                best = u
+
+        if candidates:
+            rich = best and (
+                "?" in best
+                or "token" in best.lower()
+                or "webcontainer" in best.lower()
+            )
+            if rich:
+                print(f"   🎯 preview frame: {best[:150]}")
+                return best
+            if best == last_best:
+                seen_same += 1
+            else:
+                seen_same = 1
+                last_best = best
+            print(f"   ⏳ preview candidates (stable={seen_same}): {[u[:100] for u in candidates[:4]]}")
+            if seen_same >= 2:
+                print(f"   🎯 stable preview frame: {best[:150]}")
+                return best
+        else:
+            seen_same = 0
+            last_best = None
+            if tick == 1 or tick % 3 == 0:
+                print("   ⏳ waiting for lovableproject/webcontainer frame...")
+        await asyncio.sleep(5)
+
+    if best:
+        print(f"   ⚠️ steal timed out; best candidate: {best[:150]}")
+        return best
+    print("   ❌ no preview frame found")
+    return None
 
 
-async def shell_exec_preview(page, cmd: str, cwd: str | None = None) -> dict:
-    """Probe /__shell on the page and every frame (OOPIF may hold the Vite server)."""
+async def shell_exec_preview(page, cmd: str, cwd: str | None = None, skip_main: bool = False) -> dict:
+    """Probe /__shell on the page and every frame (preview frame holds Vite).
+
+    skip_main=True when on Lovable chat SPA — main-frame evaluate wedges behind
+    the busy main thread; only child frames (preview) are useful.
+    """
     js = _shell_js(cmd, cwd)
     errors = []
-    # Main frame first
-    try:
-        r = await page.evaluate(js)
-        if isinstance(r, dict) and r.get("code") == 0:
-            return r
-        if isinstance(r, dict):
-            errors.append(f"page:{r.get('stderr') or r}")
-    except Exception as e:
-        errors.append(f"page:{type(e).__name__}:{e}")
+    if not skip_main:
+        try:
+            r = await asyncio.wait_for(page.evaluate(js), timeout=30)
+            if isinstance(r, dict) and r.get("code") == 0:
+                return r
+            if isinstance(r, dict):
+                errors.append(f"page:{r.get('stderr') or r}")
+        except Exception as e:
+            errors.append(f"page:{type(e).__name__}:{e}")
 
-    for i, frame in enumerate(page.frames):
+    frames = list(page.frames)
+    print(f"   🧩 probing {len(frames)} frames for /__shell...")
+    for i, frame in enumerate(frames):
+        url = ""
         try:
             url = frame.url or ""
+        except Exception:
+            url = "?"
+        # Skip pure chat/lovable.dev parent when we already know it wedges
+        if skip_main and "lovable.dev" in url and "lovableproject" not in url:
+            continue
+        try:
+            print(f"   · frame[{i}] {url[:100] or '(blank)'}")
             r = await asyncio.wait_for(frame.evaluate(js), timeout=45)
             if isinstance(r, dict) and r.get("code") == 0:
                 print(f"   ✅ shell via frame[{i}] {url[:80]}")
@@ -537,7 +573,9 @@ async def shell_exec_preview(page, cmd: str, cwd: str | None = None) -> dict:
                 print(f"   ⚠️ frame[{i}] shell: {err[:120]}")
         except Exception as e:
             errors.append(f"frame[{i}]:{type(e).__name__}")
+            print(f"   ⚠️ frame[{i}] err: {type(e).__name__}")
     raise RuntimeError(" | ".join(errors[:6]) or "shell failed on all frames")
+
 
 
 async def check_session_valid(page) -> bool:
@@ -892,11 +930,10 @@ async def main():
             # boxes (proven by probe) — URL print instead, never screenshot.
             print(f"🌐 chat URL now: {chat_page.url}")
             
-            # 9. Preview is an EMBEDDED OOPIF. Frame tree often shows about:blank —
-            # steal URL via CDP Target.getTargets (kernel_cdp pattern). Under
-            # SKIP_CHAT navigate in-place (no 2nd tab / SIGKILL). Bare domain
-            # has no /__shell — never settle for it if CDP finds nothing useful;
-            # probe frames on the chat page instead.
+            # 9. Preview is an EMBEDDED frame. Camoufox=Firefox → no CDP sessions.
+            # Steal URL via frames/DOM; under SKIP_CHAT stay on chat and probe
+            # /__shell inside frames. Top-level bare *.lovableproject.com has
+            # no Vite shell (returns HTML). Never open a 2nd tab.
             print("\n🖼️  Opening preview tab...")
             bare_preview = project.get(
                 "preview_url", f"https://{project['project_id']}.lovableproject.com"
@@ -904,35 +941,25 @@ async def main():
             preview_url = bare_preview
             preview_page = None
 
-            # Wake the preview panel so the OOPIF target actually spawns.
-            panel_url = f"https://lovable.dev/projects/{project['project_id']}/preview"
-            print(f"   wake preview panel: {panel_url}")
-            try:
-                await goto_retry(chat_page, panel_url, timeout_ms=90000, wait_until="domcontentloaded")
-                await asyncio.sleep(8)
-            except Exception as e:
-                print(f"   ⚠️ preview panel goto failed ({type(e).__name__}): {e}")
-
-            print("   🔎 CDP steal preview URL (OOPIF)...")
-            stolen = await cdp_steal_preview_url(chat_page, timeout_s=180)
-            stay_on_chat_oopif = False
+            print("   🔎 steal preview URL (frames/DOM — Firefox-safe)...")
+            stolen = await steal_preview_url(chat_page, timeout_s=180)
+            # Default: stay on chat and probe OOPIF frames (works even for bare).
+            stay_on_chat_oopif = bool(skip_chat)
             if stolen:
                 preview_url = stolen
-                # Bare host-only URL (no query/token): keep chat page so OOPIF
-                # stays alive and probe /__shell inside frames; top-level bare
-                # has no Vite shell.
-                if (
-                    "?" not in stolen
-                    and "token" not in stolen.lower()
-                    and "webcontainer" not in stolen.lower()
-                ):
-                    path = stolen.split("?", 1)[0].rstrip("/")
-                    bare_path = bare_preview.rstrip("/")
-                    if path == bare_path or path.endswith(".lovableproject.com"):
-                        print("   📌 CDP URL is bare — keeping chat tab, probing OOPIF frames")
-                        stay_on_chat_oopif = True
+                rich = (
+                    "?" in stolen
+                    or "token" in stolen.lower()
+                    or "webcontainer" in stolen.lower()
+                )
+                if skip_chat and rich:
+                    # Tokenized/dev URL — safe to navigate in-place as main frame.
+                    stay_on_chat_oopif = False
+                    print(f"   🔑 rich preview URL — will navigate in-place")
+                elif skip_chat:
+                    print("   📌 keeping chat tab — will probe /__shell in frames")
             else:
-                print("   ⚠️ no CDP preview target — will try bare URL as last resort")
+                print("   ⚠️ no preview frame yet — staying on chat, probing frames anyway")
 
             print(f"   📄 preview target: {preview_url[:150]}")
 
@@ -945,7 +972,7 @@ async def main():
                 if skip_chat:
                     preview_page = chat_page
                     if stay_on_chat_oopif:
-                        print("   ⏩ SKIP_CHAT — staying on chat (OOPIF shell probe)")
+                        print("   ⏩ SKIP_CHAT — staying on chat (frame shell probe)")
                     else:
                         print("   ⏩ SKIP_CHAT — navigating chat tab in-place (no 2nd tab)")
                         await _open_preview(preview_page)
@@ -972,10 +999,13 @@ async def main():
             for attempt in range(max_retries):
                 print(f"\n🔍 Probing shell bridge (attempt {attempt+1}/{max_retries})...")
                 try:
-                    # Frame-aware probe: Vite /__shell lives in the OOPIF, not
-                    # always on the top-level document.
+                    # Frame-aware probe: Vite /__shell lives in the embedded
+                    # preview frame, not always on the top-level document.
                     r = await asyncio.wait_for(
-                        shell_exec_preview(preview_page, "pwd"), timeout=90
+                        shell_exec_preview(
+                            preview_page, "pwd", skip_main=bool(skip_chat and stay_on_chat_oopif)
+                        ),
+                        timeout=120,
                     )
                     if r and r.get("code") == 0:
                         print(f"✅ Shell bridge ready: {r.get('stdout','').strip()}")
@@ -987,13 +1017,18 @@ async def main():
 
                 if attempt < max_retries - 1:
                     if skip_chat:
-                        print(f"🔄 SKIP_CHAT — re-steal CDP + re-wait (attempt {attempt+1})...")
+                        print(f"🔄 SKIP_CHAT — re-steal frames + re-wait (attempt {attempt+1})...")
                         await asyncio.sleep(20)
-                        stolen2 = await cdp_steal_preview_url(preview_page, timeout_s=60)
+                        stolen2 = await steal_preview_url(preview_page, timeout_s=60)
                         if stolen2 and stolen2 != preview_url:
                             preview_url = stolen2
                             print(f"   📄 updated preview target: {preview_url[:120]}")
-                            if "?" in stolen2 or "webcontainer" in stolen2.lower():
+                            rich2 = (
+                                "?" in stolen2
+                                or "token" in stolen2.lower()
+                                or "webcontainer" in stolen2.lower()
+                            )
+                            if rich2:
                                 stay_on_chat_oopif = False
                                 await _open_preview(preview_page)
                     else:
