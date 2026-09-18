@@ -911,23 +911,20 @@ async def main():
             chat_page.on("request", _on_request)
             chat_page.on("response", _on_response)
             chat_page.on("framenavigated", _on_frame)
-            # ponytail: SKIP_CHAT=1 jumps straight to the preview bridge —
-            # the chat SPA wedges CDP reads on proxied boxes; warm projects
-            # don't need a wake prompt.
+            # ponytail: SKIP_CHAT=1 — warm session on lovable.dev, then go
+            # straight to *.lovableproject.com (local proof: /__shell works there).
+            # Do NOT use /preview panel or iframe steal.
             skip_chat = bool(os.environ.get("SKIP_CHAT", ""))
             if skip_chat:
-                print("\n⏩ SKIP_CHAT=1 — chat loads for iframe URL only, no prompt sent")
+                print("\n⏩ SKIP_CHAT=1 — warm cookies, then *.lovableproject.com")
 
             
-            # 7. Go STRAIGHT to chat (no invite acceptance - it's our own project)
+            # 7. Session check via chat (or dashboard). Under SKIP_CHAT we leave
+            # quickly for the preview host.
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
             print(f"\n📝 Going to chat: {chat_url}")
             await goto_retry(chat_page, chat_url)
-            # ponytail: skip networkidle — Lovable SPA never goes idle (WebSocket keepalive)
-            # goto_retry already waited for initial load; give JS time to hydrate.
-            # SKIP_CHAT still loads chat: the preview iframe URL (dev server +
-            # shell token) can only be read from the chat tab.
-            await asyncio.sleep(8)
+            await asyncio.sleep(3 if skip_chat else 8)
             print(f"🌐 Page URL: {chat_page.url}")
             if not skip_chat:
                 try:
@@ -971,15 +968,11 @@ async def main():
             # page to focus it, then type directly via keyboard.
             import random
             simple_prompts = ["say 'a'", "1+1?", "say 'x'", "2+2?"]
-            # ponytail: under SKIP_CHAT the page is blank — the click/type
-            # below lands in the void harmlessly; preview open is what matters.
             prompt = random.choice(simple_prompts) if not skip_chat else "(skipped)"
             
             print(f"💬 Sending prompt: '{prompt}'")
             if skip_chat:
-                # ponytail: SKIP_CHAT needs the chat tab only for its preview
-                # iframe URL — never type into the real chat (saves credits).
-                print("   ⏩ SKIP_CHAT — prompt NOT sent (iframe URL only)")
+                print("   ⏩ SKIP_CHAT — prompt NOT sent")
             else:
                 # ponytail: all Playwright locators hang through Camoufox+proxy CDP.
                 # Raw mouse click at coordinates + keyboard is the only reliable path.
@@ -997,88 +990,51 @@ async def main():
             # boxes (proven by probe) — URL print instead, never screenshot.
             print(f"🌐 chat URL now: {chat_page.url}")
             
-            # 9. Preview is an EMBEDDED frame. Camoufox=Firefox → no CDP sessions.
-            # Steal URL via frames/DOM; under SKIP_CHAT stay on chat and probe
-            # /__shell inside frames. Top-level bare *.lovableproject.com has
-            # no Vite shell (returns HTML). Never open a 2nd tab.
-            print("\n🖼️  Opening preview tab...")
-            bare_preview = project.get(
-                "preview_url", f"https://{project['project_id']}.lovableproject.com"
-            )
-            preview_url = bare_preview
-            preview_page = None
-
-            print("   🔎 steal preview URL (frames — Firefox-safe)...")
-            stolen = await steal_preview_url(chat_page, timeout_s=90, captured=captured_preview_urls)
-            if not stolen and skip_chat:
-                await soft_wake_preview(chat_page)
-                print("   🔎 re-steal after soft-wake...")
-                stolen = await steal_preview_url(chat_page, timeout_s=120, captured=captured_preview_urls)
-            # Default: stay on chat and probe OOPIF frames (works even for bare).
-            stay_on_chat_oopif = bool(skip_chat)
-            if stolen:
-                preview_url = stolen
-                rich = (
-                    "?" in stolen
-                    or "token" in stolen.lower()
-                    or "webcontainer" in stolen.lower()
-                )
-                if skip_chat and rich:
-                    # Tokenized/dev URL — safe to navigate in-place as main frame.
-                    stay_on_chat_oopif = False
-                    print(f"   🔑 rich preview URL — will navigate in-place")
-                elif skip_chat:
-                    print("   📌 keeping chat tab — will probe /__shell in frames")
-            else:
-                print("   ⚠️ no preview frame — last resort: navigate to bare preview + auth-bridge")
-                stay_on_chat_oopif = False
-                preview_url = bare_preview
-
-
-            print(f"   📄 preview target: {preview_url[:150]}")
+            # 9. Open *.lovableproject.com (NOT /preview). Local InvisiblePlaywright
+            # proved /__shell returns 200 here after auth-bridge. In-place nav
+            # (no 2nd tab) under SKIP_CHAT.
+            print("\n🖼️  Opening *.lovableproject.com ...")
+            preview_url = f"https://{project['project_id']}.lovableproject.com"
+            # ignore DB preview_url if it points at lovable.dev/.../preview
+            db_prev = (project.get("preview_url") or "")
+            if "lovableproject.com" in db_prev.split("?", 1)[0]:
+                preview_url = db_prev.split("?", 1)[0].rstrip("/") or preview_url
+            preview_page = chat_page if skip_chat else None
 
             async def _open_preview(page):
-                await goto_retry(page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
-                await asyncio.sleep(3)
+                print(f"   📄 goto {preview_url}")
+                await goto_retry(page, preview_url, timeout_ms=120000, wait_until="domcontentloaded")
+                await asyncio.sleep(5)
                 await wait_for_bridge(page)
+                print(f"   🌐 after bridge: {page.url}")
 
             try:
                 if skip_chat:
-                    preview_page = chat_page
-                    if stay_on_chat_oopif:
-                        print("   ⏩ SKIP_CHAT — staying on chat (frame shell probe)")
-                    else:
-                        print("   ⏩ SKIP_CHAT — navigating chat tab in-place (no 2nd tab)")
-                        await _open_preview(preview_page)
+                    print("   ⏩ SKIP_CHAT — in-place nav to *.lovableproject.com (no 2nd tab)")
+                    await _open_preview(preview_page)
                 else:
                     print("   📑 creating preview page...")
                     preview_page = await context.new_page()
                     print("   ✅ preview page created")
                     await _open_preview(preview_page)
-                print(f"✅ Preview ready: {preview_url[:120]}")
+                print(f"✅ Preview ready: {preview_page.url[:120]}")
             except Exception as e:
-                print(f"⚠️  Preview open failed ({str(e)[:80]})")
+                print(f"⚠️  Preview open failed ({str(e)[:100]})")
                 if preview_page is None:
                     preview_page = chat_page if skip_chat else await context.new_page()
-                else:
-                    print("   🔄 re-navigating existing preview page...")
-                if not stay_on_chat_oopif:
-                    await _open_preview(preview_page)
-                print(f"✅ Preview ready: {preview_url[:120]}")
+                print("   🔄 retry goto *.lovableproject.com ...")
+                await _open_preview(preview_page)
+                print(f"✅ Preview ready: {preview_page.url[:120]}")
             print(f"🌐 preview URL now: {preview_page.url}")
             
-            # 10. Probe shell bridge. On failure, go back to chat + re-prompt.
+            # 10. Probe /__shell on the preview page itself (main frame).
             max_retries = 3
             console_ready = False
             for attempt in range(max_retries):
                 print(f"\n🔍 Probing shell bridge (attempt {attempt+1}/{max_retries})...")
                 try:
-                    # Frame-aware probe: Vite /__shell lives in the embedded
-                    # preview frame, not always on the top-level document.
                     r = await asyncio.wait_for(
-                        shell_exec_preview(
-                            preview_page, "pwd", skip_main=bool(skip_chat and stay_on_chat_oopif)
-                        ),
+                        shell_exec_preview(preview_page, "pwd", skip_main=False),
                         timeout=120,
                     )
                     if r and r.get("code") == 0:
@@ -1090,49 +1046,9 @@ async def main():
                     print(f"   ⚠️  Shell bridge unavailable: {e}")
 
                 if attempt < max_retries - 1:
-                    if skip_chat:
-                        print(f"🔄 SKIP_CHAT — re-steal frames + re-wait (attempt {attempt+1})...")
-                        await asyncio.sleep(20)
-                        stolen2 = await steal_preview_url(
-                            preview_page, timeout_s=60, captured=captured_preview_urls
-                        )
-                        if stolen2 and stolen2 != preview_url:
-                            preview_url = stolen2
-                            print(f"   📄 updated preview target: {preview_url[:120]}")
-                            rich2 = (
-                                "?" in stolen2
-                                or "token" in stolen2.lower()
-                                or "webcontainer" in stolen2.lower()
-                            )
-                            if rich2:
-                                stay_on_chat_oopif = False
-                                await _open_preview(preview_page)
-                    else:
-                        print(f"🔄 Going back to chat to re-prompt (attempt {attempt+1})...")
-                        try:
-                            await chat_page.bring_to_front()
-                            await chat_page.reload(timeout=30000)
-                            await asyncio.sleep(8)
-                            # Raw mouse click at coordinates
-                            await chat_page.mouse.click(200, 560)
-                            await asyncio.sleep(1)
-                            prompt = random.choice(simple_prompts)
-                            print(f"   💬 Re-sending prompt: '{prompt}'")
-                            await chat_page.keyboard.type(prompt, delay=20)
-                            await asyncio.sleep(0.3)
-                            await chat_page.keyboard.press("Enter")
-                            await asyncio.sleep(15)
-                        except Exception as e:
-                            print(f"   ⚠️  Re-prompt error: {e}")
-
-                        # Re-navigate the existing preview tab in place.
-                        # ponytail: context.new_page() deadlocks on the viewport
-                        # handshake (no timeout, takes the context with it) — never
-                        # open a 3rd tab; re-goto is the same fresh load.
-                        # ponytail: domcontentloaded — the app never fires load.
-                        await goto_retry(preview_page, preview_url, timeout_ms=90000, wait_until="domcontentloaded")
-                        await asyncio.sleep(3)
-                        await wait_for_bridge(preview_page)
+                    print(f"🔄 re-goto *.lovableproject.com (attempt {attempt+1})...")
+                    await asyncio.sleep(10)
+                    await _open_preview(preview_page)
 
             if not console_ready:
                 print("❌ Shell bridge never became available - giving up")
