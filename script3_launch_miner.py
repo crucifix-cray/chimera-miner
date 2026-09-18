@@ -375,12 +375,30 @@ async def accept_invite(page, invite_link: str) -> bool:
 
 async def goto_retry(page, url, timeout_ms=30000, tries=3, wait_until="load"):
     """goto with retries - Tor/WARP links drop page loads; an unhandled
-    timeout used to kill the whole session run."""
+    timeout used to kill the whole session run.
+
+    NS_BINDING_ABORTED often means auth-bridge redirected mid-goto — treat as
+    OK if we already landed on lovableproject / auth-bridge / auth-token.
+    """
     for attempt in range(1, tries + 1):
         try:
             await page.goto(url, timeout=timeout_ms, wait_until=wait_until)
             return True
         except Exception as e:
+            msg = str(e)
+            cur = ""
+            try:
+                cur = page.url or ""
+            except Exception:
+                pass
+            aborted = "NS_BINDING_ABORTED" in msg or "ERR_ABORTED" in msg or "Navigation interrupted" in msg
+            landed = any(
+                x in cur
+                for x in ("lovableproject.com", "auth-bridge", "auth-token", "lovable.dev")
+            )
+            if aborted and landed:
+                print(f"   ↪️  goto aborted but landed on {cur[:100]} — continuing")
+                return True
             print(f"   ⚠️  goto failed (attempt {attempt}/{tries}): {e}")
             if attempt == tries:
                 raise
@@ -1003,7 +1021,8 @@ async def main():
 
             async def _open_preview(page):
                 print(f"   📄 goto {preview_url}")
-                await goto_retry(page, preview_url, timeout_ms=120000, wait_until="domcontentloaded")
+                # commit: auth-bridge redirects abort domcontentloaded (NS_BINDING_ABORTED)
+                await goto_retry(page, preview_url, timeout_ms=120000, wait_until="commit")
                 await asyncio.sleep(5)
                 await wait_for_bridge(page)
                 print(f"   🌐 after bridge: {page.url}")
