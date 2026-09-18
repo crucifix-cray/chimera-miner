@@ -508,36 +508,44 @@ async def steal_preview_url(page, timeout_s: int = 180) -> str | None:
 
 
 async def soft_wake_preview(page) -> None:
-    """One cheap chat keystroke to force Lovable to mount the preview iframe.
+    """Force Lovable to mount the preview iframe.
 
-    SKIP_CHAT normally avoids burning credits, but without a preview frame
-    /__shell is unreachable on Camoufox (no CDP OOPIF attach).
+    Prefer commit-nav to /preview (no chat typing). Keyboard wake is
+    best-effort and hard-timed — mouse/keyboard can hang forever under
+    Camoufox+proxy even when they usually work blind.
     """
-    print("   ⚡ soft-wake: typing one tiny prompt so Preview iframe mounts...")
+    pid = None
     try:
-        await page.mouse.click(200, 560)
-        await asyncio.sleep(1)
-        await page.keyboard.type("say 'a'", delay=20)
-        await asyncio.sleep(0.3)
-        await page.keyboard.press("Enter")
-        print("   ✅ soft-wake prompt sent")
-    except Exception as e:
-        print(f"   ⚠️ soft-wake failed ({type(e).__name__}): {e}")
-    await asyncio.sleep(25)
-    # Also try /preview with commit (don't wait for full DOM — timed out before).
-    try:
-        pid = None
         u = page.url or ""
         if "/projects/" in u:
             pid = u.split("/projects/")[1].split("/")[0].split("?")[0]
-        if pid:
-            panel = f"https://lovable.dev/projects/{pid}/preview"
-            print(f"   ⚡ soft-wake: commit-nav to {panel}")
-            await page.goto(panel, timeout=60000, wait_until="commit")
-            await asyncio.sleep(15)
-            print(f"   🌐 after commit-nav: {page.url}")
+    except Exception:
+        pid = None
+
+    if pid:
+        panel = f"https://lovable.dev/projects/{pid}/preview"
+        print(f"   ⚡ soft-wake: commit-nav to {panel}")
+        try:
+            await asyncio.wait_for(
+                page.goto(panel, timeout=60000, wait_until="commit"),
+                timeout=70,
+            )
+            await asyncio.sleep(20)
+            print(f"   🌐 after commit-nav: {page.url} frames={len(page.frames)}")
+        except Exception as e:
+            print(f"   ⚠️ commit-nav failed ({type(e).__name__}): {e}")
+
+    print("   ⚡ soft-wake: timed keyboard nudge (20s cap)...")
+    try:
+        await asyncio.wait_for(page.mouse.click(200, 560), timeout=10)
+        await asyncio.sleep(0.5)
+        await asyncio.wait_for(page.keyboard.type("say 'a'", delay=15), timeout=20)
+        await asyncio.wait_for(page.keyboard.press("Enter"), timeout=10)
+        print("   ✅ soft-wake prompt sent")
+        await asyncio.sleep(20)
     except Exception as e:
-        print(f"   ⚠️ commit-nav failed ({type(e).__name__}): {e}")
+        print(f"   ⚠️ soft-wake keyboard skipped ({type(e).__name__}): {e}")
+
 
 
 
