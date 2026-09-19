@@ -1,0 +1,32 @@
+{
+  "sessions": [
+    {
+      "id": "session-3",
+      "email": "altonlehman16@gmail.com",
+      "status": "active"
+    },
+    {
+      "id": "session-2",
+      "email": "altonlehman16@gmail.com",
+      "status": "active",
+      "last_used": "",
+      "projects_created": 0,
+      "projects_using": 0
+    }
+  ],
+  "projects": [
+    {
+      "project_id": "7d6f77a6-69a1-4b06-a1d3-53094c4c8019",
+      "invite_link": "https://lovable.dev/projects/7d6f77a6-69a1-4b06-a1d3-53094c4c8019",
+      "chat_url": "https://lovable.dev/projects/7d6f77a6-69a1-4b06-a1d3-53094c4c8019",
+      "preview_url": "https://lovable.dev/projects/7d6f77a6-69a1-4b06-a1d3-53094c4c8019/preview",
+      "project_link": "https://7d6f77a6-69a1-4b06-a1d3-53094c4c8019.lovableproject.com",
+      "created_by": "session-3",
+      "status": "ready",
+      "feature_added": true,
+      "mode": "full",
+      "usage_count": 0,
+      "max_usage": 20
+    }
+  ]
+}

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Mega Database Manager - Central state for Chimera
-Uses rclone + Mega cloud storage as database
+Chimera Database Manager — GitHub-backed (default).
+
+Canonical file in repo: data/database.json
+Sync: load/save that path (+ /tmp mirror). Optional git commit when CHIMERA_GH_PUSH=1.
+Mega/rclone is disabled — set CHIMERA_DB_BACKEND=mega only for legacy emergency.
 """
 
 import json
@@ -13,10 +16,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List
 
-MEGA_REMOTE = "mega:chimera"
+# Backend: github (default) | local | mega (legacy, avoid)
+DB_BACKEND = os.environ.get("CHIMERA_DB_BACKEND", "github").strip().lower()
+
+REPO_ROOT = Path(__file__).resolve().parent
+GH_DB_PATH = Path(os.environ.get("CHIMERA_GH_DB", str(REPO_ROOT / "data" / "database.json")))
+GH_INVITES_PATH = Path(os.environ.get("CHIMERA_GH_INVITES", str(REPO_ROOT / "data" / "invites.json")))
+
+MEGA_REMOTE = "mega:chimera"  # legacy only
 MEGA_DB_FILE = "database.json"
 MEGA_LOCK_FILE = ".db_lock"
-LOCAL_DB_PATH = Path("/tmp/chimera_database.json")
+LOCAL_DB_PATH = Path(os.environ.get("CHIMERA_LOCAL_DB", "/tmp/chimera_database.json"))
 LOCK_FILE_PATH = Path("/tmp/chimera_database.lock")
 
 PROXY_VARS = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
@@ -27,15 +37,15 @@ def _rclone_env():
     return {k: v for k, v in os.environ.items() if k not in PROXY_VARS}
 
 
+def _use_mega() -> bool:
+    return DB_BACKEND == "mega" and not os.environ.get("CHIMERA_OFFLINE", "")
+
+
 @contextlib.contextmanager
 def db_lock():
     """
     Local file lock serializing read→modify→write on THIS machine.
     Blocks until the lock is free. Used by MegaDB.transaction().
-
-    NOTE: flock only coordinates processes on the same host. For
-    GitHub Actions (distributed runners), rely on claim-based session
-    assignment so no two runners edit overlapping records.
     """
     lock_fd = open(LOCK_FILE_PATH, "w")
     try:
@@ -49,9 +59,16 @@ def db_lock():
 @contextlib.contextmanager
 def mega_distributed_lock(timeout: int = 120, stale_after: int = 300):
     """
-    Distributed lock stored ON MEGA so multiple machines (GitHub runners)
-    can safely serialize read→modify→write of database.json.
+    Lock for DB writes. Default (GitHub/local): local flock only — no Mega.
+    Legacy Mega remote lock only if CHIMERA_DB_BACKEND=mega.
     """
+    if not _use_mega():
+        print("🔒 DB lock (local/github)", flush=True)
+        with db_lock():
+            yield
+        print("🔓 DB lock released", flush=True)
+        return
+
     import time
     import uuid
 
@@ -92,10 +109,7 @@ def mega_distributed_lock(timeout: int = 120, stale_after: int = 300):
     acquired = False
     try:
         while time.time() < deadline:
-            # 1. Write our lock file locally
             _write_lock()
-
-            # 2. Upload (attempt to acquire)
             r = subprocess.run(
                 ["rclone", "copyto", str(local_lock), remote_lock],
                 capture_output=True, text=True, timeout=60, env=_rclone_env()
@@ -103,21 +117,15 @@ def mega_distributed_lock(timeout: int = 120, stale_after: int = 300):
             if r.returncode != 0:
                 time.sleep(3)
                 continue
-
-            # 3. Verify ownership (re-read remote)
-            time.sleep(2)  # let upload settle
+            time.sleep(2)
             remote = _read_lock()
             if remote and remote[0] == token:
                 acquired = True
                 print("🔒 Distributed DB lock acquired", flush=True)
                 break
-
-            # 4. If remote lock is stale, steal it
             if remote and (time.time() - remote[1]) > stale_after:
                 print("⚠️  Stealing stale distributed lock", flush=True)
                 continue
-
-            # 5. Lock held by someone else — wait and retry
             time.sleep(5)
 
         if not acquired:
@@ -172,54 +180,50 @@ class MegaDB:
             self.sync_to_mega()
     
     def sync_from_mega(self) -> bool:
-        """Download database.json from Mega."""
-        # ponytail: CHIMERA_OFFLINE=1 skips rclone entirely, loads local only.
-        if os.environ.get("CHIMERA_OFFLINE", ""):
-            print("📥 CHIMERA_OFFLINE — loading local DB only...")
+        """Load database.json (GitHub repo path by default)."""
+        if not _use_mega():
+            src = GH_DB_PATH if GH_DB_PATH.exists() else LOCAL_DB_PATH
+            print(f"📥 Loading DB from {src} (backend={DB_BACKEND})...", flush=True)
+            if src.exists():
+                with open(src) as f:
+                    self.data = json.load(f)
+                self._ensure_schema()
+                self._update_stats()
+                self.loaded = True
+                try:
+                    LOCAL_DB_PATH.write_text(json.dumps(self.data, indent=2))
+                except Exception:
+                    pass
+                print(f"✅ Loaded DB: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects", flush=True)
+                return True
+            self.loaded = True
+            print("⚠️  No DB file yet — starting empty", flush=True)
+            return False
+
+        print("📥 Syncing database from Mega (legacy)...", flush=True)
+        try:
+            result = subprocess.run(
+                ["rclone", "copyto", f"{MEGA_REMOTE}/{MEGA_DB_FILE}", str(LOCAL_DB_PATH)],
+                capture_output=True, text=True, timeout=120, env=_rclone_env()
+            )
+            if result.returncode == 0 and LOCAL_DB_PATH.exists():
+                with open(LOCAL_DB_PATH) as f:
+                    self.data = json.load(f)
+                self._ensure_schema()
+                self._update_stats()
+                self.loaded = True
+                print(f"✅ Database loaded: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
+                return True
+            print("⚠️  No database on Mega — trying local")
             if LOCAL_DB_PATH.exists():
                 with open(LOCAL_DB_PATH) as f:
                     self.data = json.load(f)
                 self._ensure_schema()
                 self._update_stats()
                 self.loaded = True
-                print(f"✅ Loaded local DB: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
                 return True
             self.loaded = True
             return False
-        print("📥 Syncing database from Mega...")
-        try:
-            result = subprocess.run(
-                ["rclone", "copyto", f"{MEGA_REMOTE}/{MEGA_DB_FILE}", str(LOCAL_DB_PATH)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env=_rclone_env()
-            )
-            
-            if result.returncode == 0 and LOCAL_DB_PATH.exists():
-                with open(LOCAL_DB_PATH) as f:
-                    self.data = json.load(f)
-                # Normalize schema (ensure new fields exist for migrated DBs)
-                self._ensure_schema()
-                self._update_stats()
-                self.loaded = True
-                print(f"✅ Database loaded: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
-                return True
-            else:
-                print(f"⚠️  No database found on Mega, using empty database")
-                if result.stderr.strip():
-                    print(f"   rclone stderr: {result.stderr.strip()[:500]}")
-                # ponytail: offline fallback — local seed beats empty DB.
-                if LOCAL_DB_PATH.exists():
-                    with open(LOCAL_DB_PATH) as f:
-                        self.data = json.load(f)
-                    self._ensure_schema()
-                    self._update_stats()
-                    print(f"✅ Loaded local DB: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
-                    self.loaded = True
-                    return True
-                self.loaded = True
-                return False
         except Exception as e:
             print(f"⚠️  Mega sync failed: {e}")
             if LOCAL_DB_PATH.exists():
@@ -228,45 +232,53 @@ class MegaDB:
                         self.data = json.load(f)
                     self._ensure_schema()
                     self._update_stats()
-                    print(f"✅ Loaded local DB: {len(self.data['sessions'])} sessions, {len(self.data['projects'])} projects")
-                except Exception as e2:
-                    print(f"   local fallback failed: {e2}")
+                except Exception:
+                    pass
             self.loaded = True
             return False
     
     def sync_to_mega(self) -> bool:
-        """Upload database.json to Mega."""
-        print("📤 Syncing database to Mega...")
+        """Save database.json to GitHub repo path (default) or Mega (legacy)."""
         try:
-            # Update stats
             self._update_stats()
-            
-            # Save locally
-            with open(LOCAL_DB_PATH, "w") as f:
-                json.dump(self.data, f, indent=2)
-            
-            # ponytail: CHIMERA_OFFLINE=1 skips the Mega upload (hangs here).
-            if os.environ.get("CHIMERA_OFFLINE", ""):
-                print("✅ Database saved locally (offline mode)")
+            payload = json.dumps(self.data, indent=2)
+            LOCAL_DB_PATH.write_text(payload)
+
+            if not _use_mega():
+                GH_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+                GH_DB_PATH.write_text(payload)
+                print(f"✅ Database saved → {GH_DB_PATH}", flush=True)
+                if os.environ.get("CHIMERA_GH_PUSH", ""):
+                    try:
+                        subprocess.run(
+                            ["git", "-C", str(REPO_ROOT), "add", str(GH_DB_PATH.relative_to(REPO_ROOT))],
+                            check=False, capture_output=True, timeout=30,
+                        )
+                        subprocess.run(
+                            ["git", "-C", str(REPO_ROOT), "commit", "-m", "chore: update chimera database.json"],
+                            check=False, capture_output=True, timeout=30,
+                        )
+                        subprocess.run(
+                            ["git", "-C", str(REPO_ROOT), "push"],
+                            check=False, capture_output=True, timeout=120,
+                        )
+                        print("📤 git push attempted (CHIMERA_GH_PUSH=1)", flush=True)
+                    except Exception as e:
+                        print(f"⚠️  git push skipped: {e}", flush=True)
                 return True
-            
-            # Upload to Mega
+
+            print("📤 Syncing database to Mega (legacy)...")
             result = subprocess.run(
                 ["rclone", "copyto", str(LOCAL_DB_PATH), f"{MEGA_REMOTE}/{MEGA_DB_FILE}"],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env=_rclone_env()
+                capture_output=True, text=True, timeout=120, env=_rclone_env()
             )
-            
             if result.returncode == 0:
                 print("✅ Database synced to Mega")
                 return True
-            else:
-                print(f"❌ Upload failed: {result.stderr}")
-                return False
+            print(f"❌ Upload failed: {result.stderr}")
+            return False
         except Exception as e:
-            print(f"❌ Mega upload error: {e}")
+            print(f"❌ DB save error: {e}")
             return False
     
     def _ensure_schema(self):

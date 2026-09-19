@@ -1,33 +1,43 @@
 #!/usr/bin/env python3
 """
 Script 2: Project Creator - Create/remix projects with subprocess feature
-Load session → (accept invite | remix | template) → add feature → generate invite → Save to Mega DB
+Load session → (accept invite | remix | template) → add feature → generate invite → Save to GitHub DB
 
 Modes:
   --mode template     (default) Create new project from Lovable template + add feature
   --mode remix        Remix an existing project (by URL) + add feature
   --mode accept       Accept an invite link → remix → add feature
 
+Browser backends (--browser):
+  local    InvisiblePlaywright (default)
+  kernel   OnKernel CDP (integrated key or --api-key / KERNEL_API_KEY)
+  zenrows  ZenRows Browser Cloud CDP (integrated key or --api-key / ZENROWS_API_KEY)
+
 Usage:
   python3 script2_remix_link.py --session 3 --mode template --count 5
+  python3 script2_remix_link.py --session 2 --mode template --browser kernel
+  python3 script2_remix_link.py --session 2 --mode template --browser zenrows --api-key KEY
   python3 script2_remix_link.py --session 3 --mode remix --source-url https://lovable.dev/projects/XXX
   python3 script2_remix_link.py --session 3 --mode accept --invite https://lovable.dev/projects/XXX?magic_link=YYY
 """
 
 import asyncio
 import argparse
+import contextlib
 import datetime
 import json
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 # Add paths (env-configurable for CI runners)
 TOOLKIT_CORE = os.environ.get(
-    "CHIMERA_TOOLKIT_CORE", "/home/alan/Documents/automation-toolkit/finals/core"
+    "CHIMERA_TOOLKIT_CORE",
+    "/home/alae/Documents/repos/automation-toolkit/finals/core",
 )
 sys.path.insert(0, TOOLKIT_CORE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -38,13 +48,13 @@ from mega_db import load_db, save_db, mega_distributed_lock
 SESSIONS_DIR = Path(
     os.environ.get(
         "CHIMERA_SESSIONS_DIR",
-        "/home/alan/Documents/automation-toolkit/scripts/sessions",
+        "/home/alae/Documents/repos/automation-toolkit/scripts/sessions",
     )
 )
 SELECTORS_FILE = Path(
     os.environ.get(
         "CHIMERA_SELECTORS_FILE",
-        "/home/alan/Documents/automation-toolkit/finals/docs/SELECTORS_COMPLETE.json",
+        "/home/alae/Documents/repos/automation-toolkit/finals/docs/SELECTORS_COMPLETE.json",
     )
 )
 INVITES_REMOTE = "mega:lovable_sessions/invites.json"
@@ -57,18 +67,158 @@ try:
 except Exception:
     SELECTORS = {}
 
-# Subprocess feature prompt (same as lovable-full-automation.py)
-# ponytail: keep prompts trivial - the runtime injector installs window.doc
-# itself (miner_injector setup_code), the AI just needs to respond fast.
-SIMPLE_PROMPTS = ["say 'a'", "1+1?", "2+2?", "say 'x'", "what is 2+2?", "repeat after me: ok"]
+# Subprocess /__shell bridge prompt — NEVER use trivial "say a" prompts.
+# Source of truth: automation-toolkit/prompts/Build a debug terminal.txt
+_DEFAULT_PROMPT_PATHS = [
+    Path(os.environ.get(
+        "CHIMERA_SUBPROCESS_PROMPT",
+        "/home/alae/Documents/repos/automation-toolkit/prompts/Build a debug terminal.txt",
+    )),
+    Path(__file__).resolve().parent.parent / "automation-toolkit" / "prompts" / "Build a debug terminal.txt",
+]
 
-CMD_NAMES = ["doc", "api", "cmd", "run", "exec", "shell", "sys"]
+CMD_NAMES = ["doc"]  # bridge installs window.doc; keep cmd_name consistent
+
+# Integrated defaults (env wins). --api-key overrides both.
+DEFAULT_KERNEL_KEY = os.environ.get(
+    "KERNEL_API_KEY",
+    "sk_3c47ea14-fd9b-811e-baee-f825da6c787e.tSkgaBckY9M1Qv0bMz620378Ys4NlpXn2b-CutDLnGM",
+)
+DEFAULT_ZENROWS_KEY = os.environ.get(
+    "ZENROWS_API_KEY",
+    "11d7d0ee3adf967ba7361c9139e7a7aa66251fac",
+)
 
 
 def log(msg: str, level: str = "INFO"):
     """Simple logger."""
     timestamp = time.strftime("%H:%M:%S")
     print(f"[{timestamp}] {level}: {msg}", flush=True)
+
+
+def _load_subprocess_prompt() -> str:
+    """Load the real /__shell + window.doc bridge prompt. Hard-fail if missing."""
+    for p in _DEFAULT_PROMPT_PATHS:
+        try:
+            if p.is_file():
+                text = p.read_text(encoding="utf-8").strip()
+                if text:
+                    log(f"Loaded subprocess prompt from {p} ({len(text)} chars)")
+                    return text
+        except Exception as e:
+            log(f"prompt read failed {p}: {e}", "WARNING")
+    raise FileNotFoundError(
+        "Missing bridge prompt file. Expected automation-toolkit/prompts/"
+        "Build a debug terminal.txt (or set CHIMERA_SUBPROCESS_PROMPT)"
+    )
+
+
+def get_subprocess_prompt() -> str:
+    """Return bridge prompt; load on first use (never falls back to trivial chat)."""
+    global SUBPROCESS_PROMPT
+    if not SUBPROCESS_PROMPT:
+        SUBPROCESS_PROMPT = _load_subprocess_prompt()
+    if len(SUBPROCESS_PROMPT) < 200 or "say 'a'" in SUBPROCESS_PROMPT.lower():
+        raise RuntimeError("Refusing trivial/invalid subprocess prompt — use Build a debug terminal.txt")
+    return SUBPROCESS_PROMPT
+
+
+SUBPROCESS_PROMPT = ""
+try:
+    SUBPROCESS_PROMPT = _load_subprocess_prompt()
+except Exception:
+    pass  # --help still works; get_subprocess_prompt() fails at send time
+
+
+def _resolve_remote_key(browser: str, api_key: str | None) -> str:
+    """Pick API key: --api-key > env/integrated default for that backend."""
+    if api_key:
+        return api_key.strip()
+    if browser == "kernel":
+        return DEFAULT_KERNEL_KEY
+    if browser == "zenrows":
+        return DEFAULT_ZENROWS_KEY
+    return ""
+
+
+def _kernel_create(api_key: str, timeout_sec: int = 1200) -> tuple[str, str]:
+    """Create OnKernel stealth browser. Returns (cdp_ws_url, session_id)."""
+    out = subprocess.check_output(
+        ["kernel", "browsers", "create", "--stealth", "--timeout", str(timeout_sec), "-o", "json"],
+        env={**os.environ, "KERNEL_API_KEY": api_key},
+        text=True,
+        timeout=120,
+    )
+    data = json.loads(out)
+    cdp = data.get("cdp_ws_url") or data.get("cdp_url")
+    sid = data.get("session_id") or data.get("id") or ""
+    if not cdp:
+        raise RuntimeError(f"OnKernel create missing cdp_ws_url: {data}")
+    return cdp, sid
+
+
+def _kernel_delete(session_id: str, api_key: str) -> None:
+    if not session_id:
+        return
+    try:
+        subprocess.run(
+            ["kernel", "browsers", "delete", session_id],
+            env={**os.environ, "KERNEL_API_KEY": api_key},
+            capture_output=True,
+            timeout=60,
+        )
+    except Exception as e:
+        log(f"kernel delete {session_id}: {e}", "WARNING")
+
+
+@contextlib.asynccontextmanager
+async def open_browser(browser: str, api_key: str | None = None, headless: bool = False,
+                       zenrows_country: str = "us"):
+    """
+    Yield (pw_browser, context, page).
+    browser=local → InvisiblePlaywright; kernel/zenrows → Playwright CDP.
+    """
+    backend = (browser or "local").strip().lower()
+    if backend == "local":
+        async with InvisiblePlaywright(headless=headless) as pw_browser:
+            context = pw_browser.contexts[0] if pw_browser.contexts else await pw_browser.new_context()
+            page = await context.new_page()
+            log(f"Browser: local InvisiblePlaywright (headless={headless})")
+            yield pw_browser, context, page
+        return
+
+    from playwright.async_api import async_playwright
+
+    key = _resolve_remote_key(backend, api_key)
+    if not key:
+        raise RuntimeError(f"--api-key / env key required for --browser {backend}")
+
+    kernel_sid = ""
+    async with async_playwright() as p:
+        if backend == "kernel":
+            log("Browser: OnKernel CDP — creating stealth session...")
+            cdp_url, kernel_sid = await asyncio.to_thread(_kernel_create, key)
+            log(f"OnKernel session={kernel_sid} cdp={cdp_url[:56]}...")
+            pw_browser = await p.chromium.connect_over_cdp(cdp_url, timeout=60000)
+        elif backend == "zenrows":
+            wss = f"wss://browser.zenrows.com?apikey={key}&proxy_country={zenrows_country}"
+            log(f"Browser: ZenRows CDP (country={zenrows_country}) {wss[:56]}...")
+            pw_browser = await p.chromium.connect_over_cdp(wss, timeout=60000)
+        else:
+            raise ValueError(f"Unknown --browser {backend!r} (use local|kernel|zenrows)")
+
+        try:
+            context = pw_browser.contexts[0] if pw_browser.contexts else await pw_browser.new_context()
+            page = await context.new_page()
+            yield pw_browser, context, page
+        finally:
+            try:
+                await pw_browser.close()
+            except Exception:
+                pass
+            if backend == "kernel" and kernel_sid:
+                await asyncio.to_thread(_kernel_delete, kernel_sid, key)
+                log(f"OnKernel session {kernel_sid} deleted")
 
 
 async def wait(ms: int = 500, max_ms: int = None):
@@ -338,21 +488,23 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
         with open(session_path / "cookies.json", "w") as f:
             json.dump(cookies, f, indent=2)
         print(f"   ✅ Cookies overwritten ({len(cookies)} cookies)")
-        try:
-            import subprocess
-            proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
-            env = {k: v for k, v in os.environ.items() if k not in proxy_vars}
-            remote = f"mega:lovable_sessions/session-{session_id}/cookies.json"
-            res = subprocess.run(
-                ["rclone", "copyto", str(session_path / "cookies.json"), remote],
-                capture_output=True, text=True, timeout=60, env=env,
-            )
-            if res.returncode == 0:
-                print(f"   ✅ Cookies uploaded to Mega ({remote})")
-            else:
-                print(f"   ⚠️  Mega cookies upload failed: {res.stderr[:200]}")
-        except Exception as e:
-            print(f"   ⚠️  Mega cookies upload error: {e}")
+        # Cookies stay in scripts/sessions (gitignored). No Mega upload.
+        if os.environ.get("CHIMERA_DB_BACKEND", "github") == "mega":
+            try:
+                import subprocess
+                proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
+                env = {k: v for k, v in os.environ.items() if k not in proxy_vars}
+                remote = f"mega:lovable_sessions/session-{session_id}/cookies.json"
+                res = subprocess.run(
+                    ["rclone", "copyto", str(session_path / "cookies.json"), remote],
+                    capture_output=True, text=True, timeout=60, env=env,
+                )
+                if res.returncode == 0:
+                    print(f"   ✅ Cookies uploaded to Mega ({remote})")
+                else:
+                    print(f"   ⚠️  Mega cookies upload failed: {res.stderr[:200]}")
+            except Exception as e:
+                print(f"   ⚠️  Mega cookies upload error: {e}")
 
     try:
         print(f"   🌐 Re-login: opening {LOGIN_URL}")
@@ -465,7 +617,7 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
 
 
 # ============================================================
-# MEGA Invite pool management
+# Invite pool — GitHub repo data/ (default). Mega only if backend=mega.
 # ============================================================
 
 def _rclone_env():
@@ -475,10 +627,27 @@ def _rclone_env():
     return {k: v for k, v in os.environ.items() if k not in proxy_vars}
 
 
+def _invites_gh_path() -> Path:
+    return Path(os.environ.get(
+        "CHIMERA_GH_INVITES",
+        str(Path(__file__).resolve().parent / "data" / "invites.json"),
+    ))
+
+
 def mega_download_invites() -> list:
-    """Download invites.json from MEGA via rclone."""
+    """Load invites.json from GitHub data/ (or Mega if legacy)."""
+    backend = os.environ.get("CHIMERA_DB_BACKEND", "github").strip().lower()
+    if backend != "mega":
+        p = _invites_gh_path()
+        if p.exists():
+            with open(p) as f:
+                invites = json.load(f)
+            log(f"✅ Loaded {len(invites)} invites from {p}")
+            return invites if isinstance(invites, list) else []
+        log("⚠️  No invites.json in data/ — empty pool")
+        return []
     import subprocess
-    log("Downloading invites from MEGA...")
+    log("Downloading invites from MEGA (legacy)...")
     result = subprocess.run(
         ["rclone", "copyto", INVITES_REMOTE, str(INVITES_LOCAL)],
         capture_output=True, text=True, timeout=60, env=_rclone_env()
@@ -488,15 +657,23 @@ def mega_download_invites() -> list:
             invites = json.load(f)
         log(f"✅ Downloaded {len(invites)} invites from MEGA")
         return invites
-    else:
-        log("⚠️  No invites.json found on MEGA, using empty pool")
-        return []
+    log("⚠️  No invites.json found on MEGA, using empty pool")
+    return []
 
 
 def mega_upload_invites(invites: list):
-    """Upload invites.json to MEGA via rclone."""
+    """Save invites.json to GitHub data/ (or Mega if legacy)."""
+    backend = os.environ.get("CHIMERA_DB_BACKEND", "github").strip().lower()
+    if backend != "mega":
+        p = _invites_gh_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w") as f:
+            json.dump(invites, f, indent=2)
+        INVITES_LOCAL.write_text(json.dumps(invites, indent=2))
+        log(f"✅ Invites saved → {p}")
+        return
     import subprocess
-    log(f"Uploading {len(invites)} invites to MEGA...")
+    log(f"Uploading {len(invites)} invites to MEGA (legacy)...")
     with open(INVITES_LOCAL, "w") as f:
         json.dump(invites, f, indent=2)
     result = subprocess.run(
@@ -1303,8 +1480,9 @@ def finalize_project(page, project_id: str) -> dict:
 # ============================================================
 
 async def add_subprocess_feature(page, cmd_name: str) -> bool:
-    """Add subprocess feature via chat prompt."""
-    log(f"Adding subprocess feature (cmd name: {cmd_name})...")
+    """Add /__shell + window.doc bridge via the real debug-terminal prompt."""
+    prompt = get_subprocess_prompt()
+    log(f"Adding subprocess bridge feature (cmd={cmd_name}, prompt={len(prompt)} chars)...")
     
     # Wait for page to be ready
     await wait(3000)
@@ -1332,10 +1510,20 @@ async def add_subprocess_feature(page, cmd_name: str) -> bool:
         log("❌ Could not find chat input!", "ERROR")
         return False
     
-    # Type the subprocess prompt
+    # Type the real bridge prompt (never trivial say-'a')
     await mouse_click(page, chat_input, "Click chat input", tries=4)
     await wait(500)
-    await chat_input.fill(random.choice(SIMPLE_PROMPTS))
+    try:
+        await chat_input.fill(prompt, timeout=20000)
+    except Exception:
+        try:
+            await page.keyboard.press("ControlOrMeta+a")
+            await page.keyboard.type(prompt[:2000])
+            await page.keyboard.press("ControlOrMeta+a")
+            await page.keyboard.type(prompt)
+        except Exception as e:
+            log(f"❌ Failed to enter bridge prompt: {e}", "ERROR")
+            return False
     await wait(1000)
     
     # Click send button
@@ -1348,13 +1536,13 @@ async def add_subprocess_feature(page, cmd_name: str) -> bool:
         except:
             await chat_input.press("Enter")
     
-    log("📤 Sent subprocess prompt")
+    log("📤 Sent /__shell bridge prompt (Build a debug terminal)")
     
     # Wait for AI to implement
     log("Waiting for AI to implement feature...")
     await wait_for_ai_completion(page)
     
-    log(f"✅ Subprocess feature added (using '{cmd_name}')")
+    log(f"✅ Subprocess bridge feature added (cmd='{cmd_name}')")
     return True
 
 
@@ -1373,11 +1561,11 @@ async def wait_for_ai_completion(page, timeout: int = 600):
         try:
             # Check for completion keywords in AI messages
             ai_messages = page.locator('[data-testid="chat-item-ai_message"]')
-            message_count = await ai_messages.count()
+            message_count = await asyncio.wait_for(ai_messages.count(), timeout=10)
             
             if message_count > 0:
                 last_message = ai_messages.last
-                message_text = await last_message.inner_text()
+                message_text = await asyncio.wait_for(last_message.inner_text(), timeout=15)
                 message_lower = message_text.lower()
                 
                 for keyword in completion_keywords:
@@ -1389,18 +1577,27 @@ async def wait_for_ai_completion(page, timeout: int = 600):
             # Check loading indicator
             try:
                 loading = page.locator('[data-testid="chat-timeline"] > [role="status"]')
-                if await loading.count() == 0 or not await loading.first.is_visible():
+                loading_count = await asyncio.wait_for(loading.count(), timeout=10)
+                if loading_count == 0 or not await asyncio.wait_for(loading.first.is_visible(), timeout=5):
                     await asyncio.sleep(2)
-                    if await loading.count() == 0 or not await loading.first.is_visible():
+                    loading_count = await asyncio.wait_for(loading.count(), timeout=10)
+                    if loading_count == 0 or not await asyncio.wait_for(loading.first.is_visible(), timeout=5):
                         log("✅ AI finished (no loading indicator)")
                         return True
-            except:
+            except asyncio.TimeoutError:
+                log("⚠️  loading-indicator check timed out; keep waiting", "WARNING")
+            except Exception:
                 log("✅ AI finished")
                 return True
-        except:
+        except asyncio.TimeoutError:
+            log("⚠️  AI poll timed out; keep waiting", "WARNING")
+        except Exception:
             log("✅ AI finished (exception)")
             return True
         
+        elapsed = int(time.time() - start)
+        if elapsed % 60 < 6:
+            log(f"… still waiting for AI ({elapsed}s / {timeout}s)")
         await asyncio.sleep(5)
     
     log("⚠️  AI timeout - continuing anyway", "WARNING")
@@ -1559,7 +1756,25 @@ async def main():
                         help="Creation mode: template (default), remix, or accept")
     parser.add_argument("--source-url", type=str, help="Source project URL/ID for remix mode")
     parser.add_argument("--invite", type=str, help="Invite link for accept mode")
-    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument("--headless", action="store_true", help="Run local browser headless (ignored for CDP)")
+    parser.add_argument(
+        "--browser",
+        choices=["local", "kernel", "zenrows"],
+        default=os.environ.get("CHIMERA_BROWSER", "local"),
+        help="Browser backend: local | kernel (OnKernel) | zenrows (default: local or CHIMERA_BROWSER)",
+    )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key for kernel/zenrows (else KERNEL_API_KEY / ZENROWS_API_KEY / built-in)",
+    )
+    parser.add_argument(
+        "--zenrows-country",
+        type=str,
+        default=os.environ.get("ZENROWS_COUNTRY", "us"),
+        help="ZenRows proxy_country (default: us)",
+    )
     args = parser.parse_args()
     
     session_id = args.session
@@ -1572,6 +1787,7 @@ async def main():
     print(f"Session: session-{session_id}")
     print(f"Count: {count}")
     print(f"Mode: {mode}")
+    print(f"Browser: {args.browser}")
     print("=" * 60 + "\n")
     
     # Validate mode arguments
@@ -1615,10 +1831,13 @@ async def main():
             used_invite_link = best_invite["invite_link"]
             print(f"🔗 Auto-picked invite (usage {best_invite.get('usage_count', 0)}): {used_invite_link}")
     
-    # Initialize InvisiblePlaywright (returns Browser directly)
-    async with InvisiblePlaywright() as browser:
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
-        page = await context.new_page()
+    # Initialize browser (local InvisiblePlaywright | OnKernel CDP | ZenRows CDP)
+    async with open_browser(
+        args.browser,
+        api_key=args.api_key,
+        headless=args.headless,
+        zenrows_country=args.zenrows_country,
+    ) as (_browser, context, page):
         await context.add_cookies(cookies)
         
         for i in range(count):

@@ -34,7 +34,7 @@ SESSIONS_DIR = Path(
         "/home/alae/Documents/repos/automation-toolkit/scripts/sessions",
     )
 )
-BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
+BRIDGE_URL = "wss://chimera-bridge-production-0703.up.railway.app"
 
 LOGIN_URL = "https://lovable.dev/login"
 DASHBOARD_MARKERS = ["/projects", "/dashboard"]
@@ -133,7 +133,8 @@ async def relogin_session(browser, config: dict, session_id: str) -> str:
         with open(session_path / "cookies.json", "w") as f:
             json.dump(cookies, f, indent=2)
         print(f"   ✅ Cookies overwritten ({len(cookies)} cookies)")
-        if not os.environ.get("CHIMERA_OFFLINE", ""):
+        # Cookies stay on disk under CHIMERA_SESSIONS_DIR — no Mega.
+        if os.environ.get("CHIMERA_DB_BACKEND", "github") == "mega":
             try:
                 import subprocess
                 proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
