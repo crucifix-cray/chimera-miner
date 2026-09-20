@@ -1159,7 +1159,8 @@ async def main():
                 print(f"⏰ GH mode: will stop after {max_runtime:.1f} minutes")
             
             # Oneshot = keep checking until preview stops loading (error on page), then end
-            await health_check_loop(preview_page, preview_url, mode=args.mode, bridge_url=BRIDGE_URL, context=context, max_runtime_minutes=max_runtime)
+            await health_check_loop(preview_page, preview_url, mode=args.mode, bridge_url=BRIDGE_URL, context=context, max_runtime_minutes=max_runtime,
+                                    session_config=config, chat_url=chat_url)
             print("\n🏁 Session complete!")
     finally:
         # Release the account (never leave it on_hold) - but NEVER un-flag red/truly_red.
