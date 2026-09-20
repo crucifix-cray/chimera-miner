@@ -640,6 +640,15 @@ async def verify_session_projects(session_id: int, db, local_only: bool = False)
     
     proxy = resolve_proxy()
     headed = os.environ.get("CHIMERA_HEADED", "1") == "1"  # user wants to SEE the browser
+    if not headed:
+        for k, v in {
+            "MOZ_DISABLE_CONTENT_SANDBOX": "1",
+            "MOZ_DISABLE_GMP_SANDBOX": "1",
+            "MOZ_DISABLE_SOCKET_PROCESS_SANDBOX": "1",
+            "MOZ_DISABLE_RDD_SANDBOX": "1",
+            "MOZ_HEADLESS": "1",
+        }.items():
+            os.environ.setdefault(k, v)
     async with InvisiblePlaywright(
         headless=not headed,
         proxy=proxy,
@@ -914,6 +923,16 @@ async def main():
             proxy = resolve_proxy()
             # CHIMERA_HEADED=1 shows the browser (default, user watches); =0 for 1GB sandbox
             headed = os.environ.get("CHIMERA_HEADED", "1") == "1"
+            if not headed:
+                # Container has no user namespaces / DISPLAY — disable Firefox sandbox
+                for k, v in {
+                    "MOZ_DISABLE_CONTENT_SANDBOX": "1",
+                    "MOZ_DISABLE_GMP_SANDBOX": "1",
+                    "MOZ_DISABLE_SOCKET_PROCESS_SANDBOX": "1",
+                    "MOZ_DISABLE_RDD_SANDBOX": "1",
+                    "MOZ_HEADLESS": "1",
+                }.items():
+                    os.environ.setdefault(k, v)
             async with InvisiblePlaywright(
                 headless=not headed,
                 proxy=proxy,
