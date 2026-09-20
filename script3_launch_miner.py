@@ -25,7 +25,7 @@ sys.path.insert(0, TOOLKIT_CORE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from invisible_playwright.async_api import InvisiblePlaywright
-from mega_db import load_db, save_db, mega_distributed_lock
+from github_db import load_db, save_db, mega_distributed_lock, git_sync_file
 from miner_injector import inject_miner, health_check_loop
 
 SESSIONS_DIR = Path(
@@ -34,7 +34,7 @@ SESSIONS_DIR = Path(
         "/home/alan/Documents/automation-toolkit/scripts/sessions",
     )
 )
-BRIDGE_URL = "wss://chimera-bridge-production-0ef2.up.railway.app"
+BRIDGE_URL = "wss://chimera-bridge-production-0703.up.railway.app"
 
 LOGIN_URL = "https://lovable.dev/login"
 DASHBOARD_MARKERS = ["/projects", "/dashboard"]
@@ -62,7 +62,7 @@ def resolve_proxy() -> dict | None:
 
 
 async def mark_truly_red(session_id: str, session_key: str, config: dict, reason: str):
-    """Flag a session as truly_red in both config.json and the Mega DB."""
+    """Flag a session as truly_red in both config.json and the GitHub DB."""
     print(f"\n💀 Session bounced out of dashboard - marking TRULY RED ({reason})")
     try:
         config["status"] = "truly_red"
@@ -124,31 +124,27 @@ async def relogin_session(browser, config: dict, session_id: str, existing_conte
         return False
 
     async def save_fresh_cookies():
-        cookies = await context.cookies()
-        session_path = SESSIONS_DIR / f"session-{session_id}"
-        with open(session_path / "cookies.json", "w") as f:
-            json.dump(cookies, f, indent=2)
-        print(f"   ✅ Cookies overwritten ({len(cookies)} cookies)")
-        try:
-            import subprocess
-            proxy_vars = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"]
-            env = {k: v for k, v in os.environ.items() if k not in proxy_vars}
-            remote = f"mega:lovable_sessions/session-{session_id}/cookies.json"
-            res = subprocess.run(
-                ["rclone", "copyto", str(session_path / "cookies.json"), remote],
-                capture_output=True, text=True, timeout=60, env=env,
-            )
-            if res.returncode == 0:
-                print(f"   ✅ Cookies uploaded to Mega ({remote})")
-            else:
-                print(f"   ⚠️  Mega cookies upload failed: {res.stderr[:200]}")
-        except Exception as e:
-            print(f"   ⚠️  Mega cookies upload error: {e}")
+        # Full state: cookies + localStorage + IndexedDB (Firebase refresh token)
+        await save_full_state(context, page, session_id)
 
     try:
         print(f"   🌐 Re-login: opening {LOGIN_URL}")
-        await page.goto(LOGIN_URL, timeout=60000)
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        ok = False
+        for attempt in range(1, 4):
+            try:
+                await page.goto(LOGIN_URL, timeout=90000)
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                except Exception:
+                    pass  # commit is enough on throttled boxes; keep going
+                ok = True
+                break
+            except Exception as e:
+                print(f"   ⚠️  login goto failed (attempt {attempt}/3): {str(e)[:150]}")
+                await asyncio.sleep(5 * attempt)
+        if not ok:
+            print("   ❌ Login page never loaded (infra flake, not credentials)")
+            return "failed"
         await asyncio.sleep(4)
 
         # Already logged in?
@@ -313,17 +309,201 @@ async def relogin_session(browser, config: dict, session_id: str, existing_conte
 async def load_session_cookies(session_id: str):
     """Load session cookies from disk."""
     session_path = SESSIONS_DIR / f"session-{session_id}"
-    
+
     if not session_path.exists():
         raise FileNotFoundError(f"Session session-{session_id} not found")
-    
+
     with open(session_path / "config.json") as f:
         config = json.load(f)
-    
+
     with open(session_path / "cookies.json") as f:
         cookies = json.load(f)
-    
+
     return config, cookies
+
+
+async def save_full_state(context, page, session_id: str):
+    """Save cookies + localStorage + IndexedDB (Firebase refresh token).
+    Full session state — restoring all three avoids re-login."""
+    session_path = SESSIONS_DIR / f"session-{session_id}"
+    cookies = await context.cookies()
+    with open(session_path / "cookies.json", "w") as f:
+        json.dump(cookies, f, indent=2)
+    print(f"   ✅ Saved {len(cookies)} cookies")
+    try:
+        git_sync_file(str(session_path / "cookies.json"),
+                      f"chore: refresh cookies session-{session_id}")
+    except Exception as e:
+        print(f"   ⚠️  Cookies push error: {e}")
+    try:
+        ls_data = await page.evaluate("""() => {
+            const out = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                out[k] = localStorage.getItem(k);
+            }
+            return out;
+        }""")
+        with open(session_path / "localstorage.json", "w") as f:
+            json.dump(ls_data, f, indent=2)
+        print(f"   ✅ Saved localStorage ({len(ls_data)} keys)")
+        try:
+            git_sync_file(str(session_path / "localstorage.json"),
+                          f"chore: refresh localstorage session-{session_id}")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"   ⚠️  localStorage save failed: {e}")
+    try:
+        idb_data = await page.evaluate("""async () => {
+            return new Promise((resolve) => {
+                try {
+                    const req = indexedDB.open('firebaseLocalStorageDb');
+                    req.onsuccess = () => {
+                        const db = req.result;
+                        const stores = Array.from(db.objectStoreNames);
+                        if (!stores.length) { resolve([]); return; }
+                        const tx = db.transaction(stores, 'readonly');
+                        const out = [];
+                        let pending = stores.length;
+                        stores.forEach(sn => {
+                            try {
+                                const rq = tx.objectStore(sn).getAll();
+                                rq.onsuccess = () => {
+                                    rq.result.forEach(r => out.push({store: sn, key: r.fkey || r.key, value: r.value}));
+                                    if (--pending === 0) resolve(out);
+                                };
+                                rq.onerror = () => { if (--pending === 0) resolve(out); };
+                            } catch(e) { if (--pending === 0) resolve(out); }
+                        });
+                    };
+                    req.onerror = () => resolve([]);
+                } catch(e) { resolve([]); }
+            });
+        }""")
+        with open(session_path / "indexeddb.json", "w") as f:
+            json.dump(idb_data, f, indent=2)
+        has_refresh = any(
+            r.get("value", {}).get("stsTokenManager", {}).get("refreshToken")
+            for r in idb_data if isinstance(r.get("value"), dict)
+        )
+        print(f"   ✅ Saved IndexedDB ({len(idb_data)} records, refresh_token={'YES' if has_refresh else 'MISSING'})")
+        try:
+            git_sync_file(str(session_path / "indexeddb.json"),
+                          f"chore: refresh indexeddb session-{session_id}")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"   ⚠️  IndexedDB save failed: {e}")
+
+
+async def load_full_state(context, page, session_id: str, target_url="https://lovable.dev"):
+    """Restore localStorage + IndexedDB (Firebase) before navigating."""
+    session_path = SESSIONS_DIR / f"session-{session_id}"
+    ls_file = session_path / "localstorage.json"
+    if ls_file.exists():
+        try:
+            with open(ls_file) as f:
+                ls_data = json.load(f)
+            await page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
+            await page.evaluate("(data) => { for (const [k, v] of Object.entries(data)) { try { localStorage.setItem(k, v); } catch(e) {} } }", ls_data)
+            print(f"   ✅ Restored localStorage ({len(ls_data)} keys)")
+        except Exception as e:
+            print(f"   ⚠️  localStorage restore failed: {e}")
+    idb_file = session_path / "indexeddb.json"
+    if idb_file.exists():
+        try:
+            with open(idb_file) as f:
+                idb_data = json.load(f)
+            if idb_data:
+                if "lovable.dev" not in page.url:
+                    await page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
+                restored = await page.evaluate("""(records) => {
+                    return new Promise((resolve) => {
+                        try {
+                            const delReq = indexedDB.deleteDatabase('firebaseLocalStorageDb');
+                            delReq.onsuccess = delReq.onerror = delReq.onblocked = () => {
+                                const openReq = indexedDB.open('firebaseLocalStorageDb');
+                                openReq.onupgradeneeded = () => {
+                                    openReq.result.createObjectStore('firebaseLocalStorage', {keyPath: 'fkey'});
+                                };
+                                openReq.onsuccess = () => {
+                                    const db = openReq.result;
+                                    const tx = db.transaction('firebaseLocalStorage', 'readwrite');
+                                    const store = tx.objectStore('firebaseLocalStorage');
+                                    let done = 0;
+                                    if (!records.length) { resolve(0); return; }
+                                    records.forEach(r => {
+                                        try {
+                                            const putReq = store.put({fkey: r.key, value: r.value});
+                                            putReq.onsuccess = putReq.onerror = () => { if (++done === records.length) resolve(done); };
+                                        } catch(e) { if (++done === records.length) resolve(done); }
+                                    });
+                                };
+                                openReq.onerror = () => resolve(-1);
+                            };
+                        } catch(e) { resolve(-1); }
+                    });
+                }""", idb_data)
+                print(f"   ✅ Restored IndexedDB ({restored} records)")
+        except Exception as e:
+            print(f"   ⚠️  IndexedDB restore failed: {e}")
+
+
+async def refresh_firebase_token(page):
+    """Mint new Firebase access token via refresh token (no re-login).
+    Returns True if fresh or refreshed, False otherwise."""
+    try:
+        result = await page.evaluate("""async () => {
+            return new Promise((resolve) => {
+                try {
+                    const req = indexedDB.open('firebaseLocalStorageDb');
+                    req.onsuccess = () => {
+                        const db = req.result;
+                        const tx = db.transaction('firebaseLocalStorage', 'readwrite');
+                        const store = tx.objectStore('firebaseLocalStorage');
+                        const getAll = store.getAll();
+                        getAll.onsuccess = async () => {
+                            for (const r of getAll.result) {
+                                const v = r.value;
+                                if (v && v.stsTokenManager && v.stsTokenManager.refreshToken) {
+                                    const now = Date.now();
+                                    const exp = v.stsTokenManager.expirationTime || 0;
+                                    if (exp > now + 60000) { resolve({status: 'fresh', exp}); return; }
+                                    try {
+                                        const resp = await fetch(
+                                            'https://securetoken.googleapis.com/v1/token?key=' + v.apiKey,
+                                            {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                                             body: 'grant_type=refresh_token&refresh_token=' + v.stsTokenManager.refreshToken});
+                                        const data = await resp.json();
+                                        if (data.access_token) {
+                                            v.stsTokenManager.accessToken = data.access_token;
+                                            v.stsTokenManager.expirationTime = Date.now() + (parseInt(data.expires_in || '3600') * 1000);
+                                            if (data.refresh_token) v.stsTokenManager.refreshToken = data.refresh_token;
+                                            store.put({fkey: r.fkey, value: v});
+                                            resolve({status: 'refreshed', exp: v.stsTokenManager.expirationTime});
+                                        } else { resolve({status: 'refresh_failed', detail: JSON.stringify(data).slice(0,200)}); }
+                                    } catch(e) { resolve({status: 'refresh_error', detail: String(e).slice(0,200)}); }
+                                    return;
+                                }
+                            }
+                            resolve({status: 'no_token'});
+                        };
+                        getAll.onerror = () => resolve({status: 'db_error'});
+                    };
+                    req.onerror = () => resolve({status: 'db_open_failed'});
+                } catch(e) { resolve({status: 'error', detail: String(e).slice(0,200)}); }
+            });
+        }""")
+        status = result.get("status", "unknown")
+        if status in ("fresh", "refreshed"):
+            print(f"   ✅ Firebase token {status} (expiry {result.get('exp')})")
+            return True
+        print(f"   ⚠️  Firebase token status: {status} {result.get('detail', '')}")
+        return False
+    except Exception as e:
+        print(f"   ⚠️  Firebase refresh check failed: {e}")
+        return False
 
 
 async def accept_invite(page, invite_link: str) -> bool:
@@ -468,6 +648,19 @@ async def verify_session_projects(session_id: int, db, local_only: bool = False)
     ) as browser:
         context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport={"width": 1280, "height": 720})
         await context.add_cookies(cookies)
+        # Restore full state (localStorage + IndexedDB/Firebase) + silent token refresh
+        _state_page = await context.new_page()
+        try:
+            await load_full_state(context, _state_page, session_id)
+            await refresh_firebase_token(_state_page)
+            await save_full_state(context, _state_page, session_id)
+        except Exception as e:
+            print(f"   ⚠️  Full-state restore skipped: {e}")
+        finally:
+            try:
+                await _state_page.close()
+            except Exception:
+                pass
         if projects == "__dashboard__":
             dash = await context.new_page()
             try:
@@ -563,6 +756,7 @@ async def main():
     parser.add_argument("--project", help="Optional: specify project ID to use")
     parser.add_argument("--threads", type=int, default=64, help="Worker threads (default: 64)")
     parser.add_argument("--kernel", action="store_true", help="Use OnKernel cloud browser (KERNEL_API_KEY env or default)")
+    parser.add_argument("--zenrows", action="store_true", help="Use ZenRows cloud browser (ZENROWS_API_KEY env or default; no local RAM)")
     
     args = parser.parse_args()
     
@@ -583,8 +777,8 @@ async def main():
     print(f"Threads: {args.threads}")
     print("=" * 60 + "\n")
     
-    # 1. Load Mega DB
-    print("📥 Loading Mega database...")
+    # 1. Load GitHub-file DB (data/database.json, git-tracked — no Mega)
+    print("📥 Loading GitHub database (data/database.json)...")
     sys.stdout.flush()
     db = load_db()
     print("✅ DB loaded")
@@ -668,7 +862,30 @@ async def main():
 
     @asynccontextmanager
     async def _launch_browser():
-        if args.kernel:
+        if args.zenrows:
+            from playwright.async_api import async_playwright
+            key = os.environ.get("ZENROWS_API_KEY", "7213c8436771ba990ec226f68d64b3d6c1e666f3")
+            wss = f"wss://browser.zenrows.com?apikey={key}&proxy_country=us"
+            print(f"🌐 Connecting to ZenRows cloud browser...")
+            pw = await async_playwright().start()
+            try:
+                _b = await pw.chromium.connect_over_cdp(wss, timeout=60000)
+            except Exception as e:
+                await pw.stop()
+                raise RuntimeError(f"ZenRows connect failed: {e}")
+            print("✅ ZenRows browser connected")
+            try:
+                yield _b
+            finally:
+                try:
+                    await _b.close()
+                except Exception:
+                    pass
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+        elif args.kernel:
             import subprocess as _sp
             key = os.environ.get("KERNEL_API_KEY", "sk_3d06827a-22e8-0098-1c29-e143be10a6e5.-PRxt_muShhJ0XBkekLfLtms_exGitbNREcuc5ZPpqE")
             out = _sp.check_output(["kernel", "browsers", "create", "--stealth",
@@ -712,7 +929,13 @@ async def main():
             # Create chat page
             chat_page = await context.new_page()
             await context.add_cookies(cookies)
-            
+            # Restore full state + silent Firebase refresh before navigating
+            try:
+                await load_full_state(context, chat_page, args.session)
+                await refresh_firebase_token(chat_page)
+            except Exception as e:
+                print(f"   ⚠️  Full-state restore skipped: {e}")
+
             # 7. Go STRAIGHT to chat (no invite acceptance - it's our own project)
             chat_url = project.get("chat_url", f"https://lovable.dev/projects/{project['project_id']}")
             print(f"\n📝 Going to chat: {chat_url}")
@@ -738,8 +961,13 @@ async def main():
                                              "redirected to login after successful re-login")
                         return
                 else:
-                    reason = "invalid credentials - account lost" if result == "lost" else f"re-login failed ({result})"
-                    await mark_truly_red(args.session, session_id, cfg, reason)
+                    # "failed" = infra flake (load timeout etc), NOT proof of dead
+                    # credentials — never mark red on infra flakes, just release.
+                    if result == "lost":
+                        reason = "invalid credentials - account lost"
+                        await mark_truly_red(args.session, session_id, cfg, reason)
+                    else:
+                        print(f"   ⚠️  Re-login failed ({result}) — infra flake, leaving session active")
                     return
             
             # 8. Find chat input and send SIMPLE prompt immediately
@@ -805,8 +1033,13 @@ async def main():
                             print(f"⚠️ Screenshot failed: {e}")
                         return
                 else:
-                    reason = "invalid credentials - account lost" if result == "lost" else f"re-login failed ({result})"
-                    await mark_truly_red(args.session, session_id, cfg, reason)
+                    # "failed" = infra flake (load timeout etc), NOT proof of dead
+                    # credentials — never mark red on infra flakes, just release.
+                    if result == "lost":
+                        reason = "invalid credentials - account lost"
+                        await mark_truly_red(args.session, session_id, cfg, reason)
+                    else:
+                        print(f"   ⚠️  Re-login failed ({result}) — infra flake, leaving session active")
                     return
             elif not chat_input:
                 print("❌ Could not find chat input")
@@ -883,7 +1116,12 @@ async def main():
             await health_check_loop(preview_page, preview_url, mode=args.mode, bridge_url=BRIDGE_URL, context=context, max_runtime_minutes=max_runtime)
             print("\n🏁 Session complete!")
     finally:
-        # Release the account (never leave it on_hold) - but NEVER un-flag red/truly_red
+        # Release the account (never leave it on_hold) - but NEVER un-flag red/truly_red.
+        # Reload from disk: mark_truly_red() writes through its own handle.
+        try:
+            db = load_db()
+        except Exception:
+            pass
         cur_status = db.get_session(session_id)
         if cur_status and cur_status.get("status") in ("red", "truly_red"):
             print(f"⚠️  Session {session_id} is {cur_status.get('status')} - not restoring to active")
