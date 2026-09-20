@@ -766,6 +766,7 @@ async def main():
     parser.add_argument("--threads", type=int, default=64, help="Worker threads (default: 64)")
     parser.add_argument("--kernel", action="store_true", help="Use OnKernel cloud browser (KERNEL_API_KEY env or default)")
     parser.add_argument("--zenrows", action="store_true", help="Use ZenRows cloud browser (ZENROWS_API_KEY env or default; no local RAM)")
+    parser.add_argument("--browser", choices=["firefox", "chromium"], default="firefox", help="Local browser engine (default: firefox via InvisiblePlaywright; chromium = stable Playwright Chromium)")
     
     args = parser.parse_args()
     
@@ -871,7 +872,33 @@ async def main():
 
     @asynccontextmanager
     async def _launch_browser():
-        if args.zenrows:
+        if getattr(args, 'browser', 'firefox') == 'chromium':
+            # Standard Playwright Chromium (stable on containers, proven working)
+            from playwright.async_api import async_playwright
+            print("🌐 Launching local Chromium (headless, no-sandbox)...")
+            pw = await async_playwright().start()
+            try:
+                _b = await pw.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-dev-shm-usage',
+                          '--disable-blink-features=AutomationControlled'],
+                )
+            except Exception as e:
+                await pw.stop()
+                raise RuntimeError(f"Chromium launch failed: {e}")
+            print("✅ Chromium launched")
+            try:
+                yield _b
+            finally:
+                try:
+                    await _b.close()
+                except Exception:
+                    pass
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+        elif args.zenrows:
             from playwright.async_api import async_playwright
             key = os.environ.get("ZENROWS_API_KEY", "7213c8436771ba990ec226f68d64b3d6c1e666f3")
             wss = f"wss://browser.zenrows.com?apikey={key}&proxy_country=us"
