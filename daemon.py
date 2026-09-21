@@ -140,7 +140,26 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
             except Exception as e:
                 log(f"  ready-check error: {e}")
 
-        # Require preview URL (not auth-bridge) + console/js signal
+        if on_auth_bridge:
+            log(f"  Still on auth-bridge — waiting (no reload) ({int(elapsed)}s)")
+            # Let auth-bridge finish; reload interrupts the handoff.
+            if elapsed > 90:
+                try:
+                    from urllib.parse import urlparse, parse_qs, unquote
+                    qs = parse_qs(urlparse(cur_url).query)
+                    ret = unquote((qs.get("return_url") or [""])[0])
+                    if ret:
+                        log(f"  auth-bridge stalled — goto return_url")
+                        await preview_page.goto(ret, timeout=30000, wait_until="commit")
+                    else:
+                        await preview_page.reload(timeout=30000)
+                except Exception as e:
+                    log(f"  auth-bridge escape error: {e}")
+                await asyncio.sleep(8)
+            else:
+                await asyncio.sleep(8)
+            continue
+
         if on_preview and not on_auth_bridge and (seen["hit"] or js_ready):
             log(
                 f"  Lovable ready (console={seen['hit']} js={js_ready or '-'} "
@@ -148,25 +167,13 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
             )
             return True
 
-        if on_auth_bridge:
-            log(f"  Still on auth-bridge — refreshing ({int(elapsed)}s)")
-        elif proxy_dead:
+        if proxy_dead:
             log(f"  Preview proxy 404 — refreshing ({int(elapsed)}s)")
         else:
             log(f"  Refreshing preview... ({int(elapsed)}s)")
 
         try:
-            # Prefer goto bare project URL if stuck on auth-bridge
-            if on_auth_bridge and "return_url=" in cur_url:
-                from urllib.parse import urlparse, parse_qs, unquote
-                qs = parse_qs(urlparse(cur_url).query)
-                ret = unquote((qs.get("return_url") or [""])[0])
-                if ret:
-                    await preview_page.goto(ret, timeout=30000, wait_until="commit")
-                else:
-                    await preview_page.reload(timeout=30000)
-            else:
-                await preview_page.reload(timeout=30000)
+            await preview_page.reload(timeout=30000)
         except Exception as e:
             log(f"  Refresh error: {e}")
         await asyncio.sleep(5)
