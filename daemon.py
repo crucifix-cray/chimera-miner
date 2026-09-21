@@ -314,12 +314,19 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
                 await asyncio.sleep(8)
             continue
 
-        if on_preview and not on_auth_bridge and (seen["hit"] or js_ready):
+        if on_preview and not on_auth_bridge and js_ready:
+            # Require window.doc / window.lovable — console "lovable" alone is a
+            # false positive (seen after proxy recovery before shell mounts).
             log(
-                f"  Lovable ready (console={seen['hit']} js={js_ready or '-'} "
+                f"  Lovable ready (console={seen['hit']} js={js_ready} "
                 f"url={cur_url[:80]}) after {int(elapsed)}s"
             )
             return True
+
+        if on_preview and not on_auth_bridge and seen["hit"] and not js_ready:
+            log(f"  Console lovable but no doc yet — keep waiting ({int(elapsed)}s)")
+            await asyncio.sleep(5)
+            continue
 
         if proxy_dead:
             log(f"  Preview proxy 404 — refreshing ({int(elapsed)}s)")

@@ -94,6 +94,13 @@ Railway details: `docs/DAEMON-RAILWAY.md`.
 
 ---
 
+## Problem 18: Console 'lovable' without window.doc → inject abort
+- **Symptom:**  then inject  ×6 → abort; 0 workers.
+- **Cause:**  treated console text alone as ready.
+- **Fix:** Require  ( / ); console hit alone keeps waiting.
+
+---
+
 ## Working launch commands
 
 ### Daemon on Railway (production — recommended)
