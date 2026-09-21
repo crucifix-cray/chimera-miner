@@ -261,21 +261,21 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
             await context.add_cookies(cookies)
             log(f"Loaded {len(cookies)} cookies")
 
-            # Open preview page
-            preview_page = await context.new_page()
-            log(f"Opening preview: {preview_url}")
+            # --- Step 1: Open chat page, check login ---
+            chat_page = await context.new_page()
+            log(f"Opening chat: {chat_url}")
             try:
-                await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
+                await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
             except Exception:
                 pass
-            await preview_page.wait_for_timeout(5000)
+            await chat_page.wait_for_timeout(3000)
 
             # Check if logged in
-            url = preview_page.url
-            if "/login" in url:
+            cur_url = chat_page.url
+            if "/login" in cur_url:
                 log("Not logged in — doing login...")
                 ok = await do_login(
-                    preview_page,
+                    chat_page,
                     config["email"],
                     config["password"],
                     config.get("totp_secret"))
@@ -285,21 +285,22 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                     await pw.stop()
                     await asyncio.sleep(300)
                     continue
-                # Reload preview
+                # Reload chat after login
                 try:
-                    await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
+                    await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
                 except Exception:
                     pass
-                await preview_page.wait_for_timeout(5000)
+                await chat_page.wait_for_timeout(3000)
 
-            # Restore localStorage + IndexedDB
+            # --- Step 2: Restore localStorage + IndexedDB ---
             sdir = _sess_dir(session_id)
+            # Restore on chat page (lovable.dev domain)
             ls_file = sdir / "localstorage.json"
             if ls_file.exists():
                 try:
                     with open(ls_file) as f:
                         ls_data = json.load(f)
-                    await preview_page.evaluate(
+                    await chat_page.evaluate(
                         "(data) => { for (const [k, v] of Object.entries(data)) { try { localStorage.setItem(k, v); } catch(e) {} } }",
                         ls_data)
                     log(f"Restored {len(ls_data)} localStorage keys")
@@ -312,7 +313,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                     with open(idb_file) as f:
                         idb_data = json.load(f)
                     if idb_data:
-                        await preview_page.evaluate("""(records) => {
+                        await chat_page.evaluate("""(records) => {
                             return new Promise((resolve) => {
                                 try {
                                     const delReq = indexedDB.deleteDatabase('firebaseLocalStorageDb');
@@ -343,7 +344,71 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                 except Exception as e:
                     log(f"IndexedDB restore failed: {e}")
 
-            # Inject worker
+            # --- Step 3: Find chat input and send build prompt ---
+            import random as _rand
+            chat_input = None
+            for sel in ['div[contenteditable="true"][role="textbox"]',
+                        '[contenteditable="true"]', 'textarea']:
+                try:
+                    n = await chat_page.locator(sel).count()
+                    if n > 0:
+                        chat_input = chat_page.locator(sel).first
+                        break
+                except Exception:
+                    continue
+
+            if not chat_input:
+                log("Chat input not found — retrying in 5 min...")
+                await browser.close()
+                await pw.stop()
+                await asyncio.sleep(300)
+                continue
+
+            prompt = _rand.choice(["say 'a'", "1+1?", "say 'x'", "echo ok"])
+            log(f"Sending prompt: '{prompt}'")
+            await chat_input.fill(prompt)
+            await asyncio.sleep(0.3)
+            await chat_page.keyboard.press("Enter")
+            log("Prompt sent!")
+
+            # --- Step 4: Open preview in new tab ---
+            preview_page = await context.new_page()
+            log(f"Opening preview: {preview_url}")
+            try:
+                await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
+            except Exception:
+                pass
+            await preview_page.wait_for_timeout(3)
+
+            # --- Step 5: Wait for console 'lovable' message (sandbox ready) ---
+            log("Waiting for sandbox to be ready (doc bridge)...")
+            sandbox_ready = False
+            for attempt in range(30):  # max 5 min
+                try:
+                    ready = await preview_page.evaluate(
+                        "() => !!(window.doc && typeof window.doc === 'function')")
+                    if ready:
+                        log(f"Sandbox ready after {attempt*10}s!")
+                        sandbox_ready = True
+                        break
+                except Exception:
+                    pass
+                # Refresh every 10s
+                log(f"  Waiting... ({attempt*10}s)")
+                try:
+                    await preview_page.reload(timeout=15000)
+                except Exception:
+                    pass
+                await preview_page.wait_for_timeout(10)
+
+            if not sandbox_ready:
+                log("Sandbox never ready — retrying in 2 min...")
+                await browser.close()
+                await pw.stop()
+                await asyncio.sleep(120)
+                continue
+
+            # --- Step 6: Inject worker ---
             log("Injecting worker...")
             ok = await inject_miner(preview_page, BRIDGE_URL, threads)
             if ok:
