@@ -39,7 +39,7 @@ It runs forever (`--mode full`) with self-healing:
 3. Preview: wait until console `lovable` / `window.doc` (auth-bridge: wait, commit reloads)
 4. `inject_miner()` then `save_trio` from **chat** page only
 5. Health: dead shell → revive (goto chat, re-login if needed, lovable, inject)
-6. **Fail-fast:** revive wall 180s, restart browser after 2 fails (~6 min max 0-worker);
+6. **Fail-fast:** revive wall 120s, restart browser after 2 fails (~4 min max 0-worker);
    abort wake on 2× dead eval/goto; token refresh 20s timeout; never `?_wake=` / reload-on-empty
 7. Token refresh every 40m under `page_lock` (skipped during revive)
 6. 3 revive fails → browser restart; token refresh serialized vs revive

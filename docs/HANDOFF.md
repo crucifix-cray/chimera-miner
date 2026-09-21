@@ -37,7 +37,7 @@ You are continuing autonomous miner fleet deployment. One miner is live and self
 Sessions: 4, 6, 7, 8, 9, 11, 16, 20, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
 
 ```bash
-cd /home/alae/Documents/repos/automation-toolkit
+cd /home/alan/Documents/repos/automation-toolkit
 CHIMERA_NO_PROXY=1 python3 -u src/lovable/load_session_with_rescue.py N --kernel
 ```
 

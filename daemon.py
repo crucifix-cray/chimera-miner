@@ -40,10 +40,12 @@ def log(msg):
 WAKE_ROUNDS = 3
 WAKE_GOTO_MS = 25000
 WAKE_SEL_MS = 4000
-REVIVE_WALL_S = 180          # was 600 — 3×600 = 30 min downtime
-REVIVE_LOVABLE_S = 120       # preview wait inside revive
-FAIL_STREAK_RESTART = 2      # was 3
-BODY_DEAD_ABORT = 2          # consecutive unreadable bodies → abort wake
+REVIVE_WALL_S = 120          # hard wall — wedged pages must yield to browser restart
+REVIVE_LOVABLE_S = 90
+FAIL_STREAK_RESTART = 2
+BODY_DEAD_ABORT = 2
+# Probe TimeoutError / body-error → page is wedged; skip long revive
+PROBE_DEAD_IMMEDIATE = ("body-error:", "doc-eval-error:", "probe-eval-error:", "url-error:")
 
 
 async def _page_eval(page, js: str, timeout: float = 6.0):
@@ -136,10 +138,11 @@ async def send_wake_prompt(
                     pass
                 await asyncio.sleep(3)
 
-        # Accessibility skip link often present while composer still mounting
+        # Accessibility skip link — hard-timeout; count() can hang on wedged Chromium
         try:
             skip = chat_page.get_by_text("Skip to chat input", exact=False)
-            if await skip.count() > 0:
+            n = await asyncio.wait_for(skip.count(), timeout=3)
+            if n > 0:
                 await skip.first.click(timeout=3000)
                 await asyncio.sleep(1)
                 log("  Wake: clicked Skip to chat input")
@@ -916,6 +919,16 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             log("  Preview healthy")
                         else:
                             log(f"  Shell/worker dead ({detail}) — full revive")
+                            # Wedged Chromium (evaluate timeouts) — don't burn revive wall
+                            if any(detail.startswith(p) for p in PROBE_DEAD_IMMEDIATE):
+                                fail_streak += 1
+                                log(f"  Probe wedged ({detail}) streak={fail_streak} — skip slow revive")
+                                next_wait = 15
+                                if fail_streak >= FAIL_STREAK_RESTART:
+                                    log(f"  Wedged {FAIL_STREAK_RESTART}x — restarting browser")
+                                    return
+                                await asyncio.sleep(next_wait)
+                                continue
                             try:
                                 if page_lock.locked():
                                     log("  waiting for page_lock (token refresh?)...")

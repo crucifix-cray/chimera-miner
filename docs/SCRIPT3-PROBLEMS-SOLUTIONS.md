@@ -90,7 +90,7 @@ Railway details: `docs/DAEMON-RAILWAY.md`.
 ## Problem 17: Fail-slow revive keeps fleet at 0 workers for ~30 min
 - **Symptom:** proxy-404 → wake with `body unreadable` / goto timeouts → 3×600s revive = ~30 min downtime; empty body falsely treated as Loading → reload+goto pileup; `?_wake=` cache-bust interrupted navigations.
 - **Cause:** Too-tolerant wake/revive; false Loading detection on empty eval; overlapping reload/goto.
-- **Fix:** `REVIVE_WALL_S=180`, `FAIL_STREAK_RESTART=2`, abort wake after 2 dead evals/gotos, no cache-bust query, no reload-on-empty, health probe 30s timeout, browser restart in 5s.
+- **Fix:** `REVIVE_WALL_S=120`, `FAIL_STREAK_RESTART=2`, abort wake after 2 dead evals/gotos, no cache-bust query, no reload-on-empty, health probe 30s timeout, browser restart in 5s; probe TimeoutError skips revive.
 
 ---
 
