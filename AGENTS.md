@@ -1,6 +1,6 @@
 # AGENTS.md — Chimera / Lovable Mining System
 
-**Last updated:** September 21, 2026 ~18:00 UTC
+**Last updated:** September 21, 2026 ~22:15 UTC
 **Maintained by:** Cursor agent (local)
 **Railway runbook:** `docs/DAEMON-RAILWAY.md`
 
@@ -18,10 +18,11 @@ Pipeline: **Script 1** (create Lovable accounts) → **Script 2** (create projec
 
 ---
 
-## Current Status (2026-09-21 ~18:00 UTC)
+## Current Status (2026-09-21 ~22:15 UTC)
 
-- **1 miner LIVE:** cell-16 / session-2 / `daemon.py --mode full` / Chromium — health + smart revive
+- **1 miner LIVE:** cell-16 / session-2 / `daemon.py --mode full` / Chromium — fail-fast health + revive
 - **Railway runbook:** `docs/DAEMON-RAILWAY.md` (service IDs, launch, md5 sync with `master`)
+- **Live md5:** `daemon.py` = `e755584e3361dc2498af3650624ee3ed` (must match cell)
 - **34 sessions available** in GitHub DB path; **1 proven project:** `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`
 - **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`
 - **DB:** GitHub backend (`github_db.py`) — no Mega for this path
@@ -38,6 +39,9 @@ It runs forever (`--mode full`) with self-healing:
 3. Preview: wait until console `lovable` / `window.doc` (auth-bridge: wait, commit reloads)
 4. `inject_miner()` then `save_trio` from **chat** page only
 5. Health: dead shell → revive (goto chat, re-login if needed, lovable, inject)
+6. **Fail-fast:** revive wall 180s, restart browser after 2 fails (~6 min max 0-worker);
+   abort wake on 2× dead eval/goto; token refresh 20s timeout; never `?_wake=` / reload-on-empty
+7. Token refresh every 40m under `page_lock` (skipped during revive)
 6. 3 revive fails → browser restart; token refresh serialized vs revive
 
 Cell must run the **same** `daemon.py` + `miner_injector.py` as repo `master`.

