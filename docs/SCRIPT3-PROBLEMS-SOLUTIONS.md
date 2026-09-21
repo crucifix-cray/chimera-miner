@@ -1,8 +1,9 @@
 # Script3 / Daemon Problems & Solutions
 
-**Last updated:** 2026-09-21 ~06:00 UTC
+**Last updated:** 2026-09-21 ~18:00 UTC
 
-Proven working setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py` / `--browser chromium`. Autonomous daemon running, health checks passing every 3 min.
+Proven working setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full` / `--browser chromium`.  
+Railway details: `docs/DAEMON-RAILWAY.md`.
 
 ---
 
@@ -24,7 +25,7 @@ Proven working setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py`
 ## Problem 4: Cookies alone expire in ~1h
 - **Symptom:** Session works, then 1h later redirected to login.
 - **Cause:** Firebase `accessToken` expires in 1h. `refreshToken` is long-lived but we weren't saving it.
-- **Fix:** Save full trio: `cookies.json` + `localstorage.json` + `indexeddb.json` (contains Firebase refresh token). Daemon auto-refreshes every 40 min via `securetoken.googleapis.com`.
+- **Fix:** Save full trio: `cookies.json` + `localstorage.json` + `indexeddb.json`. Daemon auto-refreshes every 40 min. **Always save from chat page**, not preview.
 
 ## Problem 5: Session-4 wrong password
 - **Symptom:** Re-login fails with INVALID CREDENTIALS.
@@ -33,38 +34,74 @@ Proven working setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py`
 
 ## Problem 6: Rescue script hangs forever (10h sleep loop)
 - **Symptom:** `load_session_with_rescue.py --kernel` connects, restores state, then never exits.
-- **Cause:** All 3 branches (kernel/zenrows/local) had `asyncio.sleep(36000)` after saving — waiting for Ctrl+C.
-- **Fix:** Removed all sleep loops. Script saves and exits immediately. Commit `18f2e3c`.
+- **Cause:** All 3 branches had `asyncio.sleep(36000)` after saving.
+- **Fix:** Removed sleep loops. Script saves and exits.
 
-## Problem 7: Rescue script hangs on IndexedDB restore
-- **Symptom:** `_load_full_state` hangs after "Restored localStorage" — never proceeds to IndexedDB.
-- **Cause:** `indexedDB.deleteDatabase()` + `indexedDB.open()` on same DB can deadlock in `onblocked` event.
-- **Fix:** Added `NAV_TIMEOUT = 15000` with `wait_until="commit"` (fastest load state) + retry fallback. Commit `18f2e3c`.
+## Problem 7: IndexedDB restore / save hangs
+- **Symptom:** Startup stuck after localStorage; or post-inject hung on IDB save.
+- **Cause:** `deleteDatabase` onblocked / IDB open never resolves.
+- **Fix:** `asyncio.wait_for(..., 15)` on restore and save; continue without IDB if timed out.
 
 ## Problem 8: Daemon doesn't inject — sandbox never ready
-- **Symptom:** Daemon launches, opens preview, but `inject_miner` fails with "Sandbox not ready yet (attempt 6/6): no doc bridge".
-- **Cause:** Daemon opened preview directly without sending a build prompt first. The WebContainer sandbox needs a chat prompt to start.
-- **Fix:** Daemon now: opens chat → sends prompt ("say 'x'") → opens preview → waits for doc bridge (max 60s) → injects. Commit `8ff5972`.
+- **Symptom:** `inject_miner` fails with "no doc bridge".
+- **Cause:** Preview opened without waking sandbox via chat.
+- **Fix:** Wake prompt → `wait_for_lovable_console` → inject. Wake = trivial prompts only (NOT script2 debug-terminal).
 
 ## Problem 9: Health check loop hangs forever
-- **Symptom:** Health check #1 passes, then no more checks appear in log. Process alive but stuck.
-- **Cause:** `health_check_loop` from `miner_injector.py` calls `human_chat_visit()` which navigates to chat URL with 45s timeout + `stay_seconds=random.uniform(10, 40)` — hangs if page load stalls.
-- **Fix:** Replaced with custom `daemon_health_loop` — lightweight 3-step check (doc bridge probe, preview URL check, mouse wiggle). No navigation calls. Runs clean every 3 min. Commit `477c46c`.
+- **Symptom:** Health #1 passes, then silence.
+- **Cause:** Old `health_check_loop` navigated away with long sleeps.
+- **Fix:** Custom `daemon_health_loop` — probe only, no chat navigation in the happy path.
 
-## Problem 10: Sandbox crashes periodically — re-inject fails
-- **Symptom:** Worker alive for hours, then dies. Re-injection fails with "Sandbox not ready" / proxy 404 forever.
-- **Cause:** Lovable WebContainer crashes. Reload-only revive never wakes the sandbox; trivial wake prompt is required (NOT Build a debug terminal — that is script2 only).
-- **Fix:** On worker death: send script3 wake prompt (`say 'a'` / `1+1?`) on chat tab → keep refreshing preview until console shows `lovable` (40s interval) → re-inject. Same gate on cold start.
+## Problem 10: Sandbox crashes — reload-only revive fails
+- **Symptom:** Worker dies; re-inject never gets `doc`.
+- **Cause:** WebContainer needs a chat wake, not bare reload.
+- **Fix:** `revive_sandbox`: wake chat → refresh until console `lovable` → inject.
+
+## Problem 11: Auth-bridge treated as ready / reload-loop
+- **Symptom:** Stuck on auth-bridge; or false-ready then inject fails.
+- **Cause:** Reloading interrupts auth handoff; auth-bridge URL mistaken for preview ready.
+- **Fix:** Wait on auth-bridge (no reload-spam); require lovableproject URL off auth-bridge; escape via `return_url` after ~90s; preview reload `wait_until=commit`.
+
+## Problem 12: Preview `reload(wait_until=load)` hangs
+- **Symptom:** Log stuck on “Refreshing preview…” / 30s timeout.
+- **Cause:** lovableproject often never fires full `load`.
+- **Fix:** All preview reloads/gotos use `wait_until="commit"`.
+
+## Problem 13: save_trio from preview wipes trio
+- **Symptom:** After inject, LS/IDB become `{}` / refresh_token=MISSING.
+- **Cause:** Firebase state lives on `lovable.dev`, not `*.lovableproject.com`.
+- **Fix:** `save_trio(context, chat_page, …)` only; token refresh also on chat page.
+
+## Problem 14: Revive can't find chat input / token race
+- **Symptom:** Endless `chat input missing`; token refresh `Execution context was destroyed`.
+- **Cause:** Stuck SPA page + concurrent token refresh navigating same tab; login wall.
+- **Fix:** Always `goto` chat_url each wake round; re-login on wall; more selectors; `page_lock` so refresh never overlaps revive; **3 revive fails → full browser restart**.
+
+## Problem 15: Probe says alive while preview is proxy 404
+- **Symptom:** Health logs Worker alive then Preview unhealthy.
+- **Cause:** Zombie `window.doc` on a 404 body / race.
+- **Fix:** `shell_worker_status` fails closed on proxy-404, auth-bridge, login, nodoc, probe=0, and proxy-404-zombie recheck.
 
 ---
 
 ## Working launch commands
 
-### Daemon (autonomous — recommended)
+### Daemon on Railway (production — recommended)
 ```bash
 CHIMERA_NO_PROXY=1 CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
+/opt/venv/bin/python3 -u daemon.py --session session-2 \
+  --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
+  --browser chromium --mode full \
+  > /app/work/daemon_s2.log 2>&1 &
+```
+See `docs/DAEMON-RAILWAY.md` for project/env/service IDs and md5 sync.
+
+### Local headed diagnose
+```bash
+CHIMERA_NO_PROXY=1 CHIMERA_SESSIONS_DIR=.../scripts/sessions \
 python3 -u daemon.py --session session-2 \
-  --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 --browser chromium
+  --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
+  --browser chromium --mode full --headed
 ```
 
 ### Manual script3 (legacy)
@@ -83,9 +120,9 @@ CHIMERA_NO_PROXY=1 python3 load_session_with_rescue.py 2 --kernel
 ## Key scripts
 | Script | Purpose |
 |---|---|
-| `daemon.py` | Autonomous miner — runs forever, self-healing |
-| `script3_launch_miner.py` | Manual miner launcher (single run) |
-| `miner_injector.py` | Worker injection + `inject_miner()` |
-| `github_db.py` | GitHub DB backend (replaces Mega) |
+| `daemon.py` | **Production** autonomous miner (Railway) |
+| `miner_injector.py` | Worker injection + `inject_miner()` — must match cell |
+| `script3_launch_miner.py` | Manual miner launcher (legacy) |
+| `github_db.py` | GitHub DB backend |
 | `stable_browser.py` | Reusable Chromium launcher + state save/restore |
-| `src/lovable/load_session_with_rescue.py` | Session rescue (re-login + full state save) |
+| `src/lovable/load_session_with_rescue.py` | Session rescue |

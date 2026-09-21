@@ -36,35 +36,126 @@ def log(msg):
     print(f"[{ts()}] {msg}", flush=True)
 
 
-async def send_wake_prompt(chat_page) -> bool:
-    """Send a trivial script3 wake prompt on the chat tab (wakes sandbox)."""
+async def send_wake_prompt(
+    chat_page,
+    chat_url: str | None = None,
+    session_config: dict | None = None,
+) -> bool:
+    """Send a trivial wake prompt on the chat tab (wakes sandbox).
+
+    Always hard-navs to chat_url each round, re-logins on /login wall,
+    logs URL/body when composer missing, fill with keyboard fallback.
+    """
     import random as _rand
-    chat_input = None
-    for sel in [
+
+    chat_selectors = [
         'div[contenteditable="true"][role="textbox"]',
+        '[data-testid="chat-composer-editor"] [role="textbox"]',
+        '[data-testid="chat-composer-editor"]',
+        'div.ProseMirror[contenteditable="true"]',
+        '[role="textbox"][contenteditable="true"]',
         '[contenteditable="true"]',
         "textarea",
-    ]:
-        try:
-            if await chat_page.locator(sel).count() > 0:
-                chat_input = chat_page.locator(sel).first
-                break
-        except Exception:
-            continue
-    if not chat_input:
-        log("  Wake prompt: chat input not found")
-        return False
-    prompt = _rand.choice(WAKE_PROMPTS)
-    log(f"  Sending wake prompt: '{prompt}'")
+    ]
+
     try:
         await chat_page.bring_to_front()
     except Exception:
         pass
+
+    chat_input = None
+    for round_n in range(1, 5):
+        # Always hard-nav — stuck SPA pages don't fix themselves with reload alone
+        if chat_url:
+            log(f"  Wake: goto chat (round {round_n})")
+            try:
+                await chat_page.goto(chat_url, timeout=45000, wait_until="commit")
+            except Exception as e:
+                log(f"  Wake: chat goto error: {e}")
+            await asyncio.sleep(4)
+
+        cur = ""
+        try:
+            cur = chat_page.url or ""
+        except Exception:
+            cur = ""
+        log(f"  Wake: url={cur[:100]}")
+
+        # Login wall → full re-login then back to project
+        on_login = "/login" in cur or "/auth" in cur
+        if not on_login:
+            try:
+                body0 = await chat_page.evaluate(
+                    "() => (document.body && document.body.innerText || '').slice(0, 300)")
+                bl0 = body0.lower()
+                if ("log in" in bl0 or "sign in" in bl0) and "password" in bl0:
+                    on_login = True
+            except Exception:
+                pass
+        if on_login and session_config:
+            log("  Wake: login wall — re-login")
+            ok = await do_login(
+                chat_page,
+                session_config.get("email", ""),
+                session_config.get("password", ""),
+                session_config.get("totp_secret"),
+            )
+            if not ok:
+                log("  Wake: re-login failed")
+                continue
+            if chat_url:
+                try:
+                    await chat_page.goto(chat_url, timeout=45000, wait_until="commit")
+                except Exception:
+                    pass
+                await asyncio.sleep(4)
+
+        for sel in chat_selectors:
+            try:
+                loc = chat_page.locator(sel).first
+                await loc.wait_for(state="visible", timeout=10000)
+                chat_input = loc
+                break
+            except Exception:
+                continue
+        if chat_input:
+            log(f"  Wake: chat input found (round {round_n})")
+            break
+
+        # Diagnose why composer missing
+        try:
+            body = await chat_page.evaluate(
+                "() => (document.body && document.body.innerText || '').slice(0, 200)")
+            log(f"  Wake: no composer — body={body!r}")
+        except Exception as e:
+            log(f"  Wake: no composer — body unreadable ({e})")
+        log(f"  Wake: chat input missing (round {round_n}/4)")
+        await asyncio.sleep(3)
+
+    if not chat_input:
+        log("  Wake prompt: chat input not found after 4 rounds")
+        return False
+
+    prompt = _rand.choice(WAKE_PROMPTS)
+    log(f"  Sending wake prompt: '{prompt}'")
     try:
         await chat_input.click(timeout=5000)
     except Exception:
         pass
-    await chat_input.fill(prompt)
+    typed = False
+    try:
+        await chat_input.fill(prompt, timeout=10000)
+        typed = True
+    except Exception as e:
+        log(f"  Wake fill failed ({e}) — keyboard type")
+        try:
+            await chat_page.keyboard.type(prompt, delay=25)
+            typed = True
+        except Exception as e2:
+            log(f"  Wake type failed: {e2}")
+            return False
+    if not typed:
+        return False
     await asyncio.sleep(0.3)
     try:
         send_btn = chat_page.locator(
@@ -75,7 +166,10 @@ async def send_wake_prompt(chat_page) -> bool:
         else:
             await chat_page.keyboard.press("Enter")
     except Exception:
-        await chat_page.keyboard.press("Enter")
+        try:
+            await chat_page.keyboard.press("Enter")
+        except Exception:
+            pass
     log("  Wake prompt sent")
     return True
 
@@ -152,7 +246,7 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
                         log(f"  auth-bridge stalled — goto return_url")
                         await preview_page.goto(ret, timeout=30000, wait_until="commit")
                     else:
-                        await preview_page.reload(timeout=30000)
+                        await preview_page.reload(timeout=30000, wait_until="commit")
                 except Exception as e:
                     log(f"  auth-bridge escape error: {e}")
                 await asyncio.sleep(8)
@@ -173,30 +267,57 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
             log(f"  Refreshing preview... ({int(elapsed)}s)")
 
         try:
-            await preview_page.reload(timeout=30000)
+            # commit — "load" often never fires on lovableproject preview
+            await preview_page.reload(timeout=30000, wait_until="commit")
         except Exception as e:
             log(f"  Refresh error: {e}")
         await asyncio.sleep(5)
         await asyncio.sleep(refresh_interval)
 
 
-async def revive_sandbox(chat_page, preview_page, bridge_url: str, threads: int) -> bool:
+async def revive_sandbox(
+    chat_page,
+    preview_page,
+    bridge_url: str,
+    threads: int,
+    chat_url: str | None = None,
+    preview_url: str | None = None,
+    session_config: dict | None = None,
+) -> bool:
     """
-    Worker/shell dead recovery (script3 style):
-    resend wake prompt → refresh preview until lovable console → inject.
+    Full-mode recovery when shell/worker is dead — same as first run:
+    wake chat → open/refresh preview until console 'lovable' → inject worker cmd.
     """
     from miner_injector import inject_miner
 
-    log("  Revive: wake prompt + wait lovable console + re-inject")
-    await send_wake_prompt(chat_page)
+    log("  Revive: wake chat → refresh until 'lovable' → inject (same as first run)")
+    woke = await send_wake_prompt(
+        chat_page, chat_url=chat_url, session_config=session_config)
+    if not woke:
+        log("  Revive: wake failed — will retry next health cycle")
+        return False
+
+    # Dead proxy page: hard re-nav to preview (bring_to_front alone is useless)
+    if preview_url:
+        try:
+            await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
+        except Exception as e:
+            log(f"  Revive: preview goto error: {e}")
     try:
         await preview_page.bring_to_front()
     except Exception:
         pass
+
     ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
     if not ready:
         log("  First wait failed — second wake + wait")
-        await send_wake_prompt(chat_page)
+        await send_wake_prompt(
+            chat_page, chat_url=chat_url, session_config=session_config)
+        if preview_url:
+            try:
+                await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
+            except Exception:
+                pass
         try:
             await preview_page.bring_to_front()
         except Exception:
@@ -208,6 +329,62 @@ async def revive_sandbox(chat_page, preview_page, bridge_url: str, threads: int)
     ok = await inject_miner(preview_page, bridge_url, threads)
     log(f"  Revive inject: {'OK' if ok else 'FAILED'}")
     return bool(ok)
+
+
+async def shell_worker_status(preview_page) -> tuple[bool, str]:
+    """
+    True only when preview is live, /__shell (window.doc) works, AND sysoptd runs.
+    Proxy 404 / auth-bridge / missing doc / zero workers → False (full revive).
+    """
+    cur_url = ""
+    try:
+        cur_url = preview_page.url or ""
+    except Exception as e:
+        return False, f"url-error:{e}"
+    if "auth-bridge" in cur_url:
+        return False, "auth-bridge"
+    if "/login" in cur_url:
+        return False, "login"
+
+    try:
+        body = await preview_page.evaluate(
+            "() => (document.body && document.body.innerText) || ''")
+        bl = body.lower()
+        if ("proxy error" in bl or "lovable proxy error" in bl) and "404" in bl:
+            return False, "proxy-404"
+    except Exception as e:
+        return False, f"body-error:{e}"
+
+    try:
+        has_doc = await preview_page.evaluate(
+            "() => !!(window.doc && typeof window.doc === 'function')")
+    except Exception as e:
+        return False, f"doc-eval-error:{e}"
+    if not has_doc:
+        return False, "nodoc"
+
+    # Zombie: doc still present but proxy message also in body (race)
+    try:
+        body2 = await preview_page.evaluate(
+            "() => (document.body && document.body.innerText) || ''")
+        if "404" in body2 and "proxy" in body2.lower():
+            return False, "proxy-404-zombie"
+    except Exception:
+        pass
+
+    try:
+        probe = await preview_page.evaluate("""async () => {
+            try {
+                const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
+                return r && r.stdout !== undefined ? r.stdout.trim() : 'no-probe';
+            } catch(e) { return 'probe-error'; }
+        }""")
+    except Exception as e:
+        return False, f"probe-eval-error:{e}"
+
+    if str(probe).isdigit() and int(probe) > 0:
+        return True, str(probe)
+    return False, f"worker-missing:{probe}"
 
 
 def _sess_dir(session_id):
@@ -251,15 +428,17 @@ async def save_trio(context, page, session_id):
     except Exception as e:
         log(f"  localStorage save failed: {e}")
     try:
-        idb = await page.evaluate("""async () => {
+        idb = await asyncio.wait_for(page.evaluate("""async () => {
             return new Promise((resolve) => {
                 try {
                     const req = indexedDB.open('firebaseLocalStorageDb');
+                    const done = (v) => { try { resolve(v); } catch(e) {} };
+                    const t = setTimeout(() => done([]), 12000);
                     req.onsuccess = () => {
                         try {
                             const db = req.result;
                             const stores = Array.from(db.objectStoreNames);
-                            if (!stores.length) { resolve([]); return; }
+                            if (!stores.length) { clearTimeout(t); done([]); return; }
                             const tx = db.transaction(stores, 'readonly');
                             const out = [];
                             let pending = stores.length;
@@ -268,23 +447,25 @@ async def save_trio(context, page, session_id):
                                     const rq = tx.objectStore(sn).getAll();
                                     rq.onsuccess = () => {
                                         rq.result.forEach(r => out.push({store: sn, key: r.fkey || r.key, value: r.value}));
-                                        if (--pending === 0) resolve(out);
+                                        if (--pending === 0) { clearTimeout(t); done(out); }
                                     };
-                                    rq.onerror = () => { if (--pending === 0) resolve(out); };
-                                } catch(e) { if (--pending === 0) resolve(out); }
+                                    rq.onerror = () => { if (--pending === 0) { clearTimeout(t); done(out); } };
+                                } catch(e) { if (--pending === 0) { clearTimeout(t); done(out); } }
                             });
-                        } catch(e) { resolve([]); }
+                        } catch(e) { clearTimeout(t); done([]); }
                     };
-                    req.onerror = () => resolve([]);
+                    req.onerror = () => { clearTimeout(t); done([]); };
                 } catch(e) { resolve([]); }
             });
-        }""")
+        }"""), timeout=15)
         with open(sdir / "indexeddb.json", "w") as f:
             json.dump(idb, f, indent=2)
         has_ref = any(
             r.get("value", {}).get("stsTokenManager", {}).get("refreshToken")
             for r in idb if isinstance(r.get("value"), dict))
         log(f"  Saved {len(idb)} IndexedDB records, refresh_token={'YES' if has_ref else 'MISSING'}")
+    except asyncio.TimeoutError:
+        log("  IndexedDB save timed out — continuing with cookies+localStorage")
     except Exception as e:
         log(f"  IndexedDB save failed: {e}")
 
@@ -406,13 +587,14 @@ async def do_login(page, email, password, totp_secret=None):
     return True
 
 
-async def run_daemon(session_id, project_id, browser_type, threads, mode):
+async def run_daemon(session_id, project_id, browser_type, threads, mode, headed=False):
     from playwright.async_api import async_playwright
     from miner_injector import inject_miner
 
     config = load_config_sync(session_id)
     log(f"Session: {session_id} ({config.get('email', '?')})")
     log(f"Project: {project_id}")
+    log(f"Browser: {browser_type} headed={headed}")
 
     preview_url = f"https://{project_id}.lovableproject.com"
     chat_url = f"https://lovable.dev/projects/{project_id}"
@@ -423,11 +605,11 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
             # Launch browser
             if browser_type == "chromium":
                 browser = await pw.chromium.launch(
-                    headless=True,
+                    headless=not headed,
                     args=["--no-sandbox", "--disable-dev-shm-usage",
                            "--disable-blink-features=AutomationControlled"])
             else:
-                browser = await pw.firefox.launch(headless=True)
+                browser = await pw.firefox.launch(headless=not headed)
 
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
@@ -595,7 +777,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
 
             if not sandbox_ready:
                 log("Lovable console never ready — second wake + wait...")
-                await send_wake_prompt(chat_page)
+                await send_wake_prompt(
+                    chat_page, chat_url=chat_url, session_config=config)
                 try:
                     await preview_page.bring_to_front()
                 except Exception:
@@ -617,98 +800,97 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
             else:
                 log("Worker injection returned False — health loop will retry")
 
-            # Save state
-            await save_trio(context, preview_page, session_id)
+            # Save state from chat origin (Firebase LS/IDB live on lovable.dev,
+            # not the preview sandbox — saving from preview wipes the trio).
+            await save_trio(context, chat_page, session_id)
 
-            # Run health check loop (this blocks forever in full mode)
-            log("Starting health check loop...")
+            if mode != "full":
+                log(f"Mode={mode} — inject done, exiting (no health loop)")
+                await browser.close()
+                await pw.stop()
+                return
+
+            # Full mode: forever health — shell/worker dead → same as first run
+            log("Starting health check loop (full mode)...")
             last_refresh = time.time()
+            page_lock = asyncio.Lock()  # serialize revive vs token refresh
 
             async def daemon_health_loop():
-                """Health: probe worker; on death → wake prompt + lovable wait + inject."""
+                """On shell/worker death: wake chat → lovable console → inject."""
                 iteration = 0
+                fail_streak = 0
                 while True:
                     iteration += 1
                     log(f"Health check #{iteration}...")
+                    next_wait = 180
                     try:
-                        # Check doc bridge (worker alive)
-                        try:
-                            ready = await preview_page.evaluate(
-                                "() => !!(window.doc && typeof window.doc === 'function')")
-                            if ready:
-                                probe = await preview_page.evaluate("""async () => {
-                                    try {
-                                        const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
-                                        return r && r.stdout !== undefined ? r.stdout.trim() : 'no-probe';
-                                    } catch(e) { return 'probe-error'; }
-                                }""")
-                                # Also treat proxy 404 as dead even if evaluate somehow works
-                                try:
-                                    body = await preview_page.evaluate(
-                                        "() => (document.body && document.body.innerText) || ''")
-                                    if "proxy error" in body.lower() and "404" in body:
-                                        ready = False
-                                        log("  Preview proxy 404 — treating as dead")
-                                except Exception:
-                                    pass
-                            if ready:
-                                log(f"  Worker alive (probe: {probe})")
-                            else:
-                                log("  Worker dead — revive (wake + lovable console + inject)")
-                                await revive_sandbox(
-                                    chat_page, preview_page, BRIDGE_URL, threads)
-                        except Exception as e:
-                            log(f"  Probe error: {e}")
-                            log("  Probe failed — attempting revive...")
+                        alive, detail = await shell_worker_status(preview_page)
+                        if alive:
+                            fail_streak = 0
+                            log(f"  Worker alive (probe: {detail})")
+                            log("  Preview healthy")
+                        else:
+                            log(f"  Shell/worker dead ({detail}) — full revive")
                             try:
-                                await revive_sandbox(
-                                    chat_page, preview_page, BRIDGE_URL, threads)
+                                async with page_lock:
+                                    ok = await revive_sandbox(
+                                        chat_page,
+                                        preview_page,
+                                        BRIDGE_URL,
+                                        threads,
+                                        chat_url=chat_url,
+                                        preview_url=preview_url,
+                                        session_config=config,
+                                    )
+                                if ok:
+                                    fail_streak = 0
+                                    await save_trio(context, chat_page, session_id)
+                                    log("  Revive OK")
+                                else:
+                                    fail_streak += 1
+                                    log(f"  Revive failed (streak={fail_streak}) — retry sooner")
+                                    next_wait = 45
+                                    if fail_streak >= 3:
+                                        log("  Revive failed 3x — restarting browser")
+                                        return
                             except Exception as e2:
-                                log(f"  Revive error: {e2}")
+                                fail_streak += 1
+                                log(f"  Revive error: {e2} (streak={fail_streak})")
+                                next_wait = 45
+                                if fail_streak >= 3:
+                                    log("  Revive failed 3x — restarting browser")
+                                    return
 
-                        # Check preview health
-                        try:
-                            url = preview_page.url
-                            if "/login" in url:
-                                log("  Preview redirected to login!")
-                            else:
-                                try:
-                                    body = await preview_page.evaluate(
-                                        "() => (document.body && document.body.innerText) || ''")
-                                    if "proxy error" in body.lower() and "404" in body:
-                                        log("  Preview unhealthy (proxy 404)")
-                                    else:
-                                        log("  Preview healthy")
-                                except Exception:
-                                    log("  Preview healthy")
-                        except Exception:
-                            log("  Preview unreachable")
-
-                        # Human presence (quick, non-blocking)
                         try:
                             import random as _r
-                            await preview_page.mouse.move(_r.randint(100, 800), _r.randint(100, 500))
+                            await preview_page.mouse.move(
+                                _r.randint(100, 800), _r.randint(100, 500))
                             await asyncio.sleep(0.5)
                         except Exception:
                             pass
 
                     except Exception as e:
                         log(f"  Health check error: {e}")
+                        next_wait = 45
 
-                    log(f"  Next check in 180s...")
-                    await asyncio.sleep(180)
+                    log(f"  Next check in {next_wait}s...")
+                    await asyncio.sleep(next_wait)
 
             health_task = asyncio.create_task(daemon_health_loop())
 
-            # Token refresh loop runs alongside
+            # Token refresh — never overlap with revive (same chat page)
             while not health_task.done():
                 await asyncio.sleep(60)
                 now = time.time()
                 if now - last_refresh >= TOKEN_REFRESH_INTERVAL:
+                    if page_lock.locked():
+                        log("--- TOKEN REFRESH skipped (revive in progress) ---")
+                        continue
                     log("--- TOKEN REFRESH ---")
-                    ok = await refresh_firebase_token(preview_page)
-                    if ok:
-                        await save_trio(context, preview_page, session_id)
+                    async with page_lock:
+                        tok_ok = await refresh_firebase_token(chat_page)
+                        if tok_ok:
+                            await save_trio(context, chat_page, session_id)
                     last_refresh = now
 
             # health_check_loop returned — this shouldn't happen in full mode
@@ -741,10 +923,14 @@ def main():
     parser.add_argument("--browser", default="chromium", choices=["chromium", "firefox"])
     parser.add_argument("--threads", type=int, default=64)
     parser.add_argument("--mode", default="full", choices=["full", "oneshot", "gh"])
+    parser.add_argument("--headed", action="store_true",
+                        help="Show browser window (local diagnose)")
     args = parser.parse_args()
+    headed = args.headed or os.environ.get("CHIMERA_HEADED", "") == "1"
 
     try:
-        asyncio.run(run_daemon(args.session, args.project, args.browser, args.threads, args.mode))
+        asyncio.run(run_daemon(
+            args.session, args.project, args.browser, args.threads, args.mode, headed=headed))
     except KeyboardInterrupt:
         log("Interrupted")
 

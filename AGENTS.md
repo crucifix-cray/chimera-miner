@@ -1,7 +1,8 @@
 # AGENTS.md — Chimera / Lovable Mining System
 
-**Last updated:** September 21, 2026
-**Maintained by:** opencode agent (Alan's local assistant)
+**Last updated:** September 21, 2026 ~18:00 UTC
+**Maintained by:** Cursor agent (local)
+**Railway runbook:** `docs/DAEMON-RAILWAY.md`
 
 This file is the single source of truth for any agent (human or AI) continuing work on this system.
 
@@ -17,25 +18,29 @@ Pipeline: **Script 1** (create Lovable accounts) → **Script 2** (create projec
 
 ---
 
-## Current Status (2026-09-21)
+## Current Status (2026-09-21 ~18:00 UTC)
 
-- **1 miner LIVE:** cell-16 / session-2 / daemon.py / Chromium — autonomous, health checks passing
-- **34 sessions available** in GitHub DB (`chimera-miner/data/database.json`)
-- **1 proven project:** `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`
+- **1 miner LIVE:** cell-16 / session-2 / `daemon.py --mode full` / Chromium — health + smart revive
+- **Railway runbook:** `docs/DAEMON-RAILWAY.md` (service IDs, launch, md5 sync with `master`)
+- **34 sessions available** in GitHub DB path; **1 proven project:** `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`
 - **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`
-- **DB:** GitHub backend (`github_db.py`) — no Mega
+- **DB:** GitHub backend (`github_db.py`) — no Mega for this path
 
 ---
 
 ## Key Architecture Decision: daemon.py
 
-`daemon.py` replaced `script3_launch_miner.py` as the primary miner launcher.
-It runs forever with self-healing:
-1. Launches Chromium, loads session state (cookies + localStorage + IndexedDB)
-2. Opens chat, sends build prompt, waits for sandbox
-3. Injects worker, starts health loop (every 3 min)
-4. Auto-refreshes Firebase tokens (every 40 min)
-5. On failure: re-login, re-inject, relaunch browser — never stops
+`daemon.py` replaced `script3_launch_miner.py` as the primary miner launcher on Railway.
+It runs forever (`--mode full`) with self-healing:
+
+1. Chromium + session trio (cookies / LS / IDB; IDB hard-timeouts)
+2. Chat wake prompt (trivial script3 prompts — NOT script2 debug-terminal)
+3. Preview: wait until console `lovable` / `window.doc` (auth-bridge: wait, commit reloads)
+4. `inject_miner()` then `save_trio` from **chat** page only
+5. Health: dead shell → revive (goto chat, re-login if needed, lovable, inject)
+6. 3 revive fails → browser restart; token refresh serialized vs revive
+
+Cell must run the **same** `daemon.py` + `miner_injector.py` as repo `master`.
 
 ---
 
