@@ -38,21 +38,28 @@ def log(msg):
     print(f"[{ts()}] {msg}", flush=True)
 
 
+def _sess_dir(session_id):
+    """Resolve session dir — handles both '2' and 'session-2' input."""
+    if session_id.startswith("session-"):
+        return SESSIONS_DIR / session_id
+    return SESSIONS_DIR / f"session-{session_id}"
+
+
 async def load_cookies(session_id):
-    sdir = SESSIONS_DIR / f"session-{session_id}"
+    sdir = _sess_dir(session_id)
     with open(sdir / "cookies.json") as f:
         return json.load(f)
 
 
 async def load_config(session_id):
-    sdir = SESSIONS_DIR / f"session-{session_id}"
+    sdir = _sess_dir(session_id)
     with open(sdir / "config.json") as f:
         return json.load(f)
 
 
 async def save_trio(context, page, session_id):
     """Save cookies + localStorage + IndexedDB to disk."""
-    sdir = SESSIONS_DIR / f"session-{session_id}"
+    sdir = _sess_dir(session_id)
     # Cookies
     cookies = await context.cookies()
     with open(sdir / "cookies.json", "w") as f:
