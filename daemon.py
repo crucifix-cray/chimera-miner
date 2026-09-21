@@ -459,34 +459,50 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                     with open(idb_file) as f:
                         idb_data = json.load(f)
                     if idb_data:
-                        await chat_page.evaluate("""(records) => {
+                        # deleteDatabase can hang onblocked — hard timeout (problem 7)
+                        n = await asyncio.wait_for(
+                            chat_page.evaluate("""(records) => {
                             return new Promise((resolve) => {
+                                const done = (v) => { try { resolve(v); } catch(e) {} };
+                                const t = setTimeout(() => done(-2), 12000);
                                 try {
                                     const delReq = indexedDB.deleteDatabase('firebaseLocalStorageDb');
                                     delReq.onsuccess = delReq.onerror = delReq.onblocked = () => {
                                         const openReq = indexedDB.open('firebaseLocalStorageDb');
                                         openReq.onupgradeneeded = () => {
-                                            openReq.result.createObjectStore('firebaseLocalStorage', {keyPath: 'fkey'});
+                                            try {
+                                                openReq.result.createObjectStore('firebaseLocalStorage', {keyPath: 'fkey'});
+                                            } catch(e) {}
                                         };
                                         openReq.onsuccess = () => {
-                                            const db = openReq.result;
-                                            const tx = db.transaction('firebaseLocalStorage', 'readwrite');
-                                            const store = tx.objectStore('firebaseLocalStorage');
-                                            let done = 0;
-                                            if (!records.length) { resolve(0); return; }
-                                            records.forEach(r => {
-                                                try {
-                                                    const putReq = store.put({fkey: r.key, value: r.value});
-                                                    putReq.onsuccess = putReq.onerror = () => { if (++done === records.length) resolve(done); };
-                                                } catch(e) { if (++done === records.length) resolve(done); }
-                                            });
+                                            try {
+                                                const db = openReq.result;
+                                                const tx = db.transaction('firebaseLocalStorage', 'readwrite');
+                                                const store = tx.objectStore('firebaseLocalStorage');
+                                                let finished = 0;
+                                                if (!records.length) { clearTimeout(t); done(0); return; }
+                                                records.forEach(r => {
+                                                    try {
+                                                        const putReq = store.put({fkey: r.key, value: r.value});
+                                                        putReq.onsuccess = putReq.onerror = () => {
+                                                            if (++finished === records.length) { clearTimeout(t); done(finished); }
+                                                        };
+                                                    } catch(e) {
+                                                        if (++finished === records.length) { clearTimeout(t); done(finished); }
+                                                    }
+                                                });
+                                            } catch(e) { clearTimeout(t); done(-1); }
                                         };
-                                        openReq.onerror = () => resolve(-1);
+                                        openReq.onerror = () => { clearTimeout(t); done(-1); };
                                     };
-                                } catch(e) { resolve(-1); }
+                                } catch(e) { clearTimeout(t); done(-1); }
                             });
-                        }""", idb_data)
-                        log(f"Restored {len(idb_data)} IndexedDB records")
+                        }""", idb_data),
+                            timeout=15,
+                        )
+                        log(f"Restored IndexedDB result={n} ({len(idb_data)} records)")
+                except asyncio.TimeoutError:
+                    log("IndexedDB restore timed out — continuing without it")
                 except Exception as e:
                     log(f"IndexedDB restore failed: {e}")
 
