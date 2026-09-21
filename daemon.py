@@ -226,7 +226,7 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
         pass
 
     start = asyncio.get_running_loop().time()
-    refresh_interval = 40
+    refresh_interval = 15  # unused — loop paces itself with short sleeps
     while True:
         elapsed = asyncio.get_running_loop().time() - start
         if elapsed > timeout_seconds:
@@ -234,8 +234,10 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
             return False
 
         try:
-            body = await preview_page.evaluate(
-                "() => (document.body && document.body.innerText) || ''"
+            body = await _page_eval(
+                preview_page,
+                "() => (document.body && document.body.innerText) || ''",
+                timeout=8,
             )
         except Exception:
             body = ""
@@ -255,15 +257,17 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
         js_ready = ""
         if not proxy_dead and not on_auth_bridge and on_preview:
             try:
-                js_ready = await preview_page.evaluate(
+                js_ready = await _page_eval(
+                    preview_page,
                     """() => {
                         if (window.lovable) return 'lovable-obj';
                         if (window.doc && typeof window.doc === 'function') return 'doc';
                         return '';
-                    }"""
+                    }""",
+                    timeout=8,
                 )
             except Exception as e:
-                log(f"  ready-check error: {e}")
+                log(f"  ready-check error: {type(e).__name__}")
 
         if on_auth_bridge:
             log(f"  Still on auth-bridge — waiting (no reload) ({int(elapsed)}s)")
@@ -306,11 +310,17 @@ async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> 
 
         try:
             # commit — "load" often never fires on lovableproject preview
-            await preview_page.reload(timeout=30000, wait_until="commit")
+            await preview_page.reload(timeout=20000, wait_until="commit")
         except Exception as e:
-            log(f"  Refresh error: {e}")
-        await asyncio.sleep(5)
-        await asyncio.sleep(refresh_interval)
+            log(f"  Refresh error: {type(e).__name__}")
+            # Hard re-nav if reload hung/failed
+            try:
+                u = preview_page.url or ""
+                if "lovableproject.com" in u:
+                    await preview_page.goto(u.split("?")[0], timeout=20000, wait_until="commit")
+            except Exception:
+                pass
+        await asyncio.sleep(8)
 
 
 async def revive_sandbox(
@@ -900,16 +910,6 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             log("  Preview healthy")
                         else:
                             log(f"  Shell/worker dead ({detail}) — full revive")
-                            # Wedged Chromium (evaluate timeouts) — don't burn revive wall
-                            if any(detail.startswith(p) for p in PROBE_DEAD_IMMEDIATE):
-                                fail_streak += 1
-                                log(f"  Probe wedged ({detail}) streak={fail_streak} — skip slow revive")
-                                next_wait = 15
-                                if fail_streak >= FAIL_STREAK_RESTART:
-                                    log(f"  Wedged {FAIL_STREAK_RESTART}x — restarting browser")
-                                    return
-                                await asyncio.sleep(next_wait)
-                                continue
                             try:
                                 if page_lock.locked():
                                     log("  waiting for page_lock (token refresh?)...")
