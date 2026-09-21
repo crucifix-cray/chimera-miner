@@ -82,6 +82,11 @@ Railway details: `docs/DAEMON-RAILWAY.md`.
 - **Cause:** Zombie `window.doc` on a 404 body / race.
 - **Fix:** `shell_worker_status` fails closed on proxy-404, auth-bridge, login, nodoc, probe=0, and proxy-404-zombie recheck.
 
+## Problem 16: Revive hung — chat Loading/Dashboard + token refresh holds lock
+- **Symptom:** After proxy-404, wake rounds show `Dashboard`/`Recents` or `Loading...`; no composer; Chromium in `D` state; token refresh logs span ~17 min; revive never reaches fail-streak restart.
+- **Cause:** `page.evaluate` / IndexedDB refresh had no hard timeout → held `page_lock`; SPA stuck on shell; skip-link present but unused.
+- **Fix:** `_page_eval` + 20s token refresh timeout; click "Skip to chat input"; cache-bust goto + hard reload on Loading/Dashboard; revive wall-clock 600s; log when waiting for `page_lock`.
+
 ---
 
 ## Working launch commands

@@ -36,6 +36,11 @@ def log(msg):
     print(f"[{ts()}] {msg}", flush=True)
 
 
+async def _page_eval(page, js: str, timeout: float = 8.0):
+    """page.evaluate with hard timeout — hung Chromium must not block revive forever."""
+    return await asyncio.wait_for(page.evaluate(js), timeout=timeout)
+
+
 async def send_wake_prompt(
     chat_page,
     chat_url: str | None = None,
@@ -59,7 +64,7 @@ async def send_wake_prompt(
     ]
 
     try:
-        await chat_page.bring_to_front()
+        await asyncio.wait_for(chat_page.bring_to_front(), timeout=5)
     except Exception:
         pass
 
@@ -67,9 +72,14 @@ async def send_wake_prompt(
     for round_n in range(1, 5):
         # Always hard-nav — stuck SPA pages don't fix themselves with reload alone
         if chat_url:
+            nav = chat_url
+            # cache-bust after round 1 — SPA can stick on Dashboard/Loading shell
+            if round_n > 1:
+                sep = "&" if "?" in chat_url else "?"
+                nav = f"{chat_url}{sep}_wake={round_n}_{int(time.time())}"
             log(f"  Wake: goto chat (round {round_n})")
             try:
-                await chat_page.goto(chat_url, timeout=45000, wait_until="commit")
+                await chat_page.goto(nav, timeout=45000, wait_until="commit")
             except Exception as e:
                 log(f"  Wake: chat goto error: {e}")
             await asyncio.sleep(4)
@@ -85,8 +95,10 @@ async def send_wake_prompt(
         on_login = "/login" in cur or "/auth" in cur
         if not on_login:
             try:
-                body0 = await chat_page.evaluate(
-                    "() => (document.body && document.body.innerText || '').slice(0, 300)")
+                body0 = await _page_eval(
+                    chat_page,
+                    "() => (document.body && document.body.innerText || '').slice(0, 300)",
+                )
                 bl0 = body0.lower()
                 if ("log in" in bl0 or "sign in" in bl0) and "password" in bl0:
                     on_login = True
@@ -110,10 +122,20 @@ async def send_wake_prompt(
                     pass
                 await asyncio.sleep(4)
 
+        # Accessibility skip link often present while composer still mounting
+        try:
+            skip = chat_page.get_by_text("Skip to chat input", exact=False)
+            if await skip.count() > 0:
+                await skip.first.click(timeout=3000)
+                await asyncio.sleep(1)
+                log("  Wake: clicked Skip to chat input")
+        except Exception:
+            pass
+
         for sel in chat_selectors:
             try:
                 loc = chat_page.locator(sel).first
-                await loc.wait_for(state="visible", timeout=10000)
+                await loc.wait_for(state="visible", timeout=5000)
                 chat_input = loc
                 break
             except Exception:
@@ -123,14 +145,30 @@ async def send_wake_prompt(
             break
 
         # Diagnose why composer missing
+        body = ""
         try:
-            body = await chat_page.evaluate(
-                "() => (document.body && document.body.innerText || '').slice(0, 200)")
+            body = await _page_eval(
+                chat_page,
+                "() => (document.body && document.body.innerText || '').slice(0, 200)",
+            )
             log(f"  Wake: no composer — body={body!r}")
         except Exception as e:
             log(f"  Wake: no composer — body unreadable ({e})")
         log(f"  Wake: chat input missing (round {round_n}/4)")
-        await asyncio.sleep(3)
+
+        bl = (body or "").lower()
+        # Dashboard shell or endless Loading → hard reload before next round
+        if "loading..." in bl or (
+            "dashboard" in bl and "recents" in bl
+        ) or bl.strip() in ("", "loading..."):
+            log("  Wake: stuck shell (Loading/Dashboard) — hard reload")
+            try:
+                await chat_page.reload(timeout=30000, wait_until="commit")
+            except Exception as e:
+                log(f"  Wake: reload error: {e}")
+            await asyncio.sleep(3)
+        else:
+            await asyncio.sleep(2)
 
     if not chat_input:
         log("  Wake prompt: chat input not found after 4 rounds")
@@ -473,10 +511,13 @@ async def save_trio(context, page, session_id):
 async def refresh_firebase_token(page):
     """Refresh Firebase access token via refresh token. Returns True if ok."""
     try:
-        result = await page.evaluate("""async () => {
+        # Hard timeout — wedged Chromium previously held page_lock for ~17 min
+        result = await asyncio.wait_for(page.evaluate("""async () => {
             return new Promise((resolve) => {
                 try {
                     const req = indexedDB.open('firebaseLocalStorageDb');
+                    const done = (v) => { try { resolve(v); } catch(e) {} };
+                    const t = setTimeout(() => done({status: 'timeout'}), 12000);
                     req.onsuccess = () => {
                         const db = req.result;
                         const tx = db.transaction('firebaseLocalStorage', 'readwrite');
@@ -488,7 +529,11 @@ async def refresh_firebase_token(page):
                                 if (v && v.stsTokenManager && v.stsTokenManager.refreshToken) {
                                     const now = Date.now();
                                     const exp = v.stsTokenManager.expirationTime || 0;
-                                    if (exp > now + 60000) { resolve({status: 'fresh', exp}); return; }
+                                    if (exp > now + 60000) {
+                                        clearTimeout(t);
+                                        done({status: 'fresh', exp});
+                                        return;
+                                    }
                                     try {
                                         const resp = await fetch(
                                             'https://securetoken.googleapis.com/v1/token?key=' + v.apiKey,
@@ -500,20 +545,22 @@ async def refresh_firebase_token(page):
                                             v.stsTokenManager.expirationTime = Date.now() + (parseInt(data.expires_in || '3600') * 1000);
                                             if (data.refresh_token) v.stsTokenManager.refreshToken = data.refresh_token;
                                             store.put({fkey: r.fkey, value: v});
-                                            resolve({status: 'refreshed', exp: v.stsTokenManager.expirationTime});
-                                        } else { resolve({status: 'failed'}); }
-                                    } catch(e) { resolve({status: 'error'}); }
+                                            clearTimeout(t);
+                                            done({status: 'refreshed', exp: v.stsTokenManager.expirationTime});
+                                        } else { clearTimeout(t); done({status: 'failed'}); }
+                                    } catch(e) { clearTimeout(t); done({status: 'error'}); }
                                     return;
                                 }
                             }
-                            resolve({status: 'no_token'});
+                            clearTimeout(t);
+                            done({status: 'no_token'});
                         };
-                        getAll.onerror = () => resolve({status: 'db_error'});
+                        getAll.onerror = () => { clearTimeout(t); done({status: 'db_error'}); };
                     };
-                    req.onerror = () => resolve({status: 'db_open_failed'});
+                    req.onerror = () => { clearTimeout(t); done({status: 'db_open_failed'}); };
                 } catch(e) { resolve({status: 'error'}); }
             });
-        }""")
+        }"""), timeout=20)
         status = result.get("status", "unknown")
         if status in ("fresh", "refreshed"):
             log(f"  Token {status} (exp={result.get('exp', '?')})")
@@ -521,6 +568,9 @@ async def refresh_firebase_token(page):
         else:
             log(f"  Token issue: {status}")
             return False
+    except asyncio.TimeoutError:
+        log("  Token refresh timed out (20s) — continuing")
+        return False
     except Exception as e:
         log(f"  Token refresh error: {e}")
         return False
@@ -832,15 +882,21 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         else:
                             log(f"  Shell/worker dead ({detail}) — full revive")
                             try:
+                                if page_lock.locked():
+                                    log("  waiting for page_lock (token refresh?)...")
                                 async with page_lock:
-                                    ok = await revive_sandbox(
-                                        chat_page,
-                                        preview_page,
-                                        BRIDGE_URL,
-                                        threads,
-                                        chat_url=chat_url,
-                                        preview_url=preview_url,
-                                        session_config=config,
+                                    # Cap revive wall-clock so a wedged page can't stall forever
+                                    ok = await asyncio.wait_for(
+                                        revive_sandbox(
+                                            chat_page,
+                                            preview_page,
+                                            BRIDGE_URL,
+                                            threads,
+                                            chat_url=chat_url,
+                                            preview_url=preview_url,
+                                            session_config=config,
+                                        ),
+                                        timeout=600,
                                     )
                                 if ok:
                                     fail_streak = 0
@@ -853,6 +909,13 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     if fail_streak >= 3:
                                         log("  Revive failed 3x — restarting browser")
                                         return
+                            except asyncio.TimeoutError:
+                                fail_streak += 1
+                                log(f"  Revive timed out 600s (streak={fail_streak}) — retry sooner")
+                                next_wait = 45
+                                if fail_streak >= 3:
+                                    log("  Revive failed 3x — restarting browser")
+                                    return
                             except Exception as e2:
                                 fail_streak += 1
                                 log(f"  Revive error: {e2} (streak={fail_streak})")

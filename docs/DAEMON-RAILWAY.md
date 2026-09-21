@@ -71,12 +71,12 @@ Cold start
 
 Health loop (~180s when healthy; ~45s after failed revive)
 ├── shell_worker_status: proxy-404 / auth-bridge / login / nodoc / probe=0 → DEAD
-├── If DEAD → revive_sandbox (serialized vs token refresh):
-│     wake chat (always goto chat_url, 4 rounds, re-login on wall,
-│                ProseMirror + composer selectors, keyboard fill fallback)
+├── If DEAD → revive_sandbox (serialized vs token refresh, 600s wall-clock):
+│     wake chat (always goto chat_url, cache-bust after round 1, Skip-to-chat click,
+│                re-login on wall, Loading/Dashboard → hard reload, eval timeouts)
 │     → goto preview → wait until 'lovable' → inject same worker cmd
 ├── Revive fail streak ≥ 3 → exit health loop → outer browser restart
-└── Token refresh every 40m (skipped while revive lock held)
+└── Token refresh every 40m (skipped while revive lock held; 20s hard timeout)
     save_trio always from chat origin (never preview — preview wipe bug)
 ```
 
