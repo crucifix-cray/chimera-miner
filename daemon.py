@@ -36,20 +36,18 @@ def log(msg):
     print(f"[{ts()}] {msg}", flush=True)
 
 
-# Fail-fast constants — never burn 30+ min on a wedged Chromium/SPA
-WAKE_ROUNDS = 3
-WAKE_GOTO_MS = 25000
-WAKE_SEL_MS = 4000
-REVIVE_WALL_S = 280          # wake (~60s) + lovable wait (≤120s×2) + inject
-REVIVE_LOVABLE_S = 120
-FAIL_STREAK_RESTART = 2
-BODY_DEAD_ABORT = 2
-# Probe TimeoutError / body-error → page is wedged; skip long revive
-PROBE_DEAD_IMMEDIATE = ("body-error:", "doc-eval-error:", "probe-eval-error:", "url-error:")
+# Revive is simple: refresh chat → wake cmd → wait → preview → inject → repeat
+WAKE_ROUNDS = 5
+WAKE_GOTO_MS = 45000
+WAKE_SEL_MS = 10000
+WAKE_AFTER_SEND_S = 12       # let sandbox spin after wake cmd
+REVIVE_WALL_S = 420          # room for wake + wait + lovable + inject
+REVIVE_LOVABLE_S = 180
+FAIL_STREAK_RESTART = 3      # browser restart only after repeated full fails
 
 
-async def _page_eval(page, js: str, timeout: float = 6.0):
-    """page.evaluate with hard timeout — hung Chromium must not block revive forever."""
+async def _page_eval(page, js: str, timeout: float = 8.0):
+    """page.evaluate with hard timeout — hung Chromium must not block forever."""
     return await asyncio.wait_for(page.evaluate(js), timeout=timeout)
 
 
@@ -58,12 +56,10 @@ async def send_wake_prompt(
     chat_url: str | None = None,
     session_config: dict | None = None,
 ) -> bool:
-    """Send a trivial wake prompt on the chat tab (wakes sandbox).
+    """Refresh chat → find composer → send trivial wake cmd → wait.
 
-    Always hard-navs to chat_url each round, re-logins on /login wall,
-    logs URL/body when composer missing, fill with keyboard fallback.
-    Fail-fast: no cache-bust query params, no reload+goto pileup, abort on
-    consecutive dead evaluates so outer loop can restart the browser.
+    Simple loop — no abort-on-eval-timeout. Keep refreshing until composer
+    appears or rounds exhausted; outer health loop retries / restarts browser.
     """
     import random as _rand
 
@@ -81,23 +77,24 @@ async def send_wake_prompt(
         pass
 
     chat_input = None
-    body_dead = 0
-    goto_fail = 0
     for round_n in range(1, WAKE_ROUNDS + 1):
-        # Clean project URL only — ?_wake= cache-bust broke SPA / interrupted navs
-        if chat_url:
-            log(f"  Wake: goto chat (round {round_n})")
-            try:
+        # --- refresh chat (reload if already there, else goto) ---
+        log(f"  Wake: refresh chat (round {round_n}/{WAKE_ROUNDS})")
+        try:
+            cur0 = chat_page.url or ""
+        except Exception:
+            cur0 = ""
+        try:
+            if chat_url and chat_url.rstrip("/") in cur0.split("?")[0]:
+                await chat_page.reload(timeout=WAKE_GOTO_MS, wait_until="commit")
+                log("  Wake: reloaded chat")
+            elif chat_url:
                 await chat_page.goto(
                     chat_url, timeout=WAKE_GOTO_MS, wait_until="commit")
-                goto_fail = 0
-            except Exception as e:
-                goto_fail += 1
-                log(f"  Wake: chat goto error: {type(e).__name__}: {e}")
-                if goto_fail >= 2:
-                    log("  Wake: goto dead 2x — abort (need browser restart)")
-                    return False
-            await asyncio.sleep(3)
+                log("  Wake: goto chat")
+        except Exception as e:
+            log(f"  Wake: refresh error ({type(e).__name__}) — continue")
+        await asyncio.sleep(5)  # SPA settle
 
         cur = ""
         try:
@@ -106,19 +103,20 @@ async def send_wake_prompt(
             cur = ""
         log(f"  Wake: url={cur[:100]}")
 
-        # Login wall → full re-login then back to project
+        # Login wall → re-login then back
         on_login = "/login" in cur or "/auth" in cur
         if not on_login:
             try:
                 body0 = await _page_eval(
                     chat_page,
                     "() => (document.body && document.body.innerText || '').slice(0, 300)",
+                    timeout=5,
                 )
                 bl0 = (body0 or "").lower()
                 if ("log in" in bl0 or "sign in" in bl0) and "password" in bl0:
                     on_login = True
-            except Exception as e:
-                log(f"  Wake: login-check eval {type(e).__name__}")
+            except Exception:
+                pass
         if on_login and session_config:
             log("  Wake: login wall — re-login")
             ok = await do_login(
@@ -136,9 +134,9 @@ async def send_wake_prompt(
                         chat_url, timeout=WAKE_GOTO_MS, wait_until="commit")
                 except Exception:
                     pass
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
 
-        # Accessibility skip link — hard-timeout; count() can hang on wedged Chromium
+        # Skip-to-chat if present
         try:
             skip = chat_page.get_by_text("Skip to chat input", exact=False)
             n = await asyncio.wait_for(skip.count(), timeout=3)
@@ -161,43 +159,15 @@ async def send_wake_prompt(
             log(f"  Wake: chat input found (round {round_n})")
             break
 
-        # Diagnose why composer missing
-        body = ""
-        body_ok = False
-        try:
-            body = await _page_eval(
-                chat_page,
-                "() => (document.body && document.body.innerText || '').slice(0, 200)",
-            )
-            body_ok = True
-            log(f"  Wake: no composer — body={body!r}")
-            body_dead = 0
-        except Exception as e:
-            body_dead += 1
-            log(f"  Wake: no composer — body unreadable ({type(e).__name__})")
-            if body_dead >= BODY_DEAD_ABORT:
-                log("  Wake: page evaluate dead — abort (need browser restart)")
-                return False
-        log(f"  Wake: chat input missing (round {round_n}/{WAKE_ROUNDS})")
-
-        bl = (body or "").lower() if body_ok else ""
-        # Only reload on EXPLICIT Loading/Dashboard shell — empty/unreadable
-        # must NOT reload (that stacked with goto and burned minutes).
-        if body_ok and (
-            "loading..." in bl or ("dashboard" in bl and "recents" in bl)
-        ):
-            log("  Wake: stuck shell (Loading/Dashboard) — next round goto")
-            # No reload here: next loop iteration does clean goto(chat_url)
-            await asyncio.sleep(1)
-        else:
-            await asyncio.sleep(1)
+        log(f"  Wake: no composer yet — refresh again")
+        await asyncio.sleep(2)
 
     if not chat_input:
-        log(f"  Wake prompt: chat input not found after {WAKE_ROUNDS} rounds")
+        log(f"  Wake: chat input not found after {WAKE_ROUNDS} refreshes")
         return False
 
     prompt = _rand.choice(WAKE_PROMPTS)
-    log(f"  Sending wake prompt: '{prompt}'")
+    log(f"  Wake: sending '{prompt}'")
     try:
         await chat_input.click(timeout=5000)
     except Exception:
@@ -230,7 +200,8 @@ async def send_wake_prompt(
             await chat_page.keyboard.press("Enter")
         except Exception:
             pass
-    log("  Wake prompt sent")
+    log(f"  Wake: sent — waiting {WAKE_AFTER_SEND_S}s for sandbox")
+    await asyncio.sleep(WAKE_AFTER_SEND_S)
     return True
 
 
@@ -352,21 +323,22 @@ async def revive_sandbox(
     session_config: dict | None = None,
 ) -> bool:
     """
-    Full-mode recovery when shell/worker is dead — same as first run:
-    wake chat → open/refresh preview until console 'lovable' → inject worker cmd.
+    Simple recovery loop:
+      refresh chat → send wake cmd → wait → goto preview → wait doc → inject
     """
     from miner_injector import inject_miner
 
-    log("  Revive: wake chat → refresh until 'lovable' → inject (same as first run)")
+    log("  Revive: refresh chat → wake → wait → preview → inject")
     woke = await send_wake_prompt(
         chat_page, chat_url=chat_url, session_config=session_config)
     if not woke:
-        log("  Revive: wake failed — will retry next health cycle")
+        log("  Revive: wake failed — retry next cycle")
         return False
 
-    # Dead proxy page: hard re-nav to preview (bring_to_front alone is useless)
+    # Preview: hard re-nav then wait for window.doc
     if preview_url:
         try:
+            log(f"  Revive: goto preview")
             await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
         except Exception as e:
             log(f"  Revive: preview goto error: {e}")
@@ -378,7 +350,7 @@ async def revive_sandbox(
     ready = await wait_for_lovable_console(
         preview_page, timeout_seconds=REVIVE_LOVABLE_S)
     if not ready:
-        log("  First wait failed — second wake + wait")
+        log("  Revive: no doc yet — wake again + wait")
         await send_wake_prompt(
             chat_page, chat_url=chat_url, session_config=session_config)
         if preview_url:
@@ -393,8 +365,10 @@ async def revive_sandbox(
         ready = await wait_for_lovable_console(
             preview_page, timeout_seconds=REVIVE_LOVABLE_S)
     if not ready:
-        log("  Revive: lovable console never appeared")
+        log("  Revive: lovable/doc never ready")
         return False
+
+    log("  Revive: injecting worker")
     ok = await inject_miner(preview_page, bridge_url, threads)
     log(f"  Revive inject: {'OK' if ok else 'FAILED'}")
     return bool(ok)
