@@ -443,7 +443,30 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                                 }""")
                                 log(f"  Worker alive (probe: {probe})")
                             else:
-                                log("  Worker dead — re-injecting...")
+                                log("  Worker dead — refreshing sandbox + re-injecting...")
+                                # Refresh preview to restart sandbox
+                                try:
+                                    await preview_page.reload(timeout=30000)
+                                except Exception:
+                                    pass
+                                await preview_page.wait_for_timeout(5000)
+                                # Wait for sandbox ready
+                                for wa in range(12):
+                                    try:
+                                        chk = await preview_page.evaluate(
+                                            "() => !!(window.doc && typeof window.doc === 'function')")
+                                        if chk:
+                                            log(f"  Sandbox ready after {wa*5}s")
+                                            break
+                                    except Exception:
+                                        pass
+                                    log(f"  Waiting for sandbox... ({wa*5}s)")
+                                    try:
+                                        await preview_page.reload(timeout=15000)
+                                    except Exception:
+                                        pass
+                                    await preview_page.wait_for_timeout(5)
+                                # Re-inject
                                 await inject_miner(preview_page, BRIDGE_URL, threads)
                         except Exception as e:
                             log(f"  Probe error: {e}")
