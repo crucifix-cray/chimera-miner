@@ -1,11 +1,16 @@
-# Agent session archives
+# Agent session archives (Cursor resume)
 
-Zipped Cursor agent transcripts for ops handoff.
+## Full session — resume on another PC
 
-| Archive | Session ID | Notes |
-|---|---|---|
-| `cf4d4ac9-ab1e-4c63-ac07-5e02976a532c-2026-09-21.zip` | `cf4d4ac9-ab1e-4c63-ac07-5e02976a532c` | cell-16 / daemon revive work (2026-09-17 → 2026-09-21) |
+| File | What |
+|---|---|
+| `chimera-agent-cf4d4ac9-ab1e-4c63-ac07-5e02976a532c-full.zip` (~50MB) | Complete Cursor agent: `store.db` + meta + transcript |
 
-## WARNING
-These archives may contain **secrets** (GH PATs, API keys, session passwords, TOTP, proxy creds, Railway IDs).
-Keep the repo private. Do not mirror publicly. Rotate anything that leaks.
+**Resume ID:** `cf4d4ac9-ab1e-4c63-ac07-5e02976a532c`  
+```bash
+agent --resume=cf4d4ac9-ab1e-4c63-ac07-5e02976a532c
+```
+
+Unpack and follow `RESTORE.md` inside the zip (also summarized there).
+
+**WARNING:** secrets inside (tokens, passwords, TOTP, proxy). Keep repo private.
