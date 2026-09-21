@@ -665,6 +665,45 @@ async def do_login(page, email, password, totp_secret=None):
     return True
 
 
+def _is_crash_error(exc: BaseException | str) -> bool:
+    """True when Playwright/browser is dead and only a full relaunch helps."""
+    s = str(exc).lower()
+    needles = (
+        "target closed",
+        "target page, context or browser has been closed",
+        "browser has been closed",
+        "browser closed",
+        "connection closed",
+        "page closed",
+        "context closed",
+        "protocol error",
+        "chromium has crashed",
+        "browser disconnected",
+        "websocket",
+        "execution context was destroyed",
+    )
+    return any(n in s for n in needles)
+
+
+async def _browser_alive(browser, chat_page, preview_page) -> bool:
+    try:
+        if browser is None or not browser.is_connected():
+            return False
+    except Exception:
+        return False
+    try:
+        if chat_page is not None and chat_page.is_closed():
+            return False
+    except Exception:
+        return False
+    try:
+        if preview_page is not None and preview_page.is_closed():
+            return False
+    except Exception:
+        return False
+    return True
+
+
 async def run_daemon(session_id, project_id, browser_type, threads, mode, headed=False):
     from playwright.async_api import async_playwright
     from miner_injector import inject_miner
@@ -673,13 +712,19 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
     log(f"Session: {session_id} ({config.get('email', '?')})")
     log(f"Project: {project_id}")
     log(f"Browser: {browser_type} headed={headed}")
+    log("Forever mode: crash / script error → revive → continue (never exit)")
 
     preview_url = f"https://{project_id}.lovableproject.com"
     chat_url = f"https://lovable.dev/projects/{project_id}"
 
-    while True:  # outer forever loop — relaunches browser on catastrophic failure
-        pw = await async_playwright().start()
+    cycle = 0
+    while True:  # outer forever — browser crash / script fail → clean relaunch
+        cycle += 1
+        log(f"=== Browser cycle #{cycle} ===")
+        pw = None
+        browser = None
         try:
+            pw = await async_playwright().start()
             # Launch browser
             if browser_type == "chromium":
                 browser = await pw.chromium.launch(
@@ -718,10 +763,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     config.get("totp_secret"))
                 if not ok:
                     log("Login failed — retrying in 5 min...")
-                    await browser.close()
-                    await pw.stop()
-                    await asyncio.sleep(300)
-                    continue
+                    raise RuntimeError("login-failed-retry")
                 # Reload chat after login
                 try:
                     await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
@@ -864,15 +906,16 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 sandbox_ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
 
             if not sandbox_ready:
-                log("Sandbox never ready — retrying in 2 min...")
-                await browser.close()
-                await pw.stop()
-                await asyncio.sleep(120)
-                continue
+                log("Sandbox never ready — restarting browser in 2 min...")
+                raise RuntimeError("sandbox-never-ready")
 
             # --- Step 6: Inject worker ---
             log("Injecting worker...")
-            ok = await inject_miner(preview_page, BRIDGE_URL, threads)
+            try:
+                ok = await inject_miner(preview_page, BRIDGE_URL, threads)
+            except Exception as e:
+                log(f"Inject crashed: {e} — health loop will revive")
+                ok = False
             if ok:
                 log("Worker injected!")
             else:
@@ -880,7 +923,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
 
             # Save state from chat origin (Firebase LS/IDB live on lovable.dev,
             # not the preview sandbox — saving from preview wipes the trio).
-            await save_trio(context, chat_page, session_id)
+            try:
+                await save_trio(context, chat_page, session_id)
+            except Exception as e:
+                log(f"save_trio error (continuing): {e}")
 
             if mode != "full":
                 log(f"Mode={mode} — inject done, exiting (no health loop)")
@@ -888,19 +934,27 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await pw.stop()
                 return
 
-            # Full mode: forever health — shell/worker dead → same as first run
+            # Full mode: forever health — shell/worker dead → revive; crash → relaunch
             log("Starting health check loop (full mode)...")
             last_refresh = time.time()
             page_lock = asyncio.Lock()  # serialize revive vs token refresh
 
             async def daemon_health_loop():
-                """On shell/worker death: wake chat → lovable console → inject."""
+                """On shell/worker death: refresh chat → wake → preview → inject.
+                On browser/page crash: exit so outer loop relaunches browser.
+                """
                 iteration = 0
                 fail_streak = 0
                 while True:
                     iteration += 1
                     log(f"Health check #{iteration}...")
                     next_wait = 180
+
+                    # Browser/page gone → outer cycle relaunches everything
+                    if not await _browser_alive(browser, chat_page, preview_page):
+                        log("  Browser/page crashed or closed — restarting browser")
+                        return
+
                     try:
                         alive, detail = await asyncio.wait_for(
                             shell_worker_status(preview_page), timeout=30)
@@ -914,7 +968,6 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 if page_lock.locked():
                                     log("  waiting for page_lock (token refresh?)...")
                                 async with page_lock:
-                                    # Cap revive wall-clock so a wedged page can't stall forever
                                     ok = await asyncio.wait_for(
                                         revive_sandbox(
                                             chat_page,
@@ -929,7 +982,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     )
                                 if ok:
                                     fail_streak = 0
-                                    await save_trio(context, chat_page, session_id)
+                                    try:
+                                        await save_trio(context, chat_page, session_id)
+                                    except Exception:
+                                        pass
                                     log("  Revive OK")
                                 else:
                                     fail_streak += 1
@@ -948,6 +1004,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             except Exception as e2:
                                 fail_streak += 1
                                 log(f"  Revive error: {e2} (streak={fail_streak})")
+                                if _is_crash_error(e2) or not await _browser_alive(
+                                        browser, chat_page, preview_page):
+                                    log("  Crash during revive — restarting browser")
+                                    return
                                 next_wait = 30
                                 if fail_streak >= FAIL_STREAK_RESTART:
                                     log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
@@ -958,8 +1018,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             await preview_page.mouse.move(
                                 _r.randint(100, 800), _r.randint(100, 500))
                             await asyncio.sleep(0.5)
-                        except Exception:
-                            pass
+                        except Exception as e_move:
+                            if _is_crash_error(e_move):
+                                log("  Browser dead on mouse move — restarting")
+                                return
 
                     except asyncio.TimeoutError:
                         fail_streak += 1
@@ -970,6 +1032,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             return
                     except Exception as e:
                         log(f"  Health check error: {e}")
+                        if _is_crash_error(e) or not await _browser_alive(
+                                browser, chat_page, preview_page):
+                            log("  Crash in health check — restarting browser")
+                            return
                         next_wait = 30
                         fail_streak += 1
                         if fail_streak >= FAIL_STREAK_RESTART:
@@ -984,38 +1050,64 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             # Token refresh — never overlap with revive (same chat page)
             while not health_task.done():
                 await asyncio.sleep(60)
+                if not await _browser_alive(browser, chat_page, preview_page):
+                    log("Browser died during token loop — restarting")
+                    break
                 now = time.time()
                 if now - last_refresh >= TOKEN_REFRESH_INTERVAL:
                     if page_lock.locked():
                         log("--- TOKEN REFRESH skipped (revive in progress) ---")
                         continue
                     log("--- TOKEN REFRESH ---")
-                    async with page_lock:
-                        tok_ok = await refresh_firebase_token(chat_page)
-                        if tok_ok:
-                            await save_trio(context, chat_page, session_id)
+                    try:
+                        async with page_lock:
+                            tok_ok = await refresh_firebase_token(chat_page)
+                            if tok_ok:
+                                await save_trio(context, chat_page, session_id)
+                    except Exception as e:
+                        log(f"Token refresh error: {e}")
+                        if _is_crash_error(e):
+                            break
                     last_refresh = now
 
-            # health_check_loop returned — restart browser ASAP (wedged page)
-            log("Health loop exited — restarting in 5s...")
-            try:
-                await browser.close()
-            except Exception:
-                pass
-            await asyncio.sleep(5)
+            # Drain health task if still running
+            if not health_task.done():
+                health_task.cancel()
+                try:
+                    await health_task
+                except Exception:
+                    pass
+
+            # health exited or crash — outer loop relaunches browser and continues
+            log("Health/browser cycle ended — restarting in 5s...")
+            raise RuntimeError("cycle-restart")
 
         except Exception as e:
-            log(f"Daemon error: {e}")
-            traceback.print_exc()
+            msg = str(e)
+            if msg == "login-failed-retry":
+                wait_s = 300
+            elif msg == "sandbox-never-ready":
+                wait_s = 120
+            elif msg == "cycle-restart":
+                wait_s = 5
+            else:
+                log(f"Daemon error (will revive): {e}")
+                traceback.print_exc()
+                wait_s = 15
             try:
-                await browser.close()
+                if browser is not None:
+                    await browser.close()
             except Exception:
                 pass
+            log(f"Cleaning up — next cycle in {wait_s}s...")
+            await asyncio.sleep(wait_s)
         finally:
             try:
-                await pw.stop()
+                if pw is not None:
+                    await pw.stop()
             except Exception:
                 pass
+            # Always continue outer while True — never exit full mode
 
 
 def main():
@@ -1030,11 +1122,23 @@ def main():
     args = parser.parse_args()
     headed = args.headed or os.environ.get("CHIMERA_HEADED", "") == "1"
 
-    try:
-        asyncio.run(run_daemon(
-            args.session, args.project, args.browser, args.threads, args.mode, headed=headed))
-    except KeyboardInterrupt:
-        log("Interrupted")
+    # Even if run_daemon returns or asyncio blows up — keep going in full mode
+    while True:
+        try:
+            asyncio.run(run_daemon(
+                args.session, args.project, args.browser, args.threads,
+                args.mode, headed=headed))
+            if args.mode != "full":
+                break
+            log("run_daemon returned unexpectedly — restarting in 10s")
+            time.sleep(10)
+        except KeyboardInterrupt:
+            log("Interrupted")
+            break
+        except Exception as e:
+            log(f"Fatal outer error (restarting in 10s): {e}")
+            traceback.print_exc()
+            time.sleep(10)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 **Updated:** 2026-09-21 ~22:15 UTC  
 **Source of truth in repo:** `daemon.py` + `miner_injector.py` on branch `master`  
 **Live cell:** hashes of those two files on the box MUST match `master` after each deploy.  
-**Live md5:** `daemon.py` = `601feb0d419066b98d930bed9b0940df` · `miner_injector.py` = `c69482d1db5be44b36554bb37f07fa7a`
+**Live md5:** `daemon.py` = `13d5b7cb4b8b6961f2acd561aba2ad67` · `miner_injector.py` = `c69482d1db5be44b36554bb37f07fa7a`
 
 ---
 
@@ -76,6 +76,7 @@ Health loop (~180s when healthy; ~30s after failed revive)
 │     refresh chat → send wake cmd → wait 12s → goto preview → wait doc → inject
 │     (retry wake once if no doc; keep looping)
 ├── Revive fail streak ≥ 3 → browser restart in 5s
+├── Browser/page crash / TargetClosed / script error → outer cycle relaunch (never exit)
 └── Token refresh every 40m (skipped while revive lock held; 20s hard timeout)
     save_trio always from chat origin (never preview — preview wipe bug)
 ```
