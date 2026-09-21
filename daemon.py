@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
 Autonomous Miner Daemon
-Launches miner, runs health checks, refreshes Firebase tokens, auto-recovers.
-Runs forever. No manual intervention needed.
+Thin wrapper: setup browser + state, then delegate to inject_miner + health_check_loop.
+Adds token refresh + session state save on top. Runs forever.
 
 Usage:
   CHIMERA_NO_PROXY=1 python3 -u daemon.py --session session-2 --project <id> --browser chromium
-  CHIMERA_NO_PROXY=1 python3 -u daemon.py --session session-2 --project <id> --browser chromium --threads 64
 """
 
 import argparse
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import time
 import traceback
@@ -24,10 +22,7 @@ SESSIONS_DIR = Path(os.environ.get(
     "/home/alan/Documents/repos/automation-toolkit/scripts/sessions"))
 BRIDGE_URL = "wss://chimera-bridge-production-0703.up.railway.app"
 
-HEALTH_INTERVAL = 180       # 3 min between health checks
-TOKEN_REFRESH_INTERVAL = 2400  # 40 min between token refreshes (safe margin before 1h expiry)
-MAX_RECOVERY_ATTEMPTS = 3
-RECOVERY_BACKOFF = [30, 60, 120]  # seconds between recovery attempts
+TOKEN_REFRESH_INTERVAL = 2400  # 40 min
 
 
 def ts():
@@ -39,33 +34,31 @@ def log(msg):
 
 
 def _sess_dir(session_id):
-    """Resolve session dir — handles both '2' and 'session-2' input."""
     if session_id.startswith("session-"):
         return SESSIONS_DIR / session_id
     return SESSIONS_DIR / f"session-{session_id}"
 
 
-async def load_cookies(session_id):
-    sdir = _sess_dir(session_id)
-    with open(sdir / "cookies.json") as f:
+def load_cookies_sync(session_id):
+    with open(_sess_dir(session_id) / "cookies.json") as f:
         return json.load(f)
 
 
-async def load_config(session_id):
-    sdir = _sess_dir(session_id)
-    with open(sdir / "config.json") as f:
+def load_config_sync(session_id):
+    with open(_sess_dir(session_id) / "config.json") as f:
         return json.load(f)
 
 
 async def save_trio(context, page, session_id):
     """Save cookies + localStorage + IndexedDB to disk."""
     sdir = _sess_dir(session_id)
-    # Cookies
-    cookies = await context.cookies()
-    with open(sdir / "cookies.json", "w") as f:
-        json.dump(cookies, f, indent=2)
-    log(f"  Saved {len(cookies)} cookies")
-    # localStorage
+    try:
+        cookies = await context.cookies()
+        with open(sdir / "cookies.json", "w") as f:
+            json.dump(cookies, f, indent=2)
+        log(f"  Saved {len(cookies)} cookies")
+    except Exception as e:
+        log(f"  cookies save failed: {e}")
     try:
         ls = await page.evaluate("""() => {
             const o = {};
@@ -80,7 +73,6 @@ async def save_trio(context, page, session_id):
         log(f"  Saved {len(ls)} localStorage keys")
     except Exception as e:
         log(f"  localStorage save failed: {e}")
-    # IndexedDB
     try:
         idb = await page.evaluate("""async () => {
             return new Promise((resolve) => {
@@ -169,7 +161,7 @@ async def refresh_firebase_token(page):
             log(f"  Token {status} (exp={result.get('exp', '?')})")
             return True
         else:
-            log(f"  Token refresh issue: {status}")
+            log(f"  Token issue: {status}")
             return False
     except Exception as e:
         log(f"  Token refresh error: {e}")
@@ -184,12 +176,10 @@ async def do_login(page, email, password, totp_secret=None):
         pass
     await page.wait_for_timeout(3000)
 
-    # Check if already logged in
     if "/dashboard" in page.url or "/projects" in page.url:
         log("  Already logged in")
         return True
 
-    # Email
     try:
         await page.locator('input[placeholder="Email"]').fill(email)
         await page.locator('[data-testid="auth-submit-button"]').click()
@@ -198,7 +188,6 @@ async def do_login(page, email, password, totp_secret=None):
         log(f"  Email step failed: {e}")
         return False
 
-    # Password
     try:
         await page.locator('input[placeholder="Password"]').fill(password)
         await page.locator('[data-testid="auth-submit-button"]').click()
@@ -207,7 +196,6 @@ async def do_login(page, email, password, totp_secret=None):
         log(f"  Password step failed: {e}")
         return False
 
-    # Check for 2FA
     try:
         body = await page.evaluate("() => document.body.innerText.slice(0, 500)")
     except Exception:
@@ -227,7 +215,6 @@ async def do_login(page, email, password, totp_secret=None):
         except Exception as e:
             log(f"  TOTP error: {e}")
 
-    # Check result
     url = page.url
     if "/login" in url:
         try:
@@ -235,356 +222,199 @@ async def do_login(page, email, password, totp_secret=None):
         except Exception:
             body = ""
         if "Log in" in body[:200]:
-            log("  Login failed — still on login page")
+            log("  Login failed")
             return False
 
     log("  Login successful")
     return True
 
 
-class MinerDaemon:
-    def __init__(self, session_id, project_id, browser_type, threads, mode):
-        self.session_id = session_id
-        self.project_id = project_id
-        self.browser_type = browser_type
-        self.threads = threads
-        self.mode = mode
-        self.config = None
-        self.browser = None
-        self.context = None
-        self.page = None  # preview page
-        self.chat_page = None  # chat tab
-        self.worker_running = False
-        self.last_token_refresh = 0
-        self.last_health_check = 0
-        self.recovery_count = 0
-        self.running = True
+async def run_daemon(session_id, project_id, browser_type, threads, mode):
+    from playwright.async_api import async_playwright
+    from miner_injector import inject_miner, health_check_loop
 
-    async def setup(self):
-        """Launch browser, restore state, navigate to project."""
-        from playwright.async_api import async_playwright
-        self.pw = await async_playwright().start()
+    config = load_config_sync(session_id)
+    log(f"Session: {session_id} ({config.get('email', '?')})")
+    log(f"Project: {project_id}")
 
-        self.config = await load_config(self.session_id)
-        log(f"Session: {self.session_id} ({self.config.get('email', '?')})")
-        log(f"Project: {self.project_id}")
-        log(f"Browser: {self.browser_type}")
+    preview_url = f"https://{project_id}.lovableproject.com"
+    chat_url = f"https://lovable.dev/projects/{project_id}"
 
-        # Launch browser
-        if self.browser_type == "chromium":
-            self.browser = await self.pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage",
-                       "--disable-blink-features=AutomationControlled"])
-        else:
-            self.browser = await self.pw.firefox.launch(headless=True)
-
-        self.context = await self.browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-
-        # Load cookies
-        cookies = await load_cookies(self.session_id)
-        await self.context.add_cookies(cookies)
-        log(f"Loaded {len(cookies)} cookies")
-
-        # Open preview page
-        self.page = await self.context.new_page()
-        preview_url = f"https://{self.project_id}.lovableproject.com"
-        log(f"Opening preview: {preview_url}")
+    while True:  # outer forever loop — relaunches browser on catastrophic failure
+        pw = await async_playwright().start()
         try:
-            await self.page.goto(preview_url, timeout=30000, wait_until="commit")
-        except Exception:
-            pass
-        await self.page.wait_for_timeout(5000)
-
-        # Open chat page
-        self.chat_page = await self.context.new_page()
-        chat_url = f"https://lovable.dev/projects/{self.project_id}"
-        log(f"Opening chat: {chat_url}")
-        try:
-            await self.chat_page.goto(chat_url, timeout=30000, wait_until="commit")
-        except Exception:
-            pass
-        await self.chat_page.wait_for_timeout(3000)
-
-        # Check if logged in on chat
-        url = self.chat_page.url
-        if "/login" in url:
-            log("Not logged in — doing login...")
-            ok = await do_login(
-                self.chat_page,
-                self.config["email"],
-                self.config["password"],
-                self.config.get("totp_secret"))
-            if not ok:
-                raise Exception("Login failed")
-            # Reload preview after login
-            try:
-                await self.page.goto(preview_url, timeout=30000, wait_until="commit")
-            except Exception:
-                pass
-            await self.page.wait_for_timeout(5000)
-
-        # Restore localStorage + IndexedDB
-        sdir = SESSIONS_DIR / f"session-{self.session_id}"
-        ls_file = sdir / "localstorage.json"
-        if ls_file.exists():
-            try:
-                with open(ls_file) as f:
-                    ls_data = json.load(f)
-                if "lovable.dev" not in self.page.url:
-                    try:
-                        await self.page.goto("https://lovable.dev", timeout=15000, wait_until="commit")
-                    except Exception:
-                        pass
-                await self.page.evaluate(
-                    "(data) => { for (const [k, v] of Object.entries(data)) { try { localStorage.setItem(k, v); } catch(e) {} } }",
-                    ls_data)
-                log(f"Restored {len(ls_data)} localStorage keys")
-            except Exception as e:
-                log(f"localStorage restore failed: {e}")
-
-        log("Setup complete")
-
-    async def inject_worker(self):
-        """Inject the miner worker into the preview sandbox."""
-        from miner_injector import inject_miner
-        try:
-            result = await inject_miner(
-                self.page, self.chat_page,
-                self.project_id, self.config,
-                mode=self.mode, threads=self.threads,
-                bridge_url=BRIDGE_URL)
-            if result:
-                self.worker_running = True
-                log("Worker injected and running")
-                return True
+            # Launch browser
+            if browser_type == "chromium":
+                browser = await pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage",
+                           "--disable-blink-features=AutomationControlled"])
             else:
-                log("Worker injection returned False")
-                return False
-        except Exception as e:
-            log(f"Worker injection error: {e}")
-            return False
+                browser = await pw.firefox.launch(headless=True)
 
-    async def check_health(self):
-        """Quick health check — is worker alive and preview healthy."""
-        try:
-            # Check preview page is still loading
-            url = self.page.url
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+            # Load cookies
+            cookies = load_cookies_sync(session_id)
+            await context.add_cookies(cookies)
+            log(f"Loaded {len(cookies)} cookies")
+
+            # Open preview page
+            preview_page = await context.new_page()
+            log(f"Opening preview: {preview_url}")
+            try:
+                await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
+            except Exception:
+                pass
+            await preview_page.wait_for_timeout(5000)
+
+            # Check if logged in
+            url = preview_page.url
             if "/login" in url:
-                log("  Preview redirected to login — session expired")
-                return False
+                log("Not logged in — doing login...")
+                ok = await do_login(
+                    preview_page,
+                    config["email"],
+                    config["password"],
+                    config.get("totp_secret"))
+                if not ok:
+                    log("Login failed — retrying in 5 min...")
+                    await browser.close()
+                    await pw.stop()
+                    await asyncio.sleep(300)
+                    continue
+                # Reload preview
+                try:
+                    await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
+                except Exception:
+                    pass
+                await preview_page.wait_for_timeout(5000)
 
-            # Check for doc bridge (worker alive)
-            try:
-                alive = await self.page.evaluate(
-                    "() => typeof window.doc === 'function'")
-                if alive:
-                    log("  Worker alive (doc bridge OK)")
-                    return True
-                else:
-                    log("  Worker dead (no doc bridge)")
-                    return False
-            except Exception:
-                log("  Preview unreachable")
-                return False
-        except Exception as e:
-            log(f"  Health check error: {e}")
-            return False
+            # Restore localStorage + IndexedDB
+            sdir = _sess_dir(session_id)
+            ls_file = sdir / "localstorage.json"
+            if ls_file.exists():
+                try:
+                    with open(ls_file) as f:
+                        ls_data = json.load(f)
+                    await preview_page.evaluate(
+                        "(data) => { for (const [k, v] of Object.entries(data)) { try { localStorage.setItem(k, v); } catch(e) {} } }",
+                        ls_data)
+                    log(f"Restored {len(ls_data)} localStorage keys")
+                except Exception as e:
+                    log(f"localStorage restore failed: {e}")
 
-    async def do_recovery(self):
-        """Attempt to recover: refresh token, re-login if needed, re-inject worker."""
-        self.recovery_count += 1
-        log(f"RECOVERY ATTEMPT {self.recovery_count}/{MAX_RECOVERY_ATTEMPTS}")
+            idb_file = sdir / "indexeddb.json"
+            if idb_file.exists():
+                try:
+                    with open(idb_file) as f:
+                        idb_data = json.load(f)
+                    if idb_data:
+                        await preview_page.evaluate("""(records) => {
+                            return new Promise((resolve) => {
+                                try {
+                                    const delReq = indexedDB.deleteDatabase('firebaseLocalStorageDb');
+                                    delReq.onsuccess = delReq.onerror = delReq.onblocked = () => {
+                                        const openReq = indexedDB.open('firebaseLocalStorageDb');
+                                        openReq.onupgradeneeded = () => {
+                                            openReq.result.createObjectStore('firebaseLocalStorage', {keyPath: 'fkey'});
+                                        };
+                                        openReq.onsuccess = () => {
+                                            const db = openReq.result;
+                                            const tx = db.transaction('firebaseLocalStorage', 'readwrite');
+                                            const store = tx.objectStore('firebaseLocalStorage');
+                                            let done = 0;
+                                            if (!records.length) { resolve(0); return; }
+                                            records.forEach(r => {
+                                                try {
+                                                    const putReq = store.put({fkey: r.key, value: r.value});
+                                                    putReq.onsuccess = putReq.onerror = () => { if (++done === records.length) resolve(done); };
+                                                } catch(e) { if (++done === records.length) resolve(done); }
+                                            });
+                                        };
+                                        openReq.onerror = () => resolve(-1);
+                                    };
+                                } catch(e) { resolve(-1); }
+                            });
+                        }""", idb_data)
+                        log(f"Restored {len(idb_data)} IndexedDB records")
+                except Exception as e:
+                    log(f"IndexedDB restore failed: {e}")
 
-        # Step 1: Try token refresh
-        ok = await refresh_firebase_token(self.page)
-        if ok:
-            await save_trio(self.context, self.page, self.session_id)
-            # Re-navigate to preview
-            preview_url = f"https://{self.project_id}.lovableproject.com"
-            try:
-                await self.page.goto(preview_url, timeout=30000, wait_until="commit")
-            except Exception:
-                pass
-            await self.page.wait_for_timeout(5000)
-            # Re-inject
-            if await self.inject_worker():
-                self.recovery_count = 0
-                return True
+            # Inject worker
+            log("Injecting worker...")
+            ok = await inject_miner(preview_page, BRIDGE_URL, threads)
+            if ok:
+                log("Worker injected!")
+            else:
+                log("Worker injection returned False — health loop will retry")
 
-        # Step 2: Full re-login
-        log("  Token refresh failed, doing full re-login...")
-        ok = await do_login(
-            self.chat_page,
-            self.config["email"],
-            self.config["password"],
-            self.config.get("totp_secret"))
-        if ok:
-            await save_trio(self.context, self.chat_page, self.session_id)
-            # Reload preview
-            preview_url = f"https://{self.project_id}.lovableproject.com"
-            try:
-                await self.page.goto(preview_url, timeout=30000, wait_until="commit")
-            except Exception:
-                pass
-            await self.page.wait_for_timeout(5000)
-            # Re-inject
-            if await self.inject_worker():
-                self.recovery_count = 0
-                return True
+            # Save state
+            await save_trio(context, preview_page, session_id)
 
-        # Step 3: Try chat page re-login
-        log("  Retrying login via chat page...")
-        chat_url = f"https://lovable.dev/projects/{self.project_id}"
-        try:
-            await self.chat_page.goto(chat_url, timeout=30000, wait_until="commit")
-        except Exception:
-            pass
-        await self.chat_page.wait_for_timeout(3000)
-        ok = await do_login(
-            self.chat_page,
-            self.config["email"],
-            self.config["password"],
-            self.config.get("totp_secret"))
-        if ok:
-            await save_trio(self.context, self.chat_page, self.session_id)
-            # Reload preview
-            preview_url = f"https://{self.project_id}.lovableproject.com"
-            try:
-                await self.page.goto(preview_url, timeout=30000, wait_until="commit")
-            except Exception:
-                pass
-            await self.page.wait_for_timeout(5000)
-            if await self.inject_worker():
-                self.recovery_count = 0
-                return True
+            # Run health check loop (this blocks forever in full mode)
+            log("Starting health check loop...")
+            last_refresh = time.time()
 
-        log(f"  Recovery failed (attempt {self.recovery_count})")
-        return False
+            # health_check_loop runs indefinitely in full mode
+            # We wrap it to add token refresh
+            health_task = asyncio.create_task(
+                health_check_loop(
+                    preview_page, preview_url,
+                    mode=mode, bridge_url=BRIDGE_URL,
+                    context=context, max_runtime_minutes=None,
+                    session_config=config, chat_url=chat_url))
 
-    async def run_forever(self):
-        """Main loop: health checks + token refresh + auto-recovery."""
-        await self.setup()
-
-        # Initial injection
-        if not await self.inject_worker():
-            log("Initial injection failed — will retry in health loop")
-
-        self.last_token_refresh = time.time()
-        self.last_health_check = time.time()
-
-        while self.running:
-            try:
+            # Token refresh loop runs alongside
+            while not health_task.done():
+                await asyncio.sleep(60)
                 now = time.time()
-
-                # Token refresh every 40 min
-                if now - self.last_token_refresh >= TOKEN_REFRESH_INTERVAL:
+                if now - last_refresh >= TOKEN_REFRESH_INTERVAL:
                     log("--- TOKEN REFRESH ---")
-                    ok = await refresh_firebase_token(self.page)
+                    ok = await refresh_firebase_token(preview_page)
                     if ok:
-                        await save_trio(self.context, self.page, self.session_id)
-                    self.last_token_refresh = now
+                        await save_trio(context, preview_page, session_id)
+                    last_refresh = now
 
-                # Health check every 3 min
-                if now - self.last_health_check >= HEALTH_INTERVAL:
-                    log(f"--- HEALTH CHECK ---")
-                    healthy = await self.check_health()
-                    if not healthy:
-                        # Try recovery with backoff
-                        recovered = False
-                        for attempt in range(MAX_RECOVERY_ATTEMPTS):
-                            backoff = RECOVERY_BACKOFF[min(attempt, len(RECOVERY_BACKOFF)-1)]
-                            log(f"  Waiting {backoff}s before recovery attempt {attempt+1}...")
-                            await asyncio.sleep(backoff)
-                            if await self.do_recovery():
-                                recovered = True
-                                break
-                        if not recovered:
-                            log("ALL RECOVERY ATTEMPTS FAILED — will keep retrying...")
-                            # Don't die — keep trying with longer backoff
-                            await asyncio.sleep(300)
-                            # Reset browser state
-                            try:
-                                await self.browser.close()
-                            except Exception:
-                                pass
-                            try:
-                                self.browser = await self.pw.chromium.launch(
-                                    headless=True,
-                                    args=["--no-sandbox", "--disable-dev-shm-usage",
-                                           "--disable-blink-features=AutomationControlled"])
-                                self.context = await self.browser.new_context(
-                                    viewport={"width": 1280, "height": 720})
-                                cookies = await load_cookies(self.session_id)
-                                await self.context.add_cookies(cookies)
-                                self.page = await self.context.new_page()
-                                self.chat_page = await self.context.new_page()
-                                preview_url = f"https://{self.project_id}.lovableproject.com"
-                                try:
-                                    await self.page.goto(preview_url, timeout=30000, wait_until="commit")
-                                except Exception:
-                                    pass
-                                chat_url = f"https://lovable.dev/projects/{self.project_id}"
-                                try:
-                                    await self.chat_page.goto(chat_url, timeout=30000, wait_until="commit")
-                                except Exception:
-                                    pass
-                                await self.page.wait_for_timeout(5000)
-                                if await self.inject_worker():
-                                    self.recovery_count = 0
-                                    log("Browser relaunch + re-inject successful")
-                            except Exception as e:
-                                log(f"Browser relaunch failed: {e}")
-                    self.last_health_check = now
+            # health_check_loop returned — this shouldn't happen in full mode
+            # but if it does, restart everything
+            log("Health loop exited — restarting in 30s...")
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            await asyncio.sleep(30)
 
-                # Sleep until next check
-                next_check = min(
-                    self.last_health_check + HEALTH_INTERVAL,
-                    self.last_token_refresh + TOKEN_REFRESH_INTERVAL)
-                sleep_time = max(10, next_check - time.time())
-                await asyncio.sleep(sleep_time)
-
-            except KeyboardInterrupt:
-                log("Interrupted — shutting down")
-                self.running = False
-            except Exception as e:
-                log(f"Main loop error: {e}")
-                traceback.print_exc()
-                await asyncio.sleep(30)
-
-    async def cleanup(self):
-        try:
-            await save_trio(self.context, self.page, self.session_id)
-        except Exception:
-            pass
-        try:
-            await self.browser.close()
-        except Exception:
-            pass
-        try:
-            await self.pw.stop()
-        except Exception:
-            pass
-        log("Daemon stopped")
+        except Exception as e:
+            log(f"Daemon error: {e}")
+            traceback.print_exc()
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        finally:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
 
 
-async def main():
+def main():
     parser = argparse.ArgumentParser(description="Autonomous Miner Daemon")
-    parser.add_argument("--session", required=True, help="Session ID (e.g., session-2)")
+    parser.add_argument("--session", required=True, help="Session (e.g. session-2 or 2)")
     parser.add_argument("--project", required=True, help="Lovable project ID")
     parser.add_argument("--browser", default="chromium", choices=["chromium", "firefox"])
     parser.add_argument("--threads", type=int, default=64)
     parser.add_argument("--mode", default="full", choices=["full", "oneshot", "gh"])
     args = parser.parse_args()
 
-    daemon = MinerDaemon(args.session, args.project, args.browser, args.threads, args.mode)
     try:
-        await daemon.run_forever()
-    finally:
-        await daemon.cleanup()
+        asyncio.run(run_daemon(args.session, args.project, args.browser, args.threads, args.mode))
+    except KeyboardInterrupt:
+        log("Interrupted")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
