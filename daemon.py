@@ -493,15 +493,32 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
             # --- Step 3: Find chat input and send wake prompt (script3 trivial, not debug-terminal) ---
             import random as _rand
             chat_input = None
-            for sel in ['div[contenteditable="true"][role="textbox"]',
-                        '[contenteditable="true"]', 'textarea']:
-                try:
-                    n = await chat_page.locator(sel).count()
-                    if n > 0:
-                        chat_input = chat_page.locator(sel).first
+            for round_n in range(1, 4):
+                for sel in [
+                    'div[contenteditable="true"][role="textbox"]',
+                    '[data-testid="chat-composer-editor"] [role="textbox"]',
+                    '[contenteditable="true"]',
+                    "textarea",
+                ]:
+                    try:
+                        loc = chat_page.locator(sel).first
+                        await loc.wait_for(state="visible", timeout=8000)
+                        chat_input = loc
                         break
+                    except Exception:
+                        continue
+                if chat_input:
+                    log(f"Chat input found (round {round_n})")
+                    break
+                log(f"Chat input missing (round {round_n}/3) — refreshing chat...")
+                try:
+                    await chat_page.reload(timeout=30000)
                 except Exception:
-                    continue
+                    try:
+                        await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
+                    except Exception:
+                        pass
+                await chat_page.wait_for_timeout(5000)
 
             if not chat_input:
                 log("Chat input not found — retrying in 5 min...")
