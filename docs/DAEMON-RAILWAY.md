@@ -1,8 +1,9 @@
 # Daemon on Railway (cell-16) — Canonical Runbook
 
-**Updated:** 2026-09-21 ~18:00 UTC  
+**Updated:** 2026-09-21 ~21:00 UTC  
 **Source of truth in repo:** `daemon.py` + `miner_injector.py` on branch `master`  
-**Live cell:** hashes of those two files on the box MUST match `master` after each deploy.
+**Live cell:** hashes of those two files on the box MUST match `master` after each deploy.  
+**Live md5 (518c887):** `daemon.py` = `3b9521f3c7c6fe0b8148f9eb4e0bbfb0`
 
 ---
 
