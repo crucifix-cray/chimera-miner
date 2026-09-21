@@ -36,7 +36,17 @@ def log(msg):
     print(f"[{ts()}] {msg}", flush=True)
 
 
-async def _page_eval(page, js: str, timeout: float = 8.0):
+# Fail-fast constants — never burn 30+ min on a wedged Chromium/SPA
+WAKE_ROUNDS = 3
+WAKE_GOTO_MS = 25000
+WAKE_SEL_MS = 4000
+REVIVE_WALL_S = 180          # was 600 — 3×600 = 30 min downtime
+REVIVE_LOVABLE_S = 120       # preview wait inside revive
+FAIL_STREAK_RESTART = 2      # was 3
+BODY_DEAD_ABORT = 2          # consecutive unreadable bodies → abort wake
+
+
+async def _page_eval(page, js: str, timeout: float = 6.0):
     """page.evaluate with hard timeout — hung Chromium must not block revive forever."""
     return await asyncio.wait_for(page.evaluate(js), timeout=timeout)
 
@@ -50,6 +60,8 @@ async def send_wake_prompt(
 
     Always hard-navs to chat_url each round, re-logins on /login wall,
     logs URL/body when composer missing, fill with keyboard fallback.
+    Fail-fast: no cache-bust query params, no reload+goto pileup, abort on
+    consecutive dead evaluates so outer loop can restart the browser.
     """
     import random as _rand
 
@@ -59,8 +71,6 @@ async def send_wake_prompt(
         '[data-testid="chat-composer-editor"]',
         'div.ProseMirror[contenteditable="true"]',
         '[role="textbox"][contenteditable="true"]',
-        '[contenteditable="true"]',
-        "textarea",
     ]
 
     try:
@@ -69,20 +79,23 @@ async def send_wake_prompt(
         pass
 
     chat_input = None
-    for round_n in range(1, 5):
-        # Always hard-nav — stuck SPA pages don't fix themselves with reload alone
+    body_dead = 0
+    goto_fail = 0
+    for round_n in range(1, WAKE_ROUNDS + 1):
+        # Clean project URL only — ?_wake= cache-bust broke SPA / interrupted navs
         if chat_url:
-            nav = chat_url
-            # cache-bust after round 1 — SPA can stick on Dashboard/Loading shell
-            if round_n > 1:
-                sep = "&" if "?" in chat_url else "?"
-                nav = f"{chat_url}{sep}_wake={round_n}_{int(time.time())}"
             log(f"  Wake: goto chat (round {round_n})")
             try:
-                await chat_page.goto(nav, timeout=45000, wait_until="commit")
+                await chat_page.goto(
+                    chat_url, timeout=WAKE_GOTO_MS, wait_until="commit")
+                goto_fail = 0
             except Exception as e:
-                log(f"  Wake: chat goto error: {e}")
-            await asyncio.sleep(4)
+                goto_fail += 1
+                log(f"  Wake: chat goto error: {type(e).__name__}: {e}")
+                if goto_fail >= 2:
+                    log("  Wake: goto dead 2x — abort (need browser restart)")
+                    return False
+            await asyncio.sleep(3)
 
         cur = ""
         try:
@@ -99,11 +112,11 @@ async def send_wake_prompt(
                     chat_page,
                     "() => (document.body && document.body.innerText || '').slice(0, 300)",
                 )
-                bl0 = body0.lower()
+                bl0 = (body0 or "").lower()
                 if ("log in" in bl0 or "sign in" in bl0) and "password" in bl0:
                     on_login = True
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"  Wake: login-check eval {type(e).__name__}")
         if on_login and session_config:
             log("  Wake: login wall — re-login")
             ok = await do_login(
@@ -117,10 +130,11 @@ async def send_wake_prompt(
                 continue
             if chat_url:
                 try:
-                    await chat_page.goto(chat_url, timeout=45000, wait_until="commit")
+                    await chat_page.goto(
+                        chat_url, timeout=WAKE_GOTO_MS, wait_until="commit")
                 except Exception:
                     pass
-                await asyncio.sleep(4)
+                await asyncio.sleep(3)
 
         # Accessibility skip link often present while composer still mounting
         try:
@@ -135,7 +149,7 @@ async def send_wake_prompt(
         for sel in chat_selectors:
             try:
                 loc = chat_page.locator(sel).first
-                await loc.wait_for(state="visible", timeout=5000)
+                await loc.wait_for(state="visible", timeout=WAKE_SEL_MS)
                 chat_input = loc
                 break
             except Exception:
@@ -146,32 +160,37 @@ async def send_wake_prompt(
 
         # Diagnose why composer missing
         body = ""
+        body_ok = False
         try:
             body = await _page_eval(
                 chat_page,
                 "() => (document.body && document.body.innerText || '').slice(0, 200)",
             )
+            body_ok = True
             log(f"  Wake: no composer — body={body!r}")
+            body_dead = 0
         except Exception as e:
-            log(f"  Wake: no composer — body unreadable ({e})")
-        log(f"  Wake: chat input missing (round {round_n}/4)")
+            body_dead += 1
+            log(f"  Wake: no composer — body unreadable ({type(e).__name__})")
+            if body_dead >= BODY_DEAD_ABORT:
+                log("  Wake: page evaluate dead — abort (need browser restart)")
+                return False
+        log(f"  Wake: chat input missing (round {round_n}/{WAKE_ROUNDS})")
 
-        bl = (body or "").lower()
-        # Dashboard shell or endless Loading → hard reload before next round
-        if "loading..." in bl or (
-            "dashboard" in bl and "recents" in bl
-        ) or bl.strip() in ("", "loading..."):
-            log("  Wake: stuck shell (Loading/Dashboard) — hard reload")
-            try:
-                await chat_page.reload(timeout=30000, wait_until="commit")
-            except Exception as e:
-                log(f"  Wake: reload error: {e}")
-            await asyncio.sleep(3)
+        bl = (body or "").lower() if body_ok else ""
+        # Only reload on EXPLICIT Loading/Dashboard shell — empty/unreadable
+        # must NOT reload (that stacked with goto and burned minutes).
+        if body_ok and (
+            "loading..." in bl or ("dashboard" in bl and "recents" in bl)
+        ):
+            log("  Wake: stuck shell (Loading/Dashboard) — next round goto")
+            # No reload here: next loop iteration does clean goto(chat_url)
+            await asyncio.sleep(1)
         else:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
     if not chat_input:
-        log("  Wake prompt: chat input not found after 4 rounds")
+        log(f"  Wake prompt: chat input not found after {WAKE_ROUNDS} rounds")
         return False
 
     prompt = _rand.choice(WAKE_PROMPTS)
@@ -346,7 +365,8 @@ async def revive_sandbox(
     except Exception:
         pass
 
-    ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
+    ready = await wait_for_lovable_console(
+        preview_page, timeout_seconds=REVIVE_LOVABLE_S)
     if not ready:
         log("  First wait failed — second wake + wait")
         await send_wake_prompt(
@@ -360,7 +380,8 @@ async def revive_sandbox(
             await preview_page.bring_to_front()
         except Exception:
             pass
-        ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
+        ready = await wait_for_lovable_console(
+            preview_page, timeout_seconds=REVIVE_LOVABLE_S)
     if not ready:
         log("  Revive: lovable console never appeared")
         return False
@@ -385,40 +406,53 @@ async def shell_worker_status(preview_page) -> tuple[bool, str]:
         return False, "login"
 
     try:
-        body = await preview_page.evaluate(
-            "() => (document.body && document.body.innerText) || ''")
+        body = await _page_eval(
+            preview_page,
+            "() => (document.body && document.body.innerText) || ''",
+            timeout=8,
+        )
         bl = body.lower()
         if ("proxy error" in bl or "lovable proxy error" in bl) and "404" in bl:
             return False, "proxy-404"
     except Exception as e:
-        return False, f"body-error:{e}"
+        return False, f"body-error:{type(e).__name__}"
 
     try:
-        has_doc = await preview_page.evaluate(
-            "() => !!(window.doc && typeof window.doc === 'function')")
+        has_doc = await _page_eval(
+            preview_page,
+            "() => !!(window.doc && typeof window.doc === 'function')",
+            timeout=8,
+        )
     except Exception as e:
-        return False, f"doc-eval-error:{e}"
+        return False, f"doc-eval-error:{type(e).__name__}"
     if not has_doc:
         return False, "nodoc"
 
     # Zombie: doc still present but proxy message also in body (race)
     try:
-        body2 = await preview_page.evaluate(
-            "() => (document.body && document.body.innerText) || ''")
+        body2 = await _page_eval(
+            preview_page,
+            "() => (document.body && document.body.innerText) || ''",
+            timeout=8,
+        )
         if "404" in body2 and "proxy" in body2.lower():
             return False, "proxy-404-zombie"
     except Exception:
         pass
 
     try:
-        probe = await preview_page.evaluate("""async () => {
+        probe = await _page_eval(
+            preview_page,
+            """async () => {
             try {
                 const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
                 return r && r.stdout !== undefined ? r.stdout.trim() : 'no-probe';
             } catch(e) { return 'probe-error'; }
-        }""")
+        }""",
+            timeout=15,
+        )
     except Exception as e:
-        return False, f"probe-eval-error:{e}"
+        return False, f"probe-eval-error:{type(e).__name__}"
 
     if str(probe).isdigit() and int(probe) > 0:
         return True, str(probe)
@@ -874,7 +908,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     log(f"Health check #{iteration}...")
                     next_wait = 180
                     try:
-                        alive, detail = await shell_worker_status(preview_page)
+                        alive, detail = await asyncio.wait_for(
+                            shell_worker_status(preview_page), timeout=30)
                         if alive:
                             fail_streak = 0
                             log(f"  Worker alive (probe: {detail})")
@@ -896,7 +931,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                             preview_url=preview_url,
                                             session_config=config,
                                         ),
-                                        timeout=600,
+                                        timeout=REVIVE_WALL_S,
                                     )
                                 if ok:
                                     fail_streak = 0
@@ -905,23 +940,23 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 else:
                                     fail_streak += 1
                                     log(f"  Revive failed (streak={fail_streak}) — retry sooner")
-                                    next_wait = 45
-                                    if fail_streak >= 3:
-                                        log("  Revive failed 3x — restarting browser")
+                                    next_wait = 30
+                                    if fail_streak >= FAIL_STREAK_RESTART:
+                                        log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
                                         return
                             except asyncio.TimeoutError:
                                 fail_streak += 1
-                                log(f"  Revive timed out 600s (streak={fail_streak}) — retry sooner")
-                                next_wait = 45
-                                if fail_streak >= 3:
-                                    log("  Revive failed 3x — restarting browser")
+                                log(f"  Revive timed out {REVIVE_WALL_S}s (streak={fail_streak}) — retry sooner")
+                                next_wait = 30
+                                if fail_streak >= FAIL_STREAK_RESTART:
+                                    log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
                                     return
                             except Exception as e2:
                                 fail_streak += 1
                                 log(f"  Revive error: {e2} (streak={fail_streak})")
-                                next_wait = 45
-                                if fail_streak >= 3:
-                                    log("  Revive failed 3x — restarting browser")
+                                next_wait = 30
+                                if fail_streak >= FAIL_STREAK_RESTART:
+                                    log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
                                     return
 
                         try:
@@ -932,9 +967,20 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         except Exception:
                             pass
 
+                    except asyncio.TimeoutError:
+                        fail_streak += 1
+                        log(f"  Health probe timed out 30s (streak={fail_streak})")
+                        next_wait = 30
+                        if fail_streak >= FAIL_STREAK_RESTART:
+                            log(f"  Probe dead {FAIL_STREAK_RESTART}x — restarting browser")
+                            return
                     except Exception as e:
                         log(f"  Health check error: {e}")
-                        next_wait = 45
+                        next_wait = 30
+                        fail_streak += 1
+                        if fail_streak >= FAIL_STREAK_RESTART:
+                            log(f"  Health errors {FAIL_STREAK_RESTART}x — restarting browser")
+                            return
 
                     log(f"  Next check in {next_wait}s...")
                     await asyncio.sleep(next_wait)
@@ -956,14 +1002,13 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             await save_trio(context, chat_page, session_id)
                     last_refresh = now
 
-            # health_check_loop returned — this shouldn't happen in full mode
-            # but if it does, restart everything
-            log("Health loop exited — restarting in 30s...")
+            # health_check_loop returned — restart browser ASAP (wedged page)
+            log("Health loop exited — restarting in 5s...")
             try:
                 await browser.close()
             except Exception:
                 pass
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
 
         except Exception as e:
             log(f"Daemon error: {e}")

@@ -85,7 +85,12 @@ Railway details: `docs/DAEMON-RAILWAY.md`.
 ## Problem 16: Revive hung — chat Loading/Dashboard + token refresh holds lock
 - **Symptom:** After proxy-404, wake rounds show `Dashboard`/`Recents` or `Loading...`; no composer; Chromium in `D` state; token refresh logs span ~17 min; revive never reaches fail-streak restart.
 - **Cause:** `page.evaluate` / IndexedDB refresh had no hard timeout → held `page_lock`; SPA stuck on shell; skip-link present but unused.
-- **Fix:** `_page_eval` + 20s token refresh timeout; click "Skip to chat input"; cache-bust goto + hard reload on Loading/Dashboard; revive wall-clock 600s; log when waiting for `page_lock`.
+- **Fix:** `_page_eval` + 20s token refresh timeout; click "Skip to chat input"; revive wall-clock; log when waiting for `page_lock`.
+
+## Problem 17: Fail-slow revive keeps fleet at 0 workers for ~30 min
+- **Symptom:** proxy-404 → wake with `body unreadable` / goto timeouts → 3×600s revive = ~30 min downtime; empty body falsely treated as Loading → reload+goto pileup; `?_wake=` cache-bust interrupted navigations.
+- **Cause:** Too-tolerant wake/revive; false Loading detection on empty eval; overlapping reload/goto.
+- **Fix:** `REVIVE_WALL_S=180`, `FAIL_STREAK_RESTART=2`, abort wake after 2 dead evals/gotos, no cache-bust query, no reload-on-empty, health probe 30s timeout, browser restart in 5s.
 
 ---
 

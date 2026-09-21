@@ -3,7 +3,7 @@
 **Updated:** 2026-09-21 ~21:00 UTC  
 **Source of truth in repo:** `daemon.py` + `miner_injector.py` on branch `master`  
 **Live cell:** hashes of those two files on the box MUST match `master` after each deploy.  
-**Live md5 (518c887):** `daemon.py` = `3b9521f3c7c6fe0b8148f9eb4e0bbfb0`
+**Live md5 (pending):** `daemon.py` = `e755584e3361dc2498af3650624ee3ed`n.py` = `3b9521f3c7c6fe0b8148f9eb4e0bbfb0`
 
 ---
 
@@ -70,13 +70,13 @@ Cold start
 │     until console 'lovable' OR window.doc / window.lovable
 └── inject_miner() → save_trio from chat page → health loop
 
-Health loop (~180s when healthy; ~45s after failed revive)
-├── shell_worker_status: proxy-404 / auth-bridge / login / nodoc / probe=0 → DEAD
-├── If DEAD → revive_sandbox (serialized vs token refresh, 600s wall-clock):
-│     wake chat (always goto chat_url, cache-bust after round 1, Skip-to-chat click,
-│                re-login on wall, Loading/Dashboard → hard reload, eval timeouts)
-│     → goto preview → wait until 'lovable' → inject same worker cmd
-├── Revive fail streak ≥ 3 → exit health loop → outer browser restart
+Health loop (~180s when healthy; ~30s after failed revive)
+├── shell_worker_status (30s hard timeout): proxy-404 / auth-bridge / login / nodoc / probe=0 → DEAD
+├── If DEAD → revive_sandbox (serialized vs token refresh, **180s** wall-clock):
+│     wake chat (clean goto only, 3 rounds, abort on 2× dead eval/goto,
+│                Skip-to-chat click, re-login on wall — NO ?_wake= / NO reload-on-empty)
+│     → goto preview → wait until 'lovable' (120s) → inject
+├── Revive fail streak ≥ **2** → exit health loop → browser restart in **5s**
 └── Token refresh every 40m (skipped while revive lock held; 20s hard timeout)
     save_trio always from chat origin (never preview — preview wipe bug)
 ```
