@@ -3,7 +3,7 @@
 **Updated:** 2026-09-21 ~22:15 UTC  
 **Source of truth in repo:** `daemon.py` + `miner_injector.py` on branch `master`  
 **Live cell:** hashes of those two files on the box MUST match `master` after each deploy.  
-**Live md5:** `daemon.py` = `7965187c4dc51c1de35af67c586a9d9f` · `miner_injector.py` = `c69482d1db5be44b36554bb37f07fa7a`
+**Live md5:** `daemon.py` = `8265436035330c2455bbea508ea2f998` · `miner_injector.py` = `c69482d1db5be44b36554bb37f07fa7a`
 
 ---
 

@@ -40,8 +40,8 @@ def log(msg):
 WAKE_ROUNDS = 3
 WAKE_GOTO_MS = 25000
 WAKE_SEL_MS = 4000
-REVIVE_WALL_S = 120          # hard wall — wedged pages must yield to browser restart
-REVIVE_LOVABLE_S = 90
+REVIVE_WALL_S = 280          # wake (~60s) + lovable wait (≤120s×2) + inject
+REVIVE_LOVABLE_S = 120
 FAIL_STREAK_RESTART = 2
 BODY_DEAD_ABORT = 2
 # Probe TimeoutError / body-error → page is wedged; skip long revive
