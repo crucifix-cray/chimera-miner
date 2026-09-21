@@ -52,9 +52,9 @@ Proven working setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py`
 - **Fix:** Replaced with custom `daemon_health_loop` — lightweight 3-step check (doc bridge probe, preview URL check, mouse wiggle). No navigation calls. Runs clean every 3 min. Commit `477c46c`.
 
 ## Problem 10: Sandbox crashes periodically — re-inject fails
-- **Symptom:** Worker alive for hours, then dies. Re-injection fails with "Sandbox not ready" forever.
-- **Cause:** Lovable WebContainer crashes. `inject_miner` tries to find doc bridge but sandbox is dead. Needs page reload to restart sandbox.
-- **Fix:** On worker death: `preview_page.reload()` → wait for doc bridge (up to 60s, reload every 5s) → re-inject. Commit `70d8efd`.
+- **Symptom:** Worker alive for hours, then dies. Re-injection fails with "Sandbox not ready" / proxy 404 forever.
+- **Cause:** Lovable WebContainer crashes. Reload-only revive never wakes the sandbox; trivial wake prompt is required (NOT Build a debug terminal — that is script2 only).
+- **Fix:** On worker death: send script3 wake prompt (`say 'a'` / `1+1?`) on chat tab → keep refreshing preview until console shows `lovable` (40s interval) → re-inject. Same gate on cold start.
 
 ---
 

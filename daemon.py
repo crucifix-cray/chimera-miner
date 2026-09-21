@@ -24,6 +24,9 @@ BRIDGE_URL = "wss://chimera-bridge-production-0703.up.railway.app"
 
 TOKEN_REFRESH_INTERVAL = 2400  # 40 min
 
+# Script3 wake prompts only — NOT Build a debug terminal (that's script2).
+WAKE_PROMPTS = ["say 'a'", "1+1?", "say 'x'", "2+2?", "echo ok"]
+
 
 def ts():
     return time.strftime("%H:%M:%S", time.localtime())
@@ -31,6 +34,149 @@ def ts():
 
 def log(msg):
     print(f"[{ts()}] {msg}", flush=True)
+
+
+async def send_wake_prompt(chat_page) -> bool:
+    """Send a trivial script3 wake prompt on the chat tab (wakes sandbox)."""
+    import random as _rand
+    chat_input = None
+    for sel in [
+        'div[contenteditable="true"][role="textbox"]',
+        '[contenteditable="true"]',
+        "textarea",
+    ]:
+        try:
+            if await chat_page.locator(sel).count() > 0:
+                chat_input = chat_page.locator(sel).first
+                break
+        except Exception:
+            continue
+    if not chat_input:
+        log("  Wake prompt: chat input not found")
+        return False
+    prompt = _rand.choice(WAKE_PROMPTS)
+    log(f"  Sending wake prompt: '{prompt}'")
+    try:
+        await chat_page.bring_to_front()
+    except Exception:
+        pass
+    try:
+        await chat_input.click(timeout=5000)
+    except Exception:
+        pass
+    await chat_input.fill(prompt)
+    await asyncio.sleep(0.3)
+    try:
+        send_btn = chat_page.locator(
+            'button[data-testid="chat-input-send"], button[aria-label*="Send" i]'
+        ).first
+        if await send_btn.count() and await send_btn.is_visible(timeout=2000):
+            await send_btn.click()
+        else:
+            await chat_page.keyboard.press("Enter")
+    except Exception:
+        await chat_page.keyboard.press("Enter")
+    log("  Wake prompt sent")
+    return True
+
+
+async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> bool:
+    """
+    Keep refreshing preview until console shows 'lovable' (sandbox up).
+    Also accepts window.lovable / callable window.doc. Matches script3 gate.
+    """
+    log(f"Waiting for console 'lovable' (refresh every 40s, max {timeout_seconds}s)...")
+    seen = {"hit": False}
+
+    def _on_console(msg):
+        try:
+            if "lovable" in (msg.text or "").lower():
+                seen["hit"] = True
+        except Exception:
+            pass
+
+    try:
+        preview_page.on("console", _on_console)
+    except Exception:
+        pass
+
+    start = asyncio.get_running_loop().time()
+    refresh_interval = 40
+    while True:
+        elapsed = asyncio.get_running_loop().time() - start
+        if elapsed > timeout_seconds:
+            log(f"  Timeout waiting for lovable console after {timeout_seconds}s")
+            return False
+
+        try:
+            body = await preview_page.evaluate(
+                "() => (document.body && document.body.innerText) || ''"
+            )
+        except Exception:
+            body = ""
+        proxy_dead = "proxy error" in body.lower() and "404" in body
+
+        js_ready = ""
+        if not proxy_dead:
+            try:
+                js_ready = await preview_page.evaluate(
+                    """() => {
+                        if (window.lovable) return 'lovable-obj';
+                        if (window.doc && typeof window.doc === 'function') return 'doc';
+                        return '';
+                    }"""
+                )
+            except Exception as e:
+                log(f"  ready-check error: {e}")
+
+        if seen["hit"] or js_ready:
+            log(
+                f"  Lovable ready (console={seen['hit']} js={js_ready or '-'}) "
+                f"after {int(elapsed)}s"
+            )
+            return True
+
+        if proxy_dead:
+            log(f"  Preview proxy 404 — refreshing ({int(elapsed)}s)")
+        else:
+            log(f"  Refreshing preview... ({int(elapsed)}s)")
+
+        try:
+            await preview_page.reload(timeout=30000)
+        except Exception as e:
+            log(f"  Refresh error: {e}")
+        await asyncio.sleep(5)
+        await asyncio.sleep(refresh_interval)
+
+
+async def revive_sandbox(chat_page, preview_page, bridge_url: str, threads: int) -> bool:
+    """
+    Worker/shell dead recovery (script3 style):
+    resend wake prompt → refresh preview until lovable console → inject.
+    """
+    from miner_injector import inject_miner
+
+    log("  Revive: wake prompt + wait lovable console + re-inject")
+    await send_wake_prompt(chat_page)
+    try:
+        await preview_page.bring_to_front()
+    except Exception:
+        pass
+    ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
+    if not ready:
+        log("  First wait failed — second wake + wait")
+        await send_wake_prompt(chat_page)
+        try:
+            await preview_page.bring_to_front()
+        except Exception:
+            pass
+        ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
+    if not ready:
+        log("  Revive: lovable console never appeared")
+        return False
+    ok = await inject_miner(preview_page, bridge_url, threads)
+    log(f"  Revive inject: {'OK' if ok else 'FAILED'}")
+    return bool(ok)
 
 
 def _sess_dir(session_id):
@@ -344,7 +490,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                 except Exception as e:
                     log(f"IndexedDB restore failed: {e}")
 
-            # --- Step 3: Find chat input and send build prompt ---
+            # --- Step 3: Find chat input and send wake prompt (script3 trivial, not debug-terminal) ---
             import random as _rand
             chat_input = None
             for sel in ['div[contenteditable="true"][role="textbox"]',
@@ -364,12 +510,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                 await asyncio.sleep(300)
                 continue
 
-            prompt = _rand.choice(["say 'a'", "1+1?", "say 'x'", "echo ok"])
-            log(f"Sending prompt: '{prompt}'")
+            prompt = _rand.choice(WAKE_PROMPTS)
+            log(f"Sending wake prompt: '{prompt}'")
             await chat_input.fill(prompt)
             await asyncio.sleep(0.3)
             await chat_page.keyboard.press("Enter")
-            log("Prompt sent!")
+            log("Wake prompt sent!")
 
             # --- Step 4: Open preview in new tab ---
             preview_page = await context.new_page()
@@ -378,28 +524,19 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                 await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
             except Exception:
                 pass
-            await preview_page.wait_for_timeout(3)
+            await preview_page.wait_for_timeout(3000)
 
-            # --- Step 5: Wait for console 'lovable' message (sandbox ready) ---
-            log("Waiting for sandbox to be ready (doc bridge)...")
-            sandbox_ready = False
-            for attempt in range(30):  # max 5 min
+            # --- Step 5: Refresh until console 'lovable' (sandbox ready) ---
+            sandbox_ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
+
+            if not sandbox_ready:
+                log("Lovable console never ready — second wake + wait...")
+                await send_wake_prompt(chat_page)
                 try:
-                    ready = await preview_page.evaluate(
-                        "() => !!(window.doc && typeof window.doc === 'function')")
-                    if ready:
-                        log(f"Sandbox ready after {attempt*10}s!")
-                        sandbox_ready = True
-                        break
+                    await preview_page.bring_to_front()
                 except Exception:
                     pass
-                # Refresh every 10s
-                log(f"  Waiting... ({attempt*10}s)")
-                try:
-                    await preview_page.reload(timeout=15000)
-                except Exception:
-                    pass
-                await preview_page.wait_for_timeout(10)
+                sandbox_ready = await wait_for_lovable_console(preview_page, timeout_seconds=300)
 
             if not sandbox_ready:
                 log("Sandbox never ready — retrying in 2 min...")
@@ -424,7 +561,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
             last_refresh = time.time()
 
             async def daemon_health_loop():
-                """Simplified health check — no hanging navigation calls."""
+                """Health: probe worker; on death → wake prompt + lovable wait + inject."""
                 iteration = 0
                 while True:
                     iteration += 1
@@ -441,35 +578,29 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                                         return r && r.stdout !== undefined ? r.stdout.trim() : 'no-probe';
                                     } catch(e) { return 'probe-error'; }
                                 }""")
-                                log(f"  Worker alive (probe: {probe})")
-                            else:
-                                log("  Worker dead — refreshing sandbox + re-injecting...")
-                                # Refresh preview to restart sandbox
+                                # Also treat proxy 404 as dead even if evaluate somehow works
                                 try:
-                                    await preview_page.reload(timeout=30000)
+                                    body = await preview_page.evaluate(
+                                        "() => (document.body && document.body.innerText) || ''")
+                                    if "proxy error" in body.lower() and "404" in body:
+                                        ready = False
+                                        log("  Preview proxy 404 — treating as dead")
                                 except Exception:
                                     pass
-                                await preview_page.wait_for_timeout(5000)
-                                # Wait for sandbox ready
-                                for wa in range(12):
-                                    try:
-                                        chk = await preview_page.evaluate(
-                                            "() => !!(window.doc && typeof window.doc === 'function')")
-                                        if chk:
-                                            log(f"  Sandbox ready after {wa*5}s")
-                                            break
-                                    except Exception:
-                                        pass
-                                    log(f"  Waiting for sandbox... ({wa*5}s)")
-                                    try:
-                                        await preview_page.reload(timeout=15000)
-                                    except Exception:
-                                        pass
-                                    await preview_page.wait_for_timeout(5)
-                                # Re-inject
-                                await inject_miner(preview_page, BRIDGE_URL, threads)
+                            if ready:
+                                log(f"  Worker alive (probe: {probe})")
+                            else:
+                                log("  Worker dead — revive (wake + lovable console + inject)")
+                                await revive_sandbox(
+                                    chat_page, preview_page, BRIDGE_URL, threads)
                         except Exception as e:
                             log(f"  Probe error: {e}")
+                            log("  Probe failed — attempting revive...")
+                            try:
+                                await revive_sandbox(
+                                    chat_page, preview_page, BRIDGE_URL, threads)
+                            except Exception as e2:
+                                log(f"  Revive error: {e2}")
 
                         # Check preview health
                         try:
@@ -477,7 +608,15 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode):
                             if "/login" in url:
                                 log("  Preview redirected to login!")
                             else:
-                                log("  Preview healthy")
+                                try:
+                                    body = await preview_page.evaluate(
+                                        "() => (document.body && document.body.innerText) || ''")
+                                    if "proxy error" in body.lower() and "404" in body:
+                                        log("  Preview unhealthy (proxy 404)")
+                                    else:
+                                        log("  Preview healthy")
+                                except Exception:
+                                    log("  Preview healthy")
                         except Exception:
                             log("  Preview unreachable")
 
