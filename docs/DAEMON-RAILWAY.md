@@ -2,9 +2,9 @@
 
 **Updated:** 2026-09-22  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `b53d9f696a9c14cfca45cf1b2bd7912a` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
+**Canonical md5:** `daemon.py` = `88b072001e15aa6df480cf1eaee225af` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
 
-**Status:** cell-16 forever duty-cycle — human mouse/type, popup close+refresh, shell check skip-if-running (`b53d9f69`).
+**Status:** cell-16 forever duty-cycle — human mouse/type, popup close+refresh, shell check skip-if-running (`88b07200`).
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 
