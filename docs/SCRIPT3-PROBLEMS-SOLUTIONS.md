@@ -173,6 +173,11 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 
 ---
 
+## Problem 34: Robotic mouse/typing looks non-human
+- **Symptom:** Straight `mouse.move(steps=N)`, instant `fill()`, always-click preview.
+- **Cause:** Real humans use curved paths, Fitts timing, overshoot, IKI ~180ms, reading pauses; hover more than click.
+- **Fix:** Bezier+jitter+overshoot `human_mouse_to`, chunked scroll, `human_type_text` (IKI/typo), presence prompt uses them; click ~30%.
+
 ## Working launch commands
 
 ### Daemon on Railway (production — recommended)

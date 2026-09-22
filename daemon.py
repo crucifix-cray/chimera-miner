@@ -51,12 +51,14 @@ RECONNECT_STREAK_HARD = 3    # N failed reconnects → kill Chrome entirely
 HEALTH_INTERVAL_S = 40
 HEALTH_INTERVAL_MAX_S = 60  # randomize next tick in [40, 60]
 PRESENCE_KEYS = ("ArrowDown", "ArrowUp")  # Home/PageDown disrupt Lovable chat UI
-PRESENCE_POKE_TIMEOUT_S = 12
+PRESENCE_POKE_TIMEOUT_S = 16
 # Every health tick also send a trivial chat prompt — keeps sandbox warm.
 PRESENCE_PROMPT_AFTER_S = 3
-PRESENCE_PROMPT_TIMEOUT_S = 20
+PRESENCE_PROMPT_TIMEOUT_S = 28
 # Periodic chat reload even without a popup (CDP sludge / stuck UI).
 PRESENCE_REFRESH_EVERY_S = 120
+# Track last cursor so moves are continuous (humans don't teleport).
+_HUMAN_MOUSE = {"x": 640.0, "y": 400.0}
 # Don't full-revive on a single flaky nodoc — confirm dead first.
 HEALTH_DEAD_CONFIRM = 2
 HEALTH_DEAD_GAP_S = 12
@@ -578,6 +580,254 @@ async def send_wake_prompt(
     return await _type_and_send(chat_input, _rand.choice(WAKE_PROMPTS))
 
 
+async def human_mouse_to(page, x: float, y: float) -> None:
+    """Bezier path + Fitts-ish timing + optional overshoot (ghost-cursor style).
+
+    Humans: curved paths, slow-fast-slow velocity, micro-jitter, ~55% overshoot
+    on longer moves, then a short correction. Uses Playwright mouse (trusted).
+    """
+    import math
+    import random as _r
+
+    global _HUMAN_MOUSE
+    x0 = float(_HUMAN_MOUSE.get("x", 640))
+    y0 = float(_HUMAN_MOUSE.get("y", 400))
+    x1, y1 = float(x), float(y)
+    dist = math.hypot(x1 - x0, y1 - y0)
+    if dist < 3:
+        _HUMAN_MOUSE["x"], _HUMAN_MOUSE["y"] = x1, y1
+        return
+
+    # Perpendicular offset for cubic control points (asymmetric curve)
+    dx, dy = x1 - x0, y1 - y0
+    px, py = -dy / dist, dx / dist
+    spread = min(120.0, dist * _r.uniform(0.15, 0.45))
+    c1x = x0 + dx * _r.uniform(0.2, 0.4) + px * _r.uniform(-spread, spread)
+    c1y = y0 + dy * _r.uniform(0.2, 0.4) + py * _r.uniform(-spread, spread)
+    c2x = x0 + dx * _r.uniform(0.55, 0.8) + px * _r.uniform(-spread, spread)
+    c2y = y0 + dy * _r.uniform(0.55, 0.8) + py * _r.uniform(-spread, spread)
+
+    overshoot = dist > 100 and _r.random() < 0.55
+    tx, ty = x1, y1
+    if overshoot:
+        ox = (dx / dist) * _r.uniform(8, 24)
+        oy = (dy / dist) * _r.uniform(8, 24)
+        tx, ty = x1 + ox, y1 + oy
+        # retarget bezier end at overshoot, then correct
+        x1, y1 = tx, ty
+
+    steps = max(10, min(42, int(dist / 10) + _r.randint(0, 6)))
+    # Fitts-ish: MT ≈ a + b·log2(D/W + 1); W~40px target
+    duration = 0.10 + 0.16 * math.log2(dist / 40.0 + 1.0)
+    duration *= _r.uniform(0.85, 1.25)
+
+    def _bez(t: float):
+        u = 1.0 - t
+        bx = (u ** 3) * x0 + 3 * (u ** 2) * t * c1x + 3 * u * (t ** 2) * c2x + (t ** 3) * x1
+        by = (u ** 3) * y0 + 3 * (u ** 2) * t * c1y + 3 * u * (t ** 2) * c2y + (t ** 3) * y1
+        # micro tremor
+        bx += _r.gauss(0, 0.6)
+        by += _r.gauss(0, 0.6)
+        return bx, by
+
+    # Ease-in-out sample density (more points near ends = slower ends)
+    for i in range(1, steps + 1):
+        t_lin = i / steps
+        # smoothstep for velocity bell (spend more time at ends)
+        t = t_lin * t_lin * (3 - 2 * t_lin)
+        bx, by = _bez(t)
+        await page.mouse.move(bx, by)
+        # variable poll ~60–120Hz
+        await asyncio.sleep(duration / steps * _r.uniform(0.7, 1.4))
+        # rare mid-path hesitation
+        if _r.random() < 0.04:
+            await asyncio.sleep(_r.uniform(0.04, 0.12))
+
+    if overshoot:
+        # correction back to true target
+        for i in range(1, 6):
+            t = i / 5
+            cx = tx + (float(x) - tx) * t + _r.gauss(0, 0.3)
+            cy = ty + (float(y) - ty) * t + _r.gauss(0, 0.3)
+            await page.mouse.move(cx, cy)
+            await asyncio.sleep(_r.uniform(0.012, 0.028))
+        x1, y1 = float(x), float(y)
+
+    _HUMAN_MOUSE["x"], _HUMAN_MOUSE["y"] = x1, y1
+
+
+async def human_type_text(page, text: str) -> None:
+    """Per-char typing with human IKI (~60–450ms; mean ~180ms from keystroke studies)."""
+    import random as _r
+
+    for i, ch in enumerate(text):
+        await page.keyboard.type(ch, delay=0)
+        # Inter-key interval: roughly lognormal around 180ms
+        iki = _r.gauss(180, 70)
+        iki = max(55, min(480, iki))
+        # word / planning pauses (longer at spaces and every few chars)
+        if ch == " " or (i > 0 and i % 4 == 0 and _r.random() < 0.2):
+            iki += _r.uniform(90, 280)
+        # rare typo + backspace
+        if _r.random() < 0.06 and ch.isalnum():
+            wrong = _r.choice("abcdefghijklmnopqrstuvwxyz")
+            await page.keyboard.type(wrong, delay=0)
+            await asyncio.sleep(_r.uniform(0.08, 0.22))
+            await page.keyboard.press("Backspace")
+            await asyncio.sleep(_r.uniform(0.05, 0.12))
+        await asyncio.sleep(iki / 1000.0)
+
+
+async def human_scroll(page, amount: int | None = None) -> None:
+    """Chunked wheel with logarithmic feel — not one huge jump."""
+    import random as _r
+
+    total = amount if amount is not None else _r.choice([-180, -120, -80, 80, 120, 180])
+    sign = 1 if total > 0 else -1
+    left = abs(total)
+    while left > 0:
+        step = min(left, _r.randint(40, 90))
+        await page.mouse.wheel(0, sign * step)
+        left -= step
+        await asyncio.sleep(_r.uniform(0.04, 0.14))
+    # tiny settle
+    if _r.random() < 0.35:
+        await page.mouse.wheel(0, -sign * _r.randint(10, 30))
+        await asyncio.sleep(_r.uniform(0.05, 0.12))
+
+
+async def keep_pages_warm(chat_page, preview_page) -> None:
+    """Human-like presence: Bezier mouse, scroll chunks, light type, reading pauses.
+
+    Based on ghost-cursor / Fitts / keystroke IKI research. Avoids top-chrome
+    clicks and Home/PageDown (those remount Preview → nodoc).
+    """
+    import random as _r
+
+    async def _human_chat(page, label: str) -> None:
+        if page is None:
+            return
+        try:
+            if page.is_closed():
+                return
+        except Exception:
+            return
+
+        async def _do():
+            try:
+                await page.bring_to_front()
+            except Exception:
+                pass
+            # JS: soft-scroll chat column + focus/visibility (reading activity)
+            try:
+                await asyncio.wait_for(page.evaluate("""() => {
+                    const scrolls = [
+                        ...document.querySelectorAll(
+                          '[data-radix-scroll-area-viewport], .overflow-y-auto, [class*="overflow-y"]')
+                    ].filter(el => el.scrollHeight > el.clientHeight + 40);
+                    if (scrolls.length) {
+                        const el = scrolls[0];
+                        const delta = (Math.random() > 0.5 ? 1 : -1) * (40 + Math.random() * 120);
+                        el.scrollTop = Math.max(0, Math.min(el.scrollHeight, el.scrollTop + delta));
+                    }
+                    window.dispatchEvent(new Event('focus'));
+                    document.dispatchEvent(new Event('visibilitychange'));
+                    return true;
+                }"""), timeout=5)
+            except Exception:
+                pass
+
+            # brief "reading" pause before moving
+            await asyncio.sleep(_r.uniform(0.25, 0.9))
+
+            vp = page.viewport_size or {"width": 1280, "height": 720}
+            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
+            # chat column (left) then preview (right) — stay off top chrome
+            cx = _r.uniform(w * 0.12, w * 0.38)
+            cy = _r.uniform(h * 0.32, h * 0.78)
+            px = _r.uniform(w * 0.52, w * 0.90)
+            py = _r.uniform(h * 0.32, h * 0.78)
+
+            await human_mouse_to(page, cx, cy)
+            await asyncio.sleep(_r.uniform(0.15, 0.45))  # glance pause
+            await human_scroll(page)
+            await asyncio.sleep(_r.uniform(0.12, 0.35))
+            await human_mouse_to(page, px, py)
+            await asyncio.sleep(_r.uniform(0.1, 0.3))
+            await human_scroll(page)
+            # humans hover more than click; click ~30%
+            if _r.random() < 0.30:
+                await asyncio.sleep(_r.uniform(0.08, 0.22))  # hesitate before click
+                await page.mouse.click(px, py)
+                await asyncio.sleep(_r.uniform(0.1, 0.25))
+            # fidget drift
+            await human_mouse_to(
+                page,
+                px + _r.uniform(-50, 50),
+                py + _r.uniform(-40, 40),
+            )
+            key = _r.choice(PRESENCE_KEYS)
+            await page.keyboard.press(key)
+            # light typing into composer then clear — does not send
+            if _r.random() < 0.6:
+                try:
+                    await asyncio.wait_for(page.evaluate("""() => {
+                        const el = document.querySelector(
+                          'div[contenteditable="true"][role="textbox"], '
+                          + '[contenteditable="true"], textarea');
+                        if (el) { el.focus(); return true; }
+                        return false;
+                    }"""), timeout=2)
+                    await asyncio.sleep(_r.uniform(0.2, 0.6))  # think before type
+                    snippet = _r.choice(("ok", "hi", "a", "x", "1", "yo"))
+                    await human_type_text(page, snippet)
+                    await asyncio.sleep(_r.uniform(0.2, 0.5))
+                    for _ in range(len(snippet) + 2):
+                        await page.keyboard.press("Backspace")
+                        await asyncio.sleep(_r.uniform(0.04, 0.11))
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+            log(f"  Presence poke ok ({label}: bezier/scroll/type/{key})")
+
+        try:
+            await asyncio.wait_for(_do(), timeout=PRESENCE_POKE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log(f"  Presence poke timeout ({label} >{PRESENCE_POKE_TIMEOUT_S}s)")
+        except Exception as e:
+            if _is_crash_error(e):
+                raise
+            log(f"  Presence poke soft-fail ({label}): {type(e).__name__}")
+
+    same = preview_page is chat_page
+    await _human_chat(chat_page, "chat+preview" if same else "chat")
+    if not same and preview_page is not None:
+        async def _poke_preview():
+            import random as _r2
+            try:
+                await preview_page.bring_to_front()
+            except Exception:
+                pass
+            vp = preview_page.viewport_size or {"width": 1280, "height": 720}
+            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
+            x = _r2.uniform(80, max(100, w - 80))
+            y = _r2.uniform(80, max(100, h - 80))
+            await human_mouse_to(preview_page, x, y)
+            await human_scroll(preview_page)
+            if _r2.random() < 0.35:
+                await preview_page.mouse.click(x, y)
+            await preview_page.keyboard.press(_r2.choice(PRESENCE_KEYS))
+            log("  Presence poke ok (preview: bezier/scroll)")
+        try:
+            await asyncio.wait_for(_poke_preview(), timeout=PRESENCE_POKE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log(f"  Presence poke timeout (preview >{PRESENCE_POKE_TIMEOUT_S}s)")
+        except Exception as e:
+            if _is_crash_error(e):
+                raise
+            log(f"  Presence poke soft-fail (preview): {type(e).__name__}")
+
+
 async def dismiss_blocking_popups(chat_page) -> bool:
     """Close upgrade / credits / cookie / dialog overlays. True if something closed."""
     if chat_page is None:
@@ -688,25 +938,54 @@ async def send_presence_prompt(chat_page) -> bool:
             return False
         prompt = _rand.choice(WAKE_PROMPTS)
         log(f"  Presence prompt: sending '{prompt}'")
+        # Human: move to composer, hesitate, click, think, type with IKI variance
         try:
-            await chat_input.click(timeout=3000)
+            box = await chat_input.bounding_box()
         except Exception:
-            pass
-        try:
-            await chat_input.fill(prompt, timeout=5000)
-        except Exception:
+            box = None
+        if box:
+            tx = box["x"] + box["width"] * _rand.uniform(0.25, 0.75)
+            ty = box["y"] + box["height"] * _rand.uniform(0.3, 0.7)
+            await human_mouse_to(chat_page, tx, ty)
+            await asyncio.sleep(_rand.uniform(0.08, 0.25))
+            await chat_page.mouse.click(tx, ty)
+        else:
             try:
-                await chat_page.keyboard.type(prompt, delay=20)
-            except Exception as e:
-                log(f"  Presence prompt type fail: {type(e).__name__}")
+                await chat_input.click(timeout=3000)
+            except Exception:
+                pass
+        await asyncio.sleep(_rand.uniform(0.2, 0.7))  # think before typing
+        try:
+            # clear any leftover text first
+            await chat_page.keyboard.press("Control+a")
+            await asyncio.sleep(0.05)
+            await chat_page.keyboard.press("Backspace")
+            await asyncio.sleep(_rand.uniform(0.1, 0.25))
+            await human_type_text(chat_page, prompt)
+        except Exception as e:
+            log(f"  Presence prompt type fail: {type(e).__name__}")
+            try:
+                await chat_input.fill(prompt, timeout=5000)
+            except Exception:
                 return False
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(_rand.uniform(0.15, 0.4))  # glance before send
         try:
             send_btn = chat_page.locator(
                 'button[data-testid="chat-input-send"], '
                 'button[aria-label*="Send" i]'
             ).first
             if await send_btn.count() and await send_btn.is_visible(timeout=1500):
+                try:
+                    sb = await send_btn.bounding_box()
+                except Exception:
+                    sb = None
+                if sb:
+                    await human_mouse_to(
+                        chat_page,
+                        sb["x"] + sb["width"] / 2,
+                        sb["y"] + sb["height"] / 2,
+                    )
+                    await asyncio.sleep(_rand.uniform(0.05, 0.15))
                 await send_btn.click()
             else:
                 await chat_page.keyboard.press("Enter")
@@ -1646,150 +1925,6 @@ async def capture_debug(chat_page, preview_page, tag: str) -> None:
                 log(f"  Shot xvfb fail rc={proc.returncode}")
         except Exception as e:
             log(f"  Shot xvfb fail: {type(e).__name__}: {e}")
-
-
-async def keep_pages_warm(chat_page, preview_page) -> None:
-    """Human-like presence: scroll chat, hover/wheel preview iframe, light keys.
-
-    Avoids top-chrome clicks and Home/PageDown (those remount Preview → nodoc).
-    Iframe mode: one rich poke on the chat page covering both surfaces.
-    """
-    import random as _r
-
-    async def _human_chat(page, label: str) -> None:
-        if page is None:
-            return
-        try:
-            if page.is_closed():
-                return
-        except Exception:
-            return
-
-        async def _do():
-            try:
-                await page.bring_to_front()
-            except Exception:
-                pass
-            # JS: scroll chat transcript + hover/mousemove on preview iframe
-            try:
-                await asyncio.wait_for(page.evaluate("""() => {
-                    const pick = (sel) => document.querySelector(sel);
-                    // scroll main chat column if present
-                    const scrolls = [
-                        ...document.querySelectorAll(
-                          '[data-radix-scroll-area-viewport], .overflow-y-auto, [class*="overflow-y"]')
-                    ].filter(el => el.scrollHeight > el.clientHeight + 40);
-                    if (scrolls.length) {
-                        const el = scrolls[0];
-                        const delta = (Math.random() > 0.5 ? 1 : -1) * (80 + Math.random() * 160);
-                        el.scrollTop = Math.max(0, Math.min(el.scrollHeight, el.scrollTop + delta));
-                    }
-                    const ifr = pick('#live-preview-panel')
-                        || [...document.querySelectorAll('iframe')].find(i =>
-                             /lovableproject|id-preview|lovable\\.app/i.test(i.src || i.id || ''));
-                    if (ifr) {
-                        const r = ifr.getBoundingClientRect();
-                        if (r.width > 20 && r.height > 20) {
-                            const x = r.left + r.width * (0.3 + Math.random() * 0.4);
-                            const y = r.top + r.height * (0.3 + Math.random() * 0.4);
-                            for (const typ of ['mouseover', 'mousemove', 'mouseenter']) {
-                                ifr.dispatchEvent(new MouseEvent(typ, {
-                                    bubbles: true, clientX: x, clientY: y, view: window
-                                }));
-                            }
-                            // also nudge parent so Lovable sees activity
-                            document.elementFromPoint(x, y)?.dispatchEvent(
-                                new MouseEvent('mousemove', {
-                                    bubbles: true, clientX: x, clientY: y, view: window
-                                }));
-                        }
-                    }
-                    // visibility / focus signals
-                    window.dispatchEvent(new Event('focus'));
-                    document.dispatchEvent(new Event('visibilitychange'));
-                    return true;
-                }"""), timeout=6)
-            except Exception:
-                pass
-            vp = page.viewport_size or {"width": 1280, "height": 720}
-            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
-            # Mouse path over mid chat (left) then preview (right) — no top bar
-            cx = _r.randint(int(w * 0.15), int(w * 0.35))
-            cy = _r.randint(int(h * 0.35), int(h * 0.75))
-            px = _r.randint(int(w * 0.55), int(w * 0.88))
-            py = _r.randint(int(h * 0.35), int(h * 0.75))
-            await page.mouse.move(cx, cy, steps=_r.randint(3, 6))
-            await asyncio.sleep(_r.uniform(0.08, 0.2))
-            await page.mouse.wheel(0, _r.choice([-120, 120]))
-            await asyncio.sleep(_r.uniform(0.08, 0.2))
-            await page.mouse.move(px, py, steps=_r.randint(5, 10))
-            await asyncio.sleep(0.08)
-            await page.mouse.wheel(0, _r.choice([-100, 100, -60, 60]))
-            await page.mouse.click(px, py)
-            # second short mouse drift (human fidget)
-            await page.mouse.move(
-                px + _r.randint(-40, 40),
-                py + _r.randint(-30, 30),
-                steps=_r.randint(2, 5),
-            )
-            key = _r.choice(PRESENCE_KEYS)
-            await page.keyboard.press(key)
-            # light typing into composer then clear — looks human, does not send
-            if _r.random() < 0.55:
-                try:
-                    await asyncio.wait_for(page.evaluate("""() => {
-                        const el = document.querySelector(
-                          'div[contenteditable="true"][role="textbox"], '
-                          + '[contenteditable="true"], textarea');
-                        if (el) { el.focus(); return true; }
-                        return false;
-                    }"""), timeout=2)
-                    snippet = _r.choice(("ok", "hi", "a", "x", "1"))
-                    await page.keyboard.type(snippet, delay=_r.randint(40, 90))
-                    await asyncio.sleep(_r.uniform(0.15, 0.35))
-                    for _ in range(len(snippet)):
-                        await page.keyboard.press("Backspace")
-                        await asyncio.sleep(0.04)
-                    await page.keyboard.press("Escape")
-                except Exception:
-                    pass
-            log(f"  Presence poke ok ({label}: scroll/hover/wheel/type/{key})")
-
-        try:
-            await asyncio.wait_for(_do(), timeout=PRESENCE_POKE_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            log(f"  Presence poke timeout ({label} >{PRESENCE_POKE_TIMEOUT_S}s)")
-        except Exception as e:
-            if _is_crash_error(e):
-                raise
-            log(f"  Presence poke soft-fail ({label}): {type(e).__name__}")
-
-    same = preview_page is chat_page
-    await _human_chat(chat_page, "chat+preview" if same else "chat")
-    if not same and preview_page is not None:
-        # dedicated preview tab — lighter mouse + wheel only
-        async def _poke_preview():
-            try:
-                await preview_page.bring_to_front()
-            except Exception:
-                pass
-            vp = preview_page.viewport_size or {"width": 1280, "height": 720}
-            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
-            x = _r.randint(100, max(120, w - 100))
-            y = _r.randint(100, max(120, h - 100))
-            await preview_page.mouse.move(x, y, steps=6)
-            await preview_page.mouse.wheel(0, _r.choice([-150, 150]))
-            await preview_page.mouse.click(x, y)
-            await preview_page.keyboard.press(_r.choice(PRESENCE_KEYS))
-            log("  Presence poke ok (preview: move/wheel/click)")
-        try:
-            await asyncio.wait_for(_poke_preview(), timeout=PRESENCE_POKE_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            log(f"  Presence poke timeout (preview >{PRESENCE_POKE_TIMEOUT_S}s)")
-        except Exception as e:
-            if _is_crash_error(e):
-                raise
-            log(f"  Presence poke soft-fail (preview): {type(e).__name__}")
 
 
 async def run_daemon(session_id, project_id, browser_type, threads, mode, headed=False):
