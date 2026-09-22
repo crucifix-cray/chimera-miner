@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-22  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `c533c77c7f600743c32efb93ce10bfee` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
+**Canonical md5:** `daemon.py` = `729fbf685de49ec08a4129fc2f717c20` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
 
 **Status:** cell-16 forever duty-cycle — human mouse/type, popup close+refresh, shell check skip-if-running (`88b07200`).
 

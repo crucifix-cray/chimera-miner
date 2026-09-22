@@ -51,7 +51,7 @@ RECONNECT_STREAK_HARD = 3    # N failed reconnects → kill Chrome entirely
 HEALTH_INTERVAL_S = 40
 HEALTH_INTERVAL_MAX_S = 60  # randomize next tick in [40, 60]
 PRESENCE_KEYS = ("ArrowDown", "ArrowUp")  # Home/PageDown disrupt Lovable chat UI
-PRESENCE_POKE_TIMEOUT_S = 16
+PRESENCE_POKE_TIMEOUT_S = 22
 # Every health tick also send a trivial chat prompt — keeps sandbox warm.
 PRESENCE_PROMPT_AFTER_S = 3
 PRESENCE_PROMPT_TIMEOUT_S = 28
