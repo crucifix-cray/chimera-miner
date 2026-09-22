@@ -6,7 +6,7 @@
 
 ## Where we are
 
-- **cell-16:** session-2 / project `7d6f77a6` — sync + supervisor relaunch if stopped (`DAEMON-RAILWAY.md`)  
+- **cell-16 LIVE:** session-2 / project `7d6f77a6` — supervisor + headed daemon (`DAEMON-RAILWAY.md`)  
 - **Code:** headed Xvfb, chat-iframe inject, 40s presence+prompt, auth-wall, soft revive, no fake `window.doc`, ranked sandbox wait (problem 31)  
 - **Canonical md5:** `daemon.py`=`142eaa57…` · `miner_injector.py`=`9441b476…` (see runbook)  
 - **Runbook:** [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)  
