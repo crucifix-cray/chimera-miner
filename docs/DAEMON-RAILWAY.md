@@ -2,7 +2,10 @@
 
 **Updated:** 2026-09-22  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Live md5:** `daemon.py` = `079db14a40b6a778dcf1d37c3cd3ef1a` · `miner_injector.py` = `12e03c8023f67358e978462b5a00c78a`  
+**Canonical md5:** `daemon.py` = `8fdab97649e55be84db0041ab65c18f8` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
+
+**Status:** daemon **stopped** on cell-16 (2026-09-22). Relaunch with cmd below after sync.  
+Last healthy stretch earlier same day had workers; later session hit auth-wall / missing `window.doc` / CDP wedge during revive — see problems 26–30.
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 
@@ -65,26 +68,30 @@ md5sum /app/work/chimera-miner/daemon.py /app/work/chimera-miner/miner_injector.
 ```text
 Outer forever (main + run_daemon)
 ├── Browser cycle #N  (Playwright launch primary; CDP soft-reattach only if attached)
-│   ├── Chromium headed on :99, remote-debugging-port=9222
-│   ├── cookies → LS; SKIP_IDB=1 (IDB restore/save wedges CDP on Railway)
-│   ├── Prefer inject into chat Preview iframe (lovableproject.com Shell Sandbox)
-│   │     steal URL → wait window.doc('pwd') → inject_miner (score lovableproject ≫ id-preview)
-│   │     fallback: dedicated preview tab only if iframe path fails
+│   ├── Chromium headed on :99 (--js-flags max-old-space-size=512)
+│   ├── cookies → LS; SKIP_IDB=1
+│   ├── Auth wall ("You don't have access") → do_login + goto project
+│   ├── Composer hunt: wait (no reload); CDP timeout streak×3 → hard kill
+│   ├── Wake: prefer no-reload if already on project; trivial prompts only
+│   ├── Prefer inject into chat Preview lovableproject.com Shell Sandbox
+│   │     wait real window.doc('pwd') BEFORE inject (no blind inject)
+│   │     never install fake window.doc object (poisons Shell)
+│   │     fallback tab only with stolen sessioned URL (never bare host)
 │   ├── save_trio(chat) — cookies+LS only when SKIP_IDB=1
 │   └── Health every ~40s
-│         presence: scroll chat + hover/wheel Preview iframe (no Home/PageDown/top-chrome)
+│         presence: scroll/hover/wheel + trivial chat prompt (no reload)
 │         soft-confirm nodoc ×2 before revive
 │         iframe soft revive = wait sandbox + reinject (NO chat reload first)
-│         CDP evaluate hung → HARD kill Chrome (reattach to wedged renderer is useless)
+│         CDP evaluate hung → HARD kill Chrome
 │         fail×3 → end cycle → relaunch
 └── NEVER exit full mode
 ```
 
 **OK lines:**  
-`Presence poke ok (chat+preview: scroll/hover/wheel/…)` · `Worker alive (probe: N@…lovableproject.)` · `Preview healthy` · `Next check in 40s`
+`Presence poke ok` · `Presence prompt: sent` · `Worker alive (probe: N@…lovableproject.)` · `Preview healthy` · `Next check in 40s` · `Chat Preview sandbox ready (lovableproject+pwd)`
 
 **Heal lines:**  
-`Shell/worker soft-dead … confirm 1/2` · `Revive: iframe soft path (no reload)` · `HARD kill (renderer wedged)` · `Browser cycle #N`
+`Auth wall after restore — re-login` · `Shell/worker soft-dead … confirm 1/2` · `Revive: iframe soft path (no reload)` · `HARD kill (renderer wedged)` · `Browser cycle #N`
 
 ---
 
@@ -111,14 +118,18 @@ Note: `Documents/railways/session-16` CLI token may be 403 — cell SSH uses too
 
 | Symptom | What daemon does |
 |---|---|
-| Idle cool-off / proxy-404 risk | 40s rich presence (scroll/hover/wheel) |
+| Idle cool-off / proxy-404 risk | 40s presence poke + trivial chat prompt |
 | Flaky `nodoc` | Soft re-probe + confirm ×2 before revive |
-| Sandbox dead (confirmed) | Iframe soft revive (no reload) → wake reload only if soft fails |
-| Inject picks cold `id-preview` | Frame score prefers `lovableproject.com` + working `pwd` |
-| Bare preview tab → auth-bridge | Prefer chat iframe; fallback tab last resort |
+| Sandbox dead (confirmed) | Iframe soft revive (no reload) → wake only if soft fails |
+| No `window.doc` yet | Wait + presence prompts; **do not** blind-inject |
+| Fake `window.doc` object | Injector clears it; never re-installs stub |
+| Auth / private project wall | `detect_auth_wall` → `do_login` → goto project |
+| Inject picks cold `id-preview` | Prefer `lovableproject.com` + working `pwd` |
+| Bare preview tab → auth-bridge | Stolen sessioned URL only; else skip to health |
 | IDB restore/save wedges CDP | `CHIMERA_SKIP_IDB=1` |
+| Cold `shell_worker_status` before composer | Skipped — wedges CDP while SPA hydrates |
+| Composer miss | Wait (no reload); reload was skeleton death spiral |
 | CDP evaluate TimeoutError | HARD kill Chrome + new Browser cycle |
-| Playwright-launched Chrome | Soft CDP reconnect N/A (close kills it); cycle relaunches |
 | Token vs revive race | `page_lock` |
 | Trio wiped | Only save from chat page |
 

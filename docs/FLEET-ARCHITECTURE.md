@@ -201,7 +201,7 @@ Implementation can be GitHub JSON / DB module already in tree — one writer, ma
 Canonical ops: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)  
 Problems / fixes: [`SCRIPT3-PROBLEMS-SOLUTIONS.md`](SCRIPT3-PROBLEMS-SOLUTIONS.md)
 
-Today: one service cell, `daemon.py --mode full --headed` on Xvfb `:99`, chat-iframe inject (`lovableproject`), `CHIMERA_SKIP_IDB=1`, 40s presence, soft revive + hard kill on CDP wedge, never-exit cycles. Live md5s / launch: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md).
+Today: cell-16 service — code on `master` with headed Xvfb, chat-iframe inject, `SKIP_IDB`, 40s presence+prompt, auth-wall login, soft revive, no fake `window.doc`. **Daemon stopped** pending relaunch; md5s / launch: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md). Open issue: reliable Shell `window.doc` bring-up after cold start.
 
 ---
 

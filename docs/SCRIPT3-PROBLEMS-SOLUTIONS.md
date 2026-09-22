@@ -3,7 +3,8 @@
 **Updated:** 2026-09-22  
 
 Proven setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full --headed` / Chromium on Xvfb `:99` / `CHIMERA_SKIP_IDB=1`.  
-Runbook: `DAEMON-RAILWAY.md`. Fleet map: `FLEET-ARCHITECTURE.md`. Problems through **#25**.
+Runbook: `DAEMON-RAILWAY.md`. Fleet map: `FLEET-ARCHITECTURE.md`. Problems through **#30**.  
+Daemon may be stopped — sync md5s from runbook before relaunch.
 
 Words in this log: **preview shell**, **worker process**, **revive**. Function names like `inject_miner` mean “start the worker command in the preview”.
 
@@ -132,6 +133,29 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 - **Symptom:** `railway ssh` 403/Unauthorized with Documents/railways/session-16 token.
 - **Cause:** That token is not the account that owns cell-16.
 - **Fix:** Run CLI with `HOME=…/automation-toolkit/sessions/session-2` (owns the service). Do not copy config into machine `~/.railway`.
+
+## Problem 26: Health needs trivial chat prompts too
+- **Symptom:** Scroll/hover alone not enough; sandbox still cools / 0 workers after idle.
+- **Fix:** Every ~40s health tick also `send_presence_prompt` (same trivial wake strings, **no reload**).
+
+## Problem 27: Auth wall / private project after SKIP_IDB restore
+- **Symptom:** Shot shows "You don't have access" / Log In; composer count=0.
+- **Cause:** Cookies+LS without full Firebase hydrate can leave chat logged-out of the project.
+- **Fix:** `detect_auth_wall` after restore → `do_login` + goto project; re-check mid composer hunt.
+
+## Problem 28: Fake `window.doc` object poisons Shell Sandbox
+- **Symptom:** Inject `Setup result: True` then probe `no doc bridge` forever.
+- **Cause:** Injector installed `{ run: … }` object when real doc missing; `typeof doc !== 'function'` and `if (!window.doc)` blocks the real Shell.
+- **Fix:** Never install fake doc; clear non-function `window.doc`; only exec via real `typeof doc === 'function'`.
+
+## Problem 29: Blind inject / bare lovableproject tab → auth-bridge / no iframe
+- **Symptom:** Inject runs without `pwd`; fallback opens `https://{id}.lovableproject.com` → auth-bridge; or Preview iframe gone (1 frame only).
+- **Fix:** Wait real sandbox before inject; presence prompts (no reload) while waiting; click Preview/Shell panel; fallback only with stolen sessioned URL (never bare host).
+
+## Problem 30: Cold `shell_worker_status` / wake reload → CDP wedge + skeleton UI
+- **Symptom:** Xvfb shows healthy composer; Playwright evaluate/locator/screenshot TimeoutError; reload leaves gray skeleton.
+- **Cause:** Frame-walking before SPA warm wedges CDP; wake reload death spiral.
+- **Fix:** Skip cold worker probe before composer; composer miss = wait not reload; wake fast-path sends without reload when already on project; CDP hung streak×3 before hard kill.
 
 ---
 
