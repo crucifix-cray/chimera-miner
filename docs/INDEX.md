@@ -6,23 +6,27 @@
 
 ## Where we are
 
-- **1 cell LIVE:** cell-16 / session-2 / project `7d6f77a6` / `daemon.py --mode full` / Chromium  
-- **Self-heal:** refresh chat → wake → wait → preview → start worker; never-exit browser cycles  
-- **Live md5:** `13d5b7cb4b8b6961f2acd561aba2ad67` (`5492fdf`)  
+- **1 cell LIVE:** cell-16 / session-2 / project `7d6f77a6` / `daemon.py --mode full --headed` / Chromium on Xvfb `:99`  
+- **Self-heal:** soft iframe revive (no reload first) → soft-confirm nodoc → hard kill if CDP wedged → never-exit browser cycles  
+- **Presence:** every ~40s scroll chat + hover/wheel Preview iframe  
+- **Live md5:** `daemon.py`=`079db14a…` · `miner_injector.py`=`12e03c80…` (see runbook)  
 - **Runbook:** [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)  
-- Preview shells flap; daemon recovers. Scoreboard = bridge throughput over time  
+- Prefer chat Preview `lovableproject.com` Shell Sandbox inject (`CHIMERA_SKIP_IDB=1`)  
 - **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`  
 
 ## Architecture (daemon)
 
 ```text
-daemon.py --mode full  (never exits)
-├── Browser cycle #N
-│   ├── Chromium → cookies → LS/IDB
-│   ├── wake → wait window.doc → start worker → save_trio(chat)
-│   └── Health (~180s):
-│         dead → refresh chat → wake → wait → preview → inject
-│         fail×3 or crash → next Browser cycle
+daemon.py --mode full --headed  (never exits)
+├── Browser cycle #N  (Playwright launch; soft CDP reattach only if attached)
+│   ├── Chromium :99 → cookies → LS (SKIP_IDB)
+│   ├── Prefer chat iframe lovableproject + doc('pwd') → inject
+│   ├── save_trio(chat)
+│   └── Health (~40s):
+│         presence scroll/hover/wheel
+│         soft-confirm nodoc ×2 → iframe soft revive
+│         CDP hung → HARD kill → next Browser cycle
+│         fail×3 → next Browser cycle
 └── main() while True
 ```
 
@@ -40,7 +44,8 @@ daemon.py --mode full  (never exits)
 
 ### Phase 1 — One cell stable ✅ (ongoing)
 - [x] cell-16 full-mode daemon  
-- [x] Simple revive + never-exit cycles  
+- [x] Headed Xvfb + iframe inject + SKIP_IDB + 40s presence  
+- [x] Soft revive / soft-confirm / hard kill on CDP wedge  
 - [ ] Shrink revive gaps (duty cycle) — **sprint day 1**
 
 ### Phase 2 — Project factory (script 2)

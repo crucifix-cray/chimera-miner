@@ -110,10 +110,10 @@ flowchart TB
 - Output must land in state store (project id per Lovable session).
 
 ### Script 3 / `daemon.py` — OK, duty-cycle gap
-- Runs on ~900 MB RAM class cells.
-- Pattern that works: **refresh chat → wake → wait → preview → inject → loop**.
-- Never-exit: crash / closed page → **Browser cycle #N**.
-- Real pain: preview shell dies every few–15 minutes → throughput dips until revive.
+- Runs on ~900 MB RAM class cells (headed Xvfb).
+- Pattern that works: **prefer chat iframe inject → 40s presence → soft-confirm → soft revive → hard kill if CDP wedged**.
+- Never-exit: crash / closed page / hard kill → **Browser cycle #N**.
+- Real pain: preview shell still flaps → throughput dips until revive.
 - Sprint priority: shrink that gap (duty cycle), then clone cells.
 
 ---
@@ -201,7 +201,7 @@ Implementation can be GitHub JSON / DB module already in tree — one writer, ma
 Canonical ops: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)  
 Problems / fixes: [`SCRIPT3-PROBLEMS-SOLUTIONS.md`](SCRIPT3-PROBLEMS-SOLUTIONS.md)
 
-Today: one service cell, `daemon.py --mode full`, simple revive + never-exit cycles. Preview shells still flap; daemon comes back.
+Today: one service cell, `daemon.py --mode full --headed` on Xvfb `:99`, chat-iframe inject (`lovableproject`), `CHIMERA_SKIP_IDB=1`, 40s presence, soft revive + hard kill on CDP wedge, never-exit cycles. Live md5s / launch: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md).
 
 ---
 

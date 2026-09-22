@@ -2,8 +2,8 @@
 
 **Updated:** 2026-09-22  
 
-Proven setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full` / Chromium.  
-Runbook: `DAEMON-RAILWAY.md`. Fleet map: `FLEET-ARCHITECTURE.md`.
+Proven setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full --headed` / Chromium on Xvfb `:99` / `CHIMERA_SKIP_IDB=1`.  
+Runbook: `DAEMON-RAILWAY.md`. Fleet map: `FLEET-ARCHITECTURE.md`. Problems through **#25**.
 
 Words in this log: **preview shell**, **worker process**, **revive**. Function names like `inject_miner` mean “start the worker command in the preview”.
 
@@ -103,17 +103,51 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 - **Cause:** errors escaped outer loop; `main()` only ran `asyncio.run` once.
 - **Fix:** detect crash errors + closed pages → end Browser cycle; outer `while True` + `main()` forever loop; log `Forever mode` / `Browser cycle #N`.
 
+## Problem 20: Idle cool-off → preview proxy-404
+- **Symptom:** Worker dies after quiet periods; preview shows proxy 404.
+- **Cause:** Lovable cools idle chat/preview iframes.
+- **Fix:** `HEALTH_INTERVAL_S≈40` + rich presence (chat scroll + Preview iframe hover/wheel). Avoid Home/PageDown/top-chrome that steal focus.
+
+## Problem 21: IDB restore/save wedges CDP on Railway
+- **Symptom:** Health `evaluate` hangs; browser looks alive but dead to Playwright.
+- **Cause:** IndexedDB trio restore/save blocks the renderer.
+- **Fix:** `CHIMERA_SKIP_IDB=1` — cookies+localStorage only on cell.
+
+## Problem 22: Inject into cold `id-preview` / bare preview tab → auth-bridge
+- **Symptom:** Inject “succeeds” on dead frame; dedicated preview tab hits auth-bridge.
+- **Cause:** Frame picker preferred first `id-preview`; bare tab lacks chat session context.
+- **Fix:** Score frames: require working `doc('pwd')`; prefer `lovableproject.com` Shell Sandbox inside chat Preview; dedicated tab is last resort.
+
+## Problem 23: Soft nodoc → chat reload kills CDP
+- **Symptom:** One flaky `nodoc` triggers chat reload → TargetClosed / cycle death spiral.
+- **Cause:** Revive always reloaded chat first.
+- **Fix:** Soft-confirm nodoc ×2; iframe soft revive = wait sandbox + reinject (no chat reload first); wake reload only if soft path fails.
+
+## Problem 24: Soft CDP reattach to wedged Chrome death spiral
+- **Symptom:** `spawn_chrome` + reattach keeps talking to a hung renderer; evaluate TimeoutError forever.
+- **Cause:** Soft reconnect assumed Chrome was healthy if port 9222 answered.
+- **Fix:** Playwright launch is primary; soft CDP reattach only if previously attached + healthy; on evaluate TimeoutError → HARD kill Chrome + new Browser cycle.
+
+## Problem 25: Railway CLI Unauthorized from railways/session-16 HOME
+- **Symptom:** `railway ssh` 403/Unauthorized with Documents/railways/session-16 token.
+- **Cause:** That token is not the account that owns cell-16.
+- **Fix:** Run CLI with `HOME=…/automation-toolkit/sessions/session-2` (owns the service). Do not copy config into machine `~/.railway`.
+
 ---
 
 ## Working launch commands
 
 ### Daemon on Railway (production — recommended)
 ```bash
-CHIMERA_NO_PROXY=1 CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
-/opt/venv/bin/python3 -u daemon.py --session session-2 \
+cd /app/work/chimera-miner
+nohup env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 \
+  CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
+  CHIMERA_SHOT_DIR=/app/work/shots \
+  DISPLAY=:99 PYTHONUNBUFFERED=1 \
+  /opt/venv/bin/python3 -u daemon.py --session session-2 \
   --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
-  --browser chromium --mode full \
-  > /app/work/daemon_s2.log 2>&1 &
+  --browser chromium --mode full --headed \
+  >> /app/work/daemon_s2.log 2>&1 &
 ```
 See `docs/DAEMON-RAILWAY.md` for project/env/service IDs and md5 sync.
 

@@ -17,9 +17,11 @@ import time
 import traceback
 from pathlib import Path
 
-SESSIONS_DIR = Path(os.environ.get(
-    "CHIMERA_SESSIONS_DIR",
-    "/home/alan/Documents/repos/automation-toolkit/scripts/sessions"))
+_default_sessions = Path("/app/work/scripts/sessions")
+if not _default_sessions.is_dir():
+    _default_sessions = Path(
+        "/home/alan/Documents/repos/automation-toolkit/scripts/sessions")
+SESSIONS_DIR = Path(os.environ.get("CHIMERA_SESSIONS_DIR", str(_default_sessions)))
 BRIDGE_URL = "wss://chimera-bridge-production-0703.up.railway.app"
 
 TOKEN_REFRESH_INTERVAL = 2400  # 40 min
@@ -43,15 +45,25 @@ WAKE_SEL_MS = 10000
 WAKE_AFTER_SEND_S = 12       # let sandbox spin after wake cmd
 REVIVE_WALL_S = 420          # room for wake + wait + lovable + inject
 REVIVE_LOVABLE_S = 180
-FAIL_STREAK_RESTART = 3      # browser restart only after repeated full fails
+FAIL_STREAK_RESTART = 3      # soft reconnect after this; hard kill only if CDP dead
+RECONNECT_STREAK_HARD = 3    # N failed reconnects → kill Chrome entirely
 # Preview cools to proxy-404 without human-like presence — poke both tabs often.
 HEALTH_INTERVAL_S = 40
-PRESENCE_KEYS = ("ArrowDown", "ArrowUp", "PageDown", "End", "Home")
+PRESENCE_KEYS = ("ArrowDown", "ArrowUp")  # Home/PageDown disrupt Lovable chat UI
 PRESENCE_POKE_TIMEOUT_S = 10
+# Don't full-revive on a single flaky nodoc — confirm dead first.
+HEALTH_DEAD_CONFIRM = 2
+HEALTH_DEAD_GAP_S = 12
+SOFT_DEAD_DETAILS = ("nodoc", "worker-missing", "no-probe", "probe-error",
+                     "doc-eval-error", "body-error", "probe-eval-error")
 # Startup composer hunt: look → miss → wait → repeat; then kill+rerun (no 5min nap).
 COMPOSER_TRIES = 15
 COMPOSER_WAIT_S = 10
 SHOT_DIR = Path(os.environ.get("CHIMERA_SHOT_DIR", "/app/work/shots"))
+CDP_URL = os.environ.get("CHIMERA_CDP_URL", "http://127.0.0.1:9222")
+CHROME_PROFILE = Path(os.environ.get(
+    "CHIMERA_CHROME_PROFILE", "/tmp/chimera-chrome-profile"))
+CHROME_BIN = os.environ.get("CHIMERA_CHROME_BIN", "")  # auto-detect if empty
 
 CHAT_COMPOSER_SELECTORS = [
     'div[contenteditable="true"][role="textbox"]',
@@ -121,6 +133,191 @@ def kill_browser_orphans() -> None:
 
     if killed or reaped:
         log(f"  Killed browser orphans={killed} reaped_zombies={reaped}")
+
+
+def cdp_http_alive(timeout: float = 2.0) -> bool:
+    """True when Chrome remote-debugging HTTP is answering on CDP_URL."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{CDP_URL.rstrip('/')}/json/version",
+                                    timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _find_chrome_bin() -> str:
+    if CHROME_BIN and Path(CHROME_BIN).is_file():
+        return CHROME_BIN
+    import glob
+    cands = sorted(glob.glob(
+        "/root/.cache/ms-playwright/chromium-*/chrome-linux64/chrome"))
+    if cands:
+        return cands[-1]
+    for p in ("/usr/bin/chromium", "/usr/bin/google-chrome",
+              "/usr/bin/chromium-browser"):
+        if Path(p).is_file():
+            return p
+    return ""
+
+
+def spawn_chrome_cdp(headed: bool = True) -> bool:
+    """Start Chromium with --remote-debugging-port if CDP is down. Returns True if up."""
+    import subprocess
+    if cdp_http_alive():
+        return True
+    bin_ = _find_chrome_bin()
+    if not bin_:
+        log("  spawn_chrome: no chrome binary found")
+        return False
+    CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
+    port = "9222"
+    try:
+        from urllib.parse import urlparse
+        port = str(urlparse(CDP_URL).port or 9222)
+    except Exception:
+        pass
+    args = [
+        bin_,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={CHROME_PROFILE}",
+        "--no-first-run", "--no-default-browser-check",
+        "--disable-dev-shm-usage", "--no-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-gpu", "--disable-software-rasterizer",
+        "--js-flags=--max-old-space-size=256",
+    ]
+    if not headed:
+        args.append("--headless=new")
+    try:
+        env = os.environ.copy()
+        if headed and not env.get("DISPLAY"):
+            env["DISPLAY"] = ":99"
+        subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+    except Exception as e:
+        log(f"  spawn_chrome fail: {e}")
+        return False
+    for _ in range(25):
+        time.sleep(0.4)
+        if cdp_http_alive():
+            log(f"  Chrome CDP up at {CDP_URL}")
+            return True
+    log("  spawn_chrome: CDP never came up")
+    return False
+
+
+def hard_kill_chrome() -> None:
+    """Kill Playwright orphans AND our persistent chimera Chrome; wait until CDP is dead."""
+    import signal
+    import subprocess
+    kill_browser_orphans()
+    try:
+        out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True, timeout=10)
+    except Exception:
+        out = ""
+    killed = 0
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, args = parts[0], parts[1]
+        if "daemon.py" in args or "Xvfb" in args:
+            continue
+        hit = (
+            "chimera-chrome-profile" in args
+            or "remote-debugging-port=9222" in args
+            or ("chrome" in args.lower() and "ms-playwright" in args)
+            or "playwright_chromiumdev_profile" in args
+        )
+        if not hit:
+            continue
+        try:
+            os.kill(int(pid_s), signal.SIGKILL)
+            killed += 1
+        except Exception:
+            pass
+    # Nuclear belt-and-suspenders
+    for pat in (
+        "remote-debugging-port=9222",
+        "chimera-chrome-profile",
+        "playwright_chromiumdev_profile",
+        "ms-playwright/chromium",
+    ):
+        try:
+            subprocess.run(
+                ["pkill", "-9", "-f", pat],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except Exception:
+            pass
+    if killed:
+        log(f"  Hard-killed chrome procs={killed}")
+    for i in range(30):
+        if not cdp_http_alive(timeout=0.4):
+            log(f"  CDP port clear after hard kill ({i * 0.3:.1f}s)")
+            return
+        time.sleep(0.3)
+    log("  WARNING: CDP still answering after hard kill — will spawn anyway")
+
+
+async def connect_cdp_browser(pw):
+    """Attach Playwright to existing Chrome over CDP."""
+    browser = await pw.chromium.connect_over_cdp(CDP_URL)
+    return browser
+
+
+async def find_or_open_chat(browser, chat_url: str, project_id: str):
+    """Reuse existing lovable.dev project tab if present; else open one."""
+    context = browser.contexts[0] if browser.contexts else await browser.new_context(
+        viewport={"width": 1280, "height": 720},
+        user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+    )
+    chat_page = None
+    for page in list(context.pages):
+        try:
+            u = page.url or ""
+        except Exception:
+            continue
+        if f"lovable.dev/projects/{project_id}" in u and "/login" not in u:
+            chat_page = page
+            break
+    if chat_page is None:
+        # any lovable.dev project tab
+        for page in list(context.pages):
+            try:
+                u = page.url or ""
+            except Exception:
+                continue
+            if "lovable.dev/projects/" in u:
+                chat_page = page
+                break
+    if chat_page is None:
+        chat_page = await context.new_page()
+        log(f"Opening chat: {chat_url}")
+        try:
+            await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
+        except Exception:
+            pass
+        await chat_page.wait_for_timeout(2000)
+    else:
+        log(f"  Reusing existing chat tab: {(chat_page.url or '')[:100]}")
+        try:
+            await chat_page.bring_to_front()
+        except Exception:
+            pass
+    return context, chat_page
 
 
 async def light_focus(page) -> None:
@@ -293,7 +490,7 @@ async def send_wake_prompt(
             log(f"  Wake: chat input found (round {round_n})")
             break
         if cdp_hung:
-            log("  Wake: CDP hung — abort wake (browser restart)")
+            log("  Wake: CDP hung — HARD kill needed (renderer wedged)")
             return False
 
         log(f"  Wake: no composer yet — refresh again")
@@ -383,12 +580,13 @@ async def steal_preview_url_from_chat(chat_page) -> str | None:
     except Exception as e:
         log(f"  Steal frames fail: {type(e).__name__}: {e}")
 
+    # Prefer lovableproject.com (Shell Sandbox) over id-preview cold mirrors.
     ranked = sorted(
         urls,
         key=lambda u: (
             0 if "auth-bridge" in u else 1,
-            2 if ("__lovable_sha" in u or "id-preview" in u) else (
-                1 if "lovableproject.com" in u else 0),
+            3 if "lovableproject.com" in u else (
+                1 if ("__lovable_sha" in u or "id-preview" in u) else 0),
             len(u),
         ),
         reverse=True,
@@ -403,6 +601,99 @@ async def steal_preview_url_from_chat(chat_page) -> str | None:
         return ranked[0]
     log("  Steal: no preview iframe URL in chat")
     return None
+
+
+async def wait_for_chat_preview_sandbox(
+    chat_page, timeout_seconds: int = 120
+) -> bool:
+    """Wait until a chat Preview frame exposes window.doc (Shell Sandbox).
+
+    Prefers lovableproject.com; also accepts id-preview / nested shell frames.
+    """
+    log(f"Waiting for chat Preview sandbox/doc (max {timeout_seconds}s)...")
+    for label in ("Preview", "preview"):
+        try:
+            btn = chat_page.get_by_role("button", name=label, exact=False)
+            n = await asyncio.wait_for(btn.count(), timeout=3)
+            if n > 0:
+                await btn.first.click(timeout=3000)
+                await asyncio.sleep(1.0)
+                break
+        except Exception:
+            continue
+    for label in ("Shell", "shell"):
+        try:
+            btn = chat_page.get_by_role("button", name=label, exact=False)
+            n = await asyncio.wait_for(btn.count(), timeout=2)
+            if n > 0:
+                await btn.first.click(timeout=2500)
+                await asyncio.sleep(0.8)
+                log("  Chat sandbox: clicked Shell tab")
+                break
+        except Exception:
+            continue
+
+    start = asyncio.get_running_loop().time()
+    last_note = ""
+    while True:
+        elapsed = asyncio.get_running_loop().time() - start
+        if elapsed > timeout_seconds:
+            log(f"  Chat Preview sandbox timeout after {timeout_seconds}s"
+                + (f" ({last_note})" if last_note else ""))
+            return False
+        try:
+            frames = list(chat_page.frames)
+        except Exception:
+            frames = []
+        soft = None  # non-lovableproject frame with working pwd
+        for fr in frames:
+            try:
+                u = fr.url or ""
+            except Exception:
+                continue
+            ul = u.lower()
+            if "lovable.dev" in ul and "lovableproject" not in ul:
+                continue
+            if "auth-bridge" in ul:
+                last_note = "auth-bridge"
+                continue
+            try:
+                probe = await asyncio.wait_for(
+                    fr.evaluate(
+                        """async () => {
+                        if (!window.doc || typeof window.doc !== 'function')
+                            return { ok: false, err: 'no-doc' };
+                        try {
+                            if (window.doc.connect) {
+                                try { await window.doc.connect(); } catch (e) {}
+                            }
+                            const r = await window.doc('pwd');
+                            return { ok: true, r: r };
+                        } catch (e) {
+                            return { ok: false, err: String(e && e.message || e).slice(0, 120) };
+                        }
+                    }"""
+                    ),
+                    timeout=12,
+                )
+            except Exception as e:
+                last_note = f"{u[:60]}:{type(e).__name__}"
+                continue
+            if not isinstance(probe, dict):
+                continue
+            if not probe.get("ok"):
+                if any(x in ul for x in (
+                        "lovableproject.com", "id-preview", "lovable.app")):
+                    last_note = f"{u[:70]}:{probe.get('err', '?')[:40]}"
+                continue
+            if "lovableproject.com" in ul:
+                log(f"  Chat Preview sandbox ready (lovableproject+pwd): {u[:120]}")
+                return True
+            soft = soft or u
+        if soft:
+            log(f"  Chat Preview sandbox ready (pwd): {soft[:120]}")
+            return True
+        await asyncio.sleep(5)
 
 
 async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> bool:
@@ -535,10 +826,48 @@ async def revive_sandbox(
     session_config: dict | None = None,
 ) -> bool:
     """
-    Simple recovery loop:
-      refresh chat → send wake cmd → wait → goto preview → wait doc → inject
+    Recover shell/worker.
+    Iframe mode: soft re-inject first (NO chat reload) — reload wedges CDP on Railway.
+    Separate preview tab: wake → goto → inject.
     """
     from miner_injector import inject_miner
+
+    same_page = preview_page is chat_page
+    if same_page:
+        log("  Revive: iframe soft path (no reload) — wait sandbox + reinject")
+        try:
+            await asyncio.wait_for(
+                steal_preview_url_from_chat(chat_page), timeout=30)
+        except Exception as e:
+            log(f"  Revive steal fail: {type(e).__name__}")
+        ready = await wait_for_chat_preview_sandbox(
+            chat_page, timeout_seconds=90)
+        if ready:
+            log("  Revive: soft inject into chat Preview iframe")
+            try:
+                ok = await asyncio.wait_for(
+                    inject_miner(chat_page, bridge_url, threads), timeout=200)
+            except Exception as e:
+                log(f"  Revive soft inject fail: {type(e).__name__}")
+                ok = False
+            if ok:
+                log("  Revive inject: OK (soft)")
+                return True
+        log("  Revive: soft path failed — wake + retry (may reload)")
+        woke = await send_wake_prompt(
+            chat_page, chat_url=chat_url, session_config=session_config)
+        if not woke:
+            log("  Revive: wake failed — browser restart needed")
+            return False
+        ready = await wait_for_chat_preview_sandbox(
+            chat_page, timeout_seconds=min(REVIVE_LOVABLE_S, 120))
+        if not ready:
+            log("  Revive: lovable/doc never ready (iframe)")
+            return False
+        log("  Revive: injecting worker into chat Preview iframe")
+        ok = await inject_miner(chat_page, bridge_url, threads)
+        log(f"  Revive inject: {'OK' if ok else 'FAILED'}")
+        return bool(ok)
 
     log("  Revive: refresh chat → wake → wait → preview → inject")
     woke = await send_wake_prompt(
@@ -556,7 +885,7 @@ async def revive_sandbox(
     except Exception as e:
         log(f"  Revive steal fail: {type(e).__name__}")
 
-    # Preview: hard re-nav then wait for window.doc
+    # Preview tab: hard re-nav then wait for window.doc
     if preview_url:
         try:
             log(f"  Revive: goto preview")
@@ -599,6 +928,7 @@ async def shell_worker_status(preview_page) -> tuple[bool, str]:
     """
     True only when preview is live, /__shell (window.doc) works, AND sysoptd runs.
     Checks main frame then preview iframes (chat-embedded Preview panel).
+    Soft-retries once on transient nodoc — iframe remounts briefly after presence.
     """
     cur_url = ""
     try:
@@ -606,7 +936,6 @@ async def shell_worker_status(preview_page) -> tuple[bool, str]:
     except Exception as e:
         return False, f"url-error:{e}"
     if "auth-bridge" in cur_url and "lovable.dev/auth-bridge" in cur_url:
-        # main tab on auth-bridge — still check iframes below
         pass
     if "/login" in cur_url and "lovable.dev" in cur_url:
         return False, "login"
@@ -616,26 +945,28 @@ async def shell_worker_status(preview_page) -> tuple[bool, str]:
             fu = frame.url or ""
         except Exception:
             fu = ""
-        try:
-            body = await asyncio.wait_for(
-                frame.evaluate(
-                    "() => (document.body && document.body.innerText) || ''"),
-                timeout=8,
-            )
-            bl = (body or "").lower()
-            if ("proxy error" in bl or "lovable proxy error" in bl) and "404" in bl:
-                return False, "proxy-404"
-        except Exception as e:
-            return False, f"body-error:{type(e).__name__}"
+        # Doc first — body text eval hangs CDP on heavy Lovable chat DOM
         try:
             has_doc = await asyncio.wait_for(
                 frame.evaluate(
                     "() => !!(window.doc && typeof window.doc === 'function')"),
-                timeout=8,
+                timeout=6,
             )
         except Exception as e:
             return False, f"doc-eval-error:{type(e).__name__}"
         if not has_doc:
+            # Cheap proxy-404 check only when no doc
+            try:
+                body = await asyncio.wait_for(
+                    frame.evaluate(
+                        "() => (document.body && document.body.innerText || '').slice(0, 400)"),
+                    timeout=5,
+                )
+                bl = (body or "").lower()
+                if ("proxy error" in bl or "lovable proxy error" in bl) and "404" in bl:
+                    return False, "proxy-404"
+            except Exception:
+                pass
             return False, "nodoc"
         try:
             probe = await asyncio.wait_for(
@@ -646,7 +977,7 @@ async def shell_worker_status(preview_page) -> tuple[bool, str]:
                         return r && r.stdout !== undefined ? r.stdout.trim() : 'no-probe';
                     } catch(e) { return 'probe-error'; }
                 }"""),
-                timeout=15,
+                timeout=12,
             )
         except Exception as e:
             return False, f"probe-eval-error:{type(e).__name__}"
@@ -654,40 +985,57 @@ async def shell_worker_status(preview_page) -> tuple[bool, str]:
             return True, f"{probe}@{label}"
         return False, f"worker-missing:{probe}"
 
-    # Prefer preview-like frames, then main
-    frames = []
-    try:
-        frames = list(preview_page.frames)
-    except Exception:
+    async def _once() -> tuple[bool, str]:
         frames = []
-    ranked = []
-    for fr in frames:
         try:
-            u = (fr.url or "").lower()
+            frames = list(preview_page.frames)
         except Exception:
-            u = ""
-        score = 0
-        if any(x in u for x in ("lovableproject.com", "id-preview", "webcontainer", "lovable.app")):
-            score = 2
-        elif fr == preview_page.main_frame:
-            score = 1
-        if score:
-            ranked.append((score, fr))
-    ranked.sort(key=lambda x: -x[0])
+            frames = []
+        ranked = []
+        for fr in frames:
+            try:
+                u = (fr.url or "").lower()
+            except Exception:
+                u = ""
+            score = 0
+            if "lovableproject.com" in u:
+                score = 3
+            elif any(x in u for x in ("id-preview", "webcontainer", "lovable.app")):
+                score = 2
+            elif fr == preview_page.main_frame:
+                score = 1
+            if score:
+                ranked.append((score, fr))
+        ranked.sort(key=lambda x: -x[0])
 
-    last = "nodoc"
-    for score, fr in ranked:
-        try:
-            lab = (fr.url or "")[:60]
-        except Exception:
-            lab = "frame"
-        ok, detail = await _probe_frame(fr, lab)
-        if ok:
-            return True, detail
-        last = detail
-        if detail.startswith("proxy-404"):
-            return False, detail
-    return False, last
+        last = "nodoc"
+        for score, fr in ranked:
+            try:
+                lab = (fr.url or "")[:60]
+            except Exception:
+                lab = "frame"
+            ok, detail = await _probe_frame(fr, lab)
+            if ok:
+                return True, detail
+            last = detail
+            if detail.startswith("proxy-404"):
+                return False, detail
+        return False, last
+
+    ok, detail = await _once()
+    if ok:
+        return ok, detail
+    soft = any(
+        detail == p or detail.startswith(p + ":") or detail.startswith(p)
+        for p in SOFT_DEAD_DETAILS)
+    if soft:
+        await asyncio.sleep(HEALTH_DEAD_GAP_S)
+        ok2, detail2 = await _once()
+        if ok2:
+            log(f"  Soft re-probe recovered: {detail2}")
+            return ok2, detail2
+        return False, detail2
+    return False, detail
 
 
 def _sess_dir(session_id):
@@ -730,6 +1078,9 @@ async def save_trio(context, page, session_id):
         log(f"  Saved {len(ls)} localStorage keys")
     except Exception as e:
         log(f"  localStorage save failed: {e}")
+    if os.environ.get("CHIMERA_SKIP_IDB", "") == "1":
+        log("  Skipping IndexedDB save (CHIMERA_SKIP_IDB=1)")
+        return
     try:
         idb = await asyncio.wait_for(page.evaluate("""async () => {
             return new Promise((resolve) => {
@@ -949,7 +1300,10 @@ async def capture_debug(chat_page, preview_page, tag: str) -> None:
         log(f"  Shot dir fail: {e}")
         return
     stamp = time.strftime("%H%M%S")
-    for page, label in ((chat_page, "chat"), (preview_page, "preview")):
+    pages = [(chat_page, "chat")]
+    if preview_page is not None and preview_page is not chat_page:
+        pages.append((preview_page, "preview"))
+    for page, label in pages:
         if page is None:
             continue
         try:
@@ -960,12 +1314,12 @@ async def capture_debug(chat_page, preview_page, tag: str) -> None:
         path = SHOT_DIR / f"{stamp}_{tag}_{label}.png"
         try:
             await asyncio.wait_for(
-                page.screenshot(path=str(path), full_page=False, timeout=8000),
-                timeout=12,
+                page.screenshot(path=str(path), full_page=False, timeout=5000),
+                timeout=8,
             )
             log(f"  Shot {label}: {path.name}")
         except Exception as e:
-            log(f"  Shot {label} fail: {type(e).__name__}: {e}")
+            log(f"  Shot {label} fail: {type(e).__name__}")
 
     display = os.environ.get("DISPLAY") or ""
     if display:
@@ -976,7 +1330,7 @@ async def capture_debug(chat_page, preview_page, tag: str) -> None:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await asyncio.wait_for(proc.wait(), timeout=15)
+            await asyncio.wait_for(proc.wait(), timeout=12)
             if proc.returncode == 0 and xvfb_path.exists():
                 log(f"  Shot xvfb: {xvfb_path.name}")
             else:
@@ -986,10 +1340,14 @@ async def capture_debug(chat_page, preview_page, tag: str) -> None:
 
 
 async def keep_pages_warm(chat_page, preview_page) -> None:
-    """Mouse + click + key on chat AND preview so proxy/preview don't cool-off 404."""
+    """Human-like presence: scroll chat, hover/wheel preview iframe, light keys.
+
+    Avoids top-chrome clicks and Home/PageDown (those remount Preview → nodoc).
+    Iframe mode: one rich poke on the chat page covering both surfaces.
+    """
     import random as _r
 
-    async def _poke(page, label: str) -> None:
+    async def _human_chat(page, label: str) -> None:
         if page is None:
             return
         try:
@@ -1003,20 +1361,76 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
                 await page.bring_to_front()
             except Exception:
                 pass
+            # JS: scroll chat transcript + hover/mousemove on preview iframe
+            try:
+                await asyncio.wait_for(page.evaluate("""() => {
+                    const pick = (sel) => document.querySelector(sel);
+                    // scroll main chat column if present
+                    const scrolls = [
+                        ...document.querySelectorAll(
+                          '[data-radix-scroll-area-viewport], .overflow-y-auto, [class*="overflow-y"]')
+                    ].filter(el => el.scrollHeight > el.clientHeight + 40);
+                    if (scrolls.length) {
+                        const el = scrolls[0];
+                        const delta = (Math.random() > 0.5 ? 1 : -1) * (80 + Math.random() * 160);
+                        el.scrollTop = Math.max(0, Math.min(el.scrollHeight, el.scrollTop + delta));
+                    }
+                    const ifr = pick('#live-preview-panel')
+                        || [...document.querySelectorAll('iframe')].find(i =>
+                             /lovableproject|id-preview|lovable\\.app/i.test(i.src || i.id || ''));
+                    if (ifr) {
+                        const r = ifr.getBoundingClientRect();
+                        if (r.width > 20 && r.height > 20) {
+                            const x = r.left + r.width * (0.3 + Math.random() * 0.4);
+                            const y = r.top + r.height * (0.3 + Math.random() * 0.4);
+                            for (const typ of ['mouseover', 'mousemove', 'mouseenter']) {
+                                ifr.dispatchEvent(new MouseEvent(typ, {
+                                    bubbles: true, clientX: x, clientY: y, view: window
+                                }));
+                            }
+                            // also nudge parent so Lovable sees activity
+                            document.elementFromPoint(x, y)?.dispatchEvent(
+                                new MouseEvent('mousemove', {
+                                    bubbles: true, clientX: x, clientY: y, view: window
+                                }));
+                        }
+                    }
+                    // visibility / focus signals
+                    window.dispatchEvent(new Event('focus'));
+                    document.dispatchEvent(new Event('visibilitychange'));
+                    return true;
+                }"""), timeout=6)
+            except Exception:
+                pass
             vp = page.viewport_size or {"width": 1280, "height": 720}
             w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
-            x1, y1 = _r.randint(40, max(80, w - 40)), _r.randint(40, max(80, h - 40))
-            x2, y2 = _r.randint(40, max(80, w - 40)), _r.randint(40, max(80, h - 40))
-            await page.mouse.move(x1, y1)
-            await asyncio.sleep(0.15)
-            await page.mouse.move(x2, y2, steps=_r.randint(3, 8))
-            await asyncio.sleep(0.1)
-            # Click page chrome / empty area — avoid chat composer send
-            await page.mouse.click(x2, max(20, min(y2, 60)))
-            await asyncio.sleep(0.1)
+            # Mouse path over mid chat (left) then preview (right) — no top bar
+            cx = _r.randint(int(w * 0.15), int(w * 0.35))
+            cy = _r.randint(int(h * 0.35), int(h * 0.75))
+            px = _r.randint(int(w * 0.55), int(w * 0.88))
+            py = _r.randint(int(h * 0.35), int(h * 0.75))
+            await page.mouse.move(cx, cy, steps=_r.randint(3, 6))
+            await asyncio.sleep(_r.uniform(0.08, 0.2))
+            await page.mouse.wheel(0, _r.choice([-120, 120]))
+            await asyncio.sleep(_r.uniform(0.08, 0.2))
+            await page.mouse.move(px, py, steps=_r.randint(3, 7))
+            await asyncio.sleep(0.08)
+            await page.mouse.wheel(0, _r.choice([-100, 100]))
+            await page.mouse.click(px, py)
             key = _r.choice(PRESENCE_KEYS)
             await page.keyboard.press(key)
-            log(f"  Presence poke ok ({label}: move/click/{key})")
+            if _r.random() < 0.25:
+                try:
+                    await asyncio.wait_for(page.evaluate("""() => {
+                        const el = document.querySelector(
+                          '[contenteditable="true"], textarea');
+                        if (el) el.focus();
+                    }"""), timeout=2)
+                    await asyncio.sleep(0.2)
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+            log(f"  Presence poke ok ({label}: scroll/hover/wheel/{key})")
 
         try:
             await asyncio.wait_for(_do(), timeout=PRESENCE_POKE_TIMEOUT_S)
@@ -1025,10 +1439,34 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
         except Exception as e:
             if _is_crash_error(e):
                 raise
-            log(f"  Presence poke soft-fail ({label}): {e}")
+            log(f"  Presence poke soft-fail ({label}): {type(e).__name__}")
 
-    await _poke(chat_page, "chat")
-    await _poke(preview_page, "preview")
+    same = preview_page is chat_page
+    await _human_chat(chat_page, "chat+preview" if same else "chat")
+    if not same and preview_page is not None:
+        # dedicated preview tab — lighter mouse + wheel only
+        async def _poke_preview():
+            try:
+                await preview_page.bring_to_front()
+            except Exception:
+                pass
+            vp = preview_page.viewport_size or {"width": 1280, "height": 720}
+            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
+            x = _r.randint(100, max(120, w - 100))
+            y = _r.randint(100, max(120, h - 100))
+            await preview_page.mouse.move(x, y, steps=6)
+            await preview_page.mouse.wheel(0, _r.choice([-150, 150]))
+            await preview_page.mouse.click(x, y)
+            await preview_page.keyboard.press(_r.choice(PRESENCE_KEYS))
+            log("  Presence poke ok (preview: move/wheel/click)")
+        try:
+            await asyncio.wait_for(_poke_preview(), timeout=PRESENCE_POKE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log(f"  Presence poke timeout (preview >{PRESENCE_POKE_TIMEOUT_S}s)")
+        except Exception as e:
+            if _is_crash_error(e):
+                raise
+            log(f"  Presence poke soft-fail (preview): {type(e).__name__}")
 
 
 async def run_daemon(session_id, project_id, browser_type, threads, mode, headed=False):
@@ -1045,46 +1483,90 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
     chat_url = f"https://lovable.dev/projects/{project_id}"
 
     cycle = 0
-    while True:  # outer forever — browser crash / script fail → clean relaunch
+    reconnect_streak = 0
+    force_hard_kill = False
+    while True:  # outer forever — prefer CDP reconnect; hard-kill only when needed
         cycle += 1
-        log(f"=== Browser cycle #{cycle} ===")
-        kill_browser_orphans()
+        log(f"=== Browser cycle #{cycle} (reconnect_streak={reconnect_streak}) ===")
         pw = None
         browser = None
+        attached = False
+        exit_mode = "reconnect"  # health sets kill when CDP dead
         try:
+            # Hard kill clears wedged Chrome before relaunch
+            if force_hard_kill or reconnect_streak >= RECONNECT_STREAK_HARD:
+                log("  Hard-killing Chrome (reconnect exhausted or forced)")
+                hard_kill_chrome()
+                force_hard_kill = False
+                reconnect_streak = 0
+
             pw = await async_playwright().start()
-            # Launch browser
+
+            # Prefer Playwright launch (stable on Railway). CDP attach only for
+            # soft reconnect when Chrome was left up intentionally.
+            want_attach = (
+                reconnect_streak > 0
+                and cdp_http_alive()
+                and not force_hard_kill
+            )
             if browser_type == "chromium":
-                _args = ["--no-sandbox", "--disable-dev-shm-usage",
-                         "--disable-blink-features=AutomationControlled",
-                         "--js-flags=--max-old-space-size=256",
-                         "--disable-gpu", "--disable-software-rasterizer"]
-                if headed or os.environ.get("CHIMERA_CDP", "") == "1":
-                    _args.append("--remote-debugging-port=9222")
-                _launch = dict(headless=not headed, args=_args)
-                if os.environ.get("CHIMERA_SYSTEM_CHROME", "") == "1":
-                    _launch["channel"] = "chromium"
-                browser = await pw.chromium.launch(**_launch)
+                if want_attach:
+                    try:
+                        browser = await connect_cdp_browser(pw)
+                        attached = True
+                        log(f"  Soft-reattached via CDP {CDP_URL}")
+                    except Exception as e:
+                        log(f"  CDP attach fail ({e}) — fresh launch")
+                        want_attach = False
+                if not want_attach:
+                    if cdp_http_alive():
+                        hard_kill_chrome()
+                    _args = ["--no-sandbox", "--disable-dev-shm-usage",
+                             "--disable-blink-features=AutomationControlled",
+                             "--js-flags=--max-old-space-size=256",
+                             "--disable-gpu", "--disable-software-rasterizer",
+                             "--remote-debugging-port=9222"]
+                    browser = await pw.chromium.launch(
+                        headless=not headed, args=_args)
+                    attached = False
+                    log("  Launched Chromium via Playwright")
+                if attached:
+                    context, chat_page = await find_or_open_chat(
+                        browser, chat_url, project_id)
+                else:
+                    context = await browser.new_context(
+                        viewport={"width": 1280, "height": 720},
+                        user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
+                    chat_page = await context.new_page()
+                    log(f"Opening chat: {chat_url}")
+                    try:
+                        await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
+                    except Exception:
+                        pass
+                    await chat_page.wait_for_timeout(3000)
             else:
                 browser = await pw.firefox.launch(headless=not headed)
+                attached = False
+                context = await browser.new_context(
+                    viewport={"width": 1280, "height": 720},
+                    user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
+                chat_page = await context.new_page()
+                log(f"Opening chat: {chat_url}")
+                try:
+                    await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
+                except Exception:
+                    pass
+                await chat_page.wait_for_timeout(3000)
 
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-
-            # Load cookies
-            cookies = load_cookies_sync(session_id)
-            await context.add_cookies(cookies)
-            log(f"Loaded {len(cookies)} cookies")
-
-            # --- Step 1: Open chat page, check login ---
-            chat_page = await context.new_page()
-            log(f"Opening chat: {chat_url}")
+            # Load cookies into context (no-op if profile already has them)
             try:
-                await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
-            except Exception:
-                pass
-            await chat_page.wait_for_timeout(3000)
+                cookies = load_cookies_sync(session_id)
+                await context.add_cookies(cookies)
+                log(f"Loaded {len(cookies)} cookies")
+            except Exception as e:
+                log(f"  Cookie load soft-fail: {e}")
 
             # Check if logged in
             cur_url = chat_page.url
@@ -1175,10 +1657,31 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             elif idb_file.exists():
                 log("Skipping IndexedDB restore (CHIMERA_SKIP_IDB=1)")
 
+            # Let Lovable hydrate after cookie/LS restore (avoids false CDP-hung)
+            try:
+                await chat_page.reload(timeout=45000, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+
             # --- Step 3: Find chat input and send wake prompt (script3 trivial, not debug-terminal) ---
+            # Reconnect fast-path: worker still running in iframe → skip wake/inject
+            preview_page = chat_page
+            injected = False
+            try:
+                alive0, det0 = await asyncio.wait_for(
+                    shell_worker_status(chat_page), timeout=25)
+            except Exception as e:
+                alive0, det0 = False, type(e).__name__
+            if alive0:
+                log(f"  Reconnect: worker already alive ({det0}) — skip wake/inject")
+                injected = True
+                reconnect_streak = 0
+
             import random as _rand
             chat_input = None
-            for round_n in range(1, COMPOSER_TRIES + 1):
+            if not injected:
+              for round_n in range(1, COMPOSER_TRIES + 1):
                 await light_focus(chat_page)
                 chat_input, cdp_hung = await find_chat_composer(
                     chat_page, tag=f"start-r{round_n}")
@@ -1186,25 +1689,9 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     log(f"Chat input found (round {round_n}/{COMPOSER_TRIES})")
                     break
                 if cdp_hung:
-                    log(f"CDP hung on composer hunt (round {round_n}) — kill browser + rerun")
-                    # Skip Playwright shots (they hang too); Xvfb only
-                    try:
-                        display = os.environ.get("DISPLAY") or ""
-                        if display:
-                            SHOT_DIR.mkdir(parents=True, exist_ok=True)
-                            stamp = time.strftime("%H%M%S")
-                            xv = SHOT_DIR / f"{stamp}_cdp-hung-r{round_n}_xvfb.png"
-                            proc = await asyncio.create_subprocess_exec(
-                                "import", "-display", display, "-window", "root", str(xv),
-                                stdout=asyncio.subprocess.DEVNULL,
-                                stderr=asyncio.subprocess.DEVNULL,
-                            )
-                            await asyncio.wait_for(proc.wait(), timeout=10)
-                            if xv.exists():
-                                log(f"  Shot xvfb: {xv.name}")
-                    except Exception:
-                        pass
-                    break
+                    log(f"CDP hung on composer hunt (round {round_n}) — HARD kill (renderer wedged)")
+                    force_hard_kill = True
+                    raise RuntimeError("cycle-restart")
                 log(f"Chat input missing (round {round_n}/{COMPOSER_TRIES}) — wait {COMPOSER_WAIT_S}s + refresh")
                 if round_n in (1, 5, 10, COMPOSER_TRIES):
                     await capture_debug(chat_page, None, f"no-composer-r{round_n}")
@@ -1218,116 +1705,120 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await light_focus(chat_page)
                 await asyncio.sleep(COMPOSER_WAIT_S)
 
-            if not chat_input:
-                log(f"Chat input not found — kill browser + rerun")
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-                try:
-                    await pw.stop()
-                except Exception:
-                    pass
-                kill_browser_orphans()
-                await asyncio.sleep(5)
-                continue
+              if not chat_input:
+                log("Chat input not found — CDP reconnect (keep Chrome if up)")
+                raise RuntimeError(
+                    "cdp-reconnect" if cdp_http_alive() else "cycle-restart")
 
-            prompt = _rand.choice(WAKE_PROMPTS)
-            log(f"Sending wake prompt: '{prompt}'")
-            try:
-                await chat_input.click(timeout=5000)
-            except Exception:
-                pass
-            try:
-                await chat_input.fill(prompt, timeout=10000)
-            except Exception:
-                await chat_page.keyboard.type(prompt, delay=25)
-            await asyncio.sleep(0.3)
-            await chat_page.keyboard.press("Enter")
-            log("Wake prompt sent!")
+              prompt = _rand.choice(WAKE_PROMPTS)
+              log(f"Sending wake prompt: '{prompt}'")
+              try:
+                  await chat_input.click(timeout=5000)
+              except Exception:
+                  pass
+              try:
+                  await chat_input.fill(prompt, timeout=10000)
+              except Exception:
+                  await chat_page.keyboard.type(prompt, delay=25)
+              await asyncio.sleep(0.3)
+              await chat_page.keyboard.press("Enter")
+              log("Wake prompt sent!")
 
-            # --- Step 4: Prefer inject into chat Preview iframe (no auth-bridge 2nd tab)
-            preview_page = chat_page
-            injected = False
-            try:
-                await asyncio.wait_for(steal_preview_url_from_chat(chat_page), timeout=30)
-            except Exception as e:
-                log(f"  Preview tab click/steal soft-fail: {type(e).__name__}")
-            # If chat already has a live preview frame with doc, inject there
-            try:
-                alive0, det0 = await asyncio.wait_for(
-                    shell_worker_status(chat_page), timeout=25)
-                log(f"  Chat-frame probe pre-inject: {det0}")
-            except Exception as e:
-                log(f"  Chat-frame probe: {type(e).__name__}")
+              # --- Step 4: Inject into chat Preview lovableproject iframe (1 tab)
+              preview_page = chat_page
+              injected = False
+              try:
+                  stolen0 = await asyncio.wait_for(
+                      steal_preview_url_from_chat(chat_page), timeout=30)
+                  if stolen0 and "lovableproject.com" in stolen0:
+                      preview_url = stolen0
+              except Exception as e:
+                  log(f"  Preview tab click/steal soft-fail: {type(e).__name__}")
 
-            log("Injecting worker via chat Preview iframe...")
-            try:
-                injected = bool(await asyncio.wait_for(
-                    inject_miner(chat_page, BRIDGE_URL, threads), timeout=180))
-            except Exception as e:
-                log(f"  Chat-frame inject fail: {type(e).__name__}: {e}")
-                injected = False
+              sandbox_in_chat = await wait_for_chat_preview_sandbox(
+                  chat_page, timeout_seconds=150)
+              if not sandbox_in_chat:
+                  log("  Chat sandbox not ready yet — still try iframe inject")
+                  try:
+                      await asyncio.wait_for(
+                          send_wake_prompt(
+                              chat_page, chat_url=chat_url, session_config=config),
+                          timeout=60)
+                  except Exception as e:
+                      log(f"  Soft wake skip: {type(e).__name__}")
+                  await wait_for_chat_preview_sandbox(chat_page, timeout_seconds=45)
 
-            if not injected:
-                # Fallback: stolen URL in a dedicated tab
-                stolen = None
-                try:
-                    stolen = await asyncio.wait_for(
-                        steal_preview_url_from_chat(chat_page), timeout=45)
-                except Exception as e:
-                    log(f"  Steal preview failed: {type(e).__name__}: {e}")
-                use_url = stolen or preview_url
-                if stolen:
-                    preview_url = stolen
-                preview_page = await context.new_page()
-                log(f"Opening preview tab: {use_url[:140]}")
-                try:
-                    await preview_page.goto(use_url, timeout=45000, wait_until="commit")
-                except Exception as e:
-                    log(f"  Preview goto error: {type(e).__name__}")
-                await preview_page.wait_for_timeout(2000)
-                sandbox_ready = await wait_for_lovable_console(
-                    preview_page, timeout_seconds=120)
-                if not sandbox_ready:
-                    log("Lovable console never ready — second wake + wait...")
-                    await send_wake_prompt(
-                        chat_page, chat_url=chat_url, session_config=config)
-                    try:
-                        stolen2 = await steal_preview_url_from_chat(chat_page)
-                        if stolen2:
-                            use_url = stolen2
-                            preview_url = stolen2
-                    except Exception:
-                        pass
-                    try:
-                        await preview_page.goto(use_url, timeout=45000, wait_until="commit")
-                    except Exception:
-                        pass
-                    sandbox_ready = await wait_for_lovable_console(
-                        preview_page, timeout_seconds=120)
-                if not sandbox_ready:
-                    log("Sandbox never ready — kill browser + rerun")
-                    try:
-                        await browser.close()
-                    except Exception:
-                        pass
-                    try:
-                        await pw.stop()
-                    except Exception:
-                        pass
-                    kill_browser_orphans()
-                    await asyncio.sleep(5)
-                    continue
-                log("Injecting worker on preview tab...")
-                try:
-                    injected = bool(await inject_miner(preview_page, BRIDGE_URL, threads))
-                except Exception as e:
-                    log(f"Inject crashed: {e}")
-                    injected = False
+              for inj_try in range(1, 3):
+                  log(f"Injecting worker via chat Preview iframe (try {inj_try}/2)...")
+                  try:
+                      injected = bool(await asyncio.wait_for(
+                          inject_miner(chat_page, BRIDGE_URL, threads), timeout=200))
+                  except Exception as e:
+                      log(f"  Chat-frame inject fail: {type(e).__name__}: {e}")
+                      injected = False
+                  if injected:
+                      break
+                  if inj_try < 2:
+                      try:
+                          await asyncio.wait_for(
+                              send_wake_prompt(
+                                  chat_page, chat_url=chat_url, session_config=config),
+                              timeout=60)
+                      except Exception as e:
+                          log(f"  Retry wake skip: {type(e).__name__}")
+                      await wait_for_chat_preview_sandbox(
+                          chat_page, timeout_seconds=60)
+
+              if not injected:
+                  # Last-resort fallback: dedicated tab (costs RAM — avoid if possible)
+                  stolen = None
+                  try:
+                      stolen = await asyncio.wait_for(
+                          steal_preview_url_from_chat(chat_page), timeout=45)
+                  except Exception as e:
+                      log(f"  Steal preview failed: {type(e).__name__}: {e}")
+                  use_url = stolen or preview_url
+                  if stolen:
+                      preview_url = stolen
+                  preview_page = await context.new_page()
+                  log(f"Opening preview tab (fallback): {use_url[:140]}")
+                  try:
+                      await preview_page.goto(use_url, timeout=45000, wait_until="commit")
+                  except Exception as e:
+                      log(f"  Preview goto error: {type(e).__name__}")
+                  await preview_page.wait_for_timeout(2000)
+                  sandbox_ready = await wait_for_lovable_console(
+                      preview_page, timeout_seconds=120)
+                  if not sandbox_ready:
+                      log("Lovable console never ready — second wake + wait...")
+                      await send_wake_prompt(
+                          chat_page, chat_url=chat_url, session_config=config)
+                      try:
+                          stolen2 = await steal_preview_url_from_chat(chat_page)
+                          if stolen2:
+                              use_url = stolen2
+                              preview_url = stolen2
+                      except Exception:
+                          pass
+                      try:
+                          await preview_page.goto(use_url, timeout=45000, wait_until="commit")
+                      except Exception:
+                          pass
+                      sandbox_ready = await wait_for_lovable_console(
+                          preview_page, timeout_seconds=120)
+                  if not sandbox_ready:
+                      log("Sandbox never ready — CDP reconnect")
+                      raise RuntimeError(
+                          "cdp-reconnect" if cdp_http_alive() else "cycle-restart")
+                  log("Injecting worker on preview tab...")
+                  try:
+                      injected = bool(await inject_miner(preview_page, BRIDGE_URL, threads))
+                  except Exception as e:
+                      log(f"Inject crashed: {e}")
+                      injected = False
 
             if injected:
-                log("Worker injected!")
+                log("Worker injected!" if not alive0 else "Worker already running (reconnect)")
             else:
                 log("Worker injection returned False — health loop will retry")
 
@@ -1350,19 +1841,20 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             page_lock = asyncio.Lock()  # serialize revive vs token refresh
 
             async def daemon_health_loop():
-                """On shell/worker death: refresh chat → wake → preview → inject.
-                On browser/page crash: exit so outer loop relaunches browser.
-                """
+                """On shell/worker death: soft confirm → revive; prefer CDP reconnect over kill."""
+                nonlocal exit_mode, reconnect_streak, force_hard_kill
                 iteration = 0
                 fail_streak = 0
+                soft_dead = 0
                 while True:
                     iteration += 1
                     log(f"Health check #{iteration}...")
                     next_wait = HEALTH_INTERVAL_S
 
-                    # Browser/page gone → outer cycle relaunches everything
+                    # Browser/page gone → reconnect if CDP still up
                     if not await _browser_alive(browser, chat_page, preview_page):
-                        log("  Browser/page crashed or closed — restarting browser")
+                        exit_mode = "reconnect" if cdp_http_alive() else "kill"
+                        log(f"  Browser/page closed — {exit_mode}")
                         return
 
                     # Keep chat+preview warm every cycle (idle → proxy 404 cool-off)
@@ -1371,21 +1863,34 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     except Exception as e_warm:
                         if _is_crash_error(e_warm) or not await _browser_alive(
                                 browser, chat_page, preview_page):
-                            log("  Browser dead on presence poke — restarting")
+                            exit_mode = "reconnect" if cdp_http_alive() else "kill"
+                            log(f"  Browser dead on presence poke — {exit_mode}")
                             return
 
-                    await capture_debug(
-                        chat_page, preview_page, f"h{iteration}")
+                    # Shots every other check — less CDP load on Railway
+                    if iteration == 1 or iteration % 2 == 0:
+                        await capture_debug(
+                            chat_page, preview_page, f"h{iteration}")
 
                     try:
                         alive, detail = await asyncio.wait_for(
-                            shell_worker_status(preview_page), timeout=30)
+                            shell_worker_status(preview_page), timeout=45)
                         if alive:
                             fail_streak = 0
+                            soft_dead = 0
+                            reconnect_streak = 0
                             log(f"  Worker alive (probe: {detail})")
                             log("  Preview healthy")
                         else:
-                            log(f"  Shell/worker dead ({detail}) — full revive")
+                            soft_dead += 1
+                            log(f"  Shell/worker soft-dead ({detail}) "
+                                f"confirm {soft_dead}/{HEALTH_DEAD_CONFIRM}")
+                            if soft_dead < HEALTH_DEAD_CONFIRM:
+                                next_wait = HEALTH_DEAD_GAP_S
+                                await asyncio.sleep(next_wait)
+                                continue
+                            soft_dead = 0
+                            log(f"  Shell/worker dead confirmed ({detail}) — revive")
                             await capture_debug(
                                 chat_page, preview_page,
                                 f"dead-{detail.replace('/', '-')[:40]}")
@@ -1417,33 +1922,43 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     log(f"  Revive failed (streak={fail_streak}) — retry sooner")
                                     next_wait = 30
                                     if fail_streak >= FAIL_STREAK_RESTART:
-                                        log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
+                                        exit_mode = (
+                                            "reconnect" if cdp_http_alive() else "kill")
+                                        log(f"  Revive failed {FAIL_STREAK_RESTART}x — {exit_mode}")
                                         return
                             except asyncio.TimeoutError:
                                 fail_streak += 1
-                                log(f"  Revive timed out {REVIVE_WALL_S}s (streak={fail_streak}) — retry sooner")
+                                log(f"  Revive timed out {REVIVE_WALL_S}s (streak={fail_streak})")
                                 next_wait = 30
                                 if fail_streak >= FAIL_STREAK_RESTART:
-                                    log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
+                                    exit_mode = (
+                                        "reconnect" if cdp_http_alive() else "kill")
+                                    log(f"  Revive timeout x{FAIL_STREAK_RESTART} — {exit_mode}")
                                     return
                             except Exception as e2:
                                 fail_streak += 1
                                 log(f"  Revive error: {e2} (streak={fail_streak})")
                                 if _is_crash_error(e2) or not await _browser_alive(
                                         browser, chat_page, preview_page):
-                                    log("  Crash during revive — restarting browser")
+                                    exit_mode = (
+                                        "reconnect" if cdp_http_alive() else "kill")
+                                    log(f"  Crash during revive — {exit_mode}")
                                     return
                                 next_wait = 30
                                 if fail_streak >= FAIL_STREAK_RESTART:
-                                    log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
+                                    exit_mode = (
+                                        "reconnect" if cdp_http_alive() else "kill")
                                     return
 
                     except asyncio.TimeoutError:
                         fail_streak += 1
-                        log(f"  Health probe timed out 30s (streak={fail_streak})")
+                        log(f"  Health probe timed out 45s (streak={fail_streak})")
                         next_wait = 30
                         if fail_streak >= FAIL_STREAK_RESTART:
-                            log(f"  Probe dead {FAIL_STREAK_RESTART}x — restarting browser")
+                            # HTTP :9222 can still answer while renderer is wedged
+                            exit_mode = "kill"
+                            force_hard_kill = True
+                            log(f"  Probe dead {FAIL_STREAK_RESTART}x — hard kill (likely CDP wedge)")
                             return
                     except Exception as e:
                         log(f"  Health check error: {e}")
@@ -1454,7 +1969,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         next_wait = 30
                         fail_streak += 1
                         if fail_streak >= FAIL_STREAK_RESTART:
-                            log(f"  Health errors {FAIL_STREAK_RESTART}x — restarting browser")
+                            exit_mode = "reconnect" if cdp_http_alive() else "kill"
+                            log(f"  Health errors {FAIL_STREAK_RESTART}x — {exit_mode}")
                             return
 
                     log(f"  Next check in {next_wait}s...")
@@ -1466,7 +1982,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             while not health_task.done():
                 await asyncio.sleep(60)
                 if not await _browser_alive(browser, chat_page, preview_page):
-                    log("Browser died during token loop — restarting")
+                    exit_mode = "reconnect" if cdp_http_alive() else "kill"
+                    log(f"Browser died during token loop — {exit_mode}")
                     break
                 now = time.time()
                 if now - last_refresh >= TOKEN_REFRESH_INTERVAL:
@@ -1482,6 +1999,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     except Exception as e:
                         log(f"Token refresh error: {e}")
                         if _is_crash_error(e):
+                            exit_mode = "reconnect" if cdp_http_alive() else "kill"
                             break
                     last_refresh = now
 
@@ -1493,29 +2011,63 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 except Exception:
                     pass
 
-            # health exited or crash — outer loop relaunches browser and continues
-            log("Health/browser cycle ended — restarting in 5s...")
+            # Soft CDP reconnect only when we attached (Chrome survives disconnect).
+            # Playwright-launched Chrome dies with browser.close/pw.stop — hard cycle.
+            if exit_mode != "kill" and attached and cdp_http_alive():
+                log("Health cycle ended — CDP reconnect (Chrome stays up)...")
+                raise RuntimeError("cdp-reconnect")
+            log("Health cycle ended — hard Chrome restart...")
             raise RuntimeError("cycle-restart")
 
         except Exception as e:
             msg = str(e)
+            do_hard_kill = False
             if msg == "login-failed-retry":
                 wait_s = 300
+                do_hard_kill = True
             elif msg == "sandbox-never-ready":
                 wait_s = 120
+                do_hard_kill = True
+            elif msg == "cdp-reconnect":
+                wait_s = 3
+                reconnect_streak += 1
+                log(f"  CDP reconnect streak={reconnect_streak}/{RECONNECT_STREAK_HARD}")
+                if reconnect_streak >= RECONNECT_STREAK_HARD:
+                    do_hard_kill = True
+                    force_hard_kill = True
+                    wait_s = 5
             elif msg == "cycle-restart":
                 wait_s = 5
+                do_hard_kill = True
+                force_hard_kill = True
+                reconnect_streak = 0
             else:
                 log(f"Daemon error (will revive): {e}")
                 traceback.print_exc()
                 wait_s = 15
+                # Prefer reconnect if Chrome CDP still answers
+                do_hard_kill = not cdp_http_alive()
+                if not do_hard_kill:
+                    reconnect_streak += 1
+                    msg = "cdp-reconnect"
             try:
+                # CDP attach: close() disconnects without killing Chrome
+                # Launched browser: close() kills it — only call on hard kill
                 if browser is not None:
-                    await browser.close()
+                    if do_hard_kill or not attached:
+                        await browser.close()
+                    else:
+                        # Disconnect Playwright from CDP session only
+                        try:
+                            await browser.close()
+                        except Exception:
+                            pass
             except Exception:
                 pass
-            kill_browser_orphans()
-            log(f"Cleaning up — next cycle in {wait_s}s...")
+            if do_hard_kill:
+                hard_kill_chrome()
+            log(f"Cleaning up — next cycle in {wait_s}s "
+                f"({'HARD KILL' if do_hard_kill else 'CDP reconnect'})...")
             await asyncio.sleep(wait_s)
         finally:
             try:
@@ -1523,8 +2075,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     await pw.stop()
             except Exception:
                 pass
-            kill_browser_orphans()
-            # Always continue outer while True — never exit full mode
+            # Never auto-kill here — hard path already did; reconnect must keep Chrome
 
 
 def main():
