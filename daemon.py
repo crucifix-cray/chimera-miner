@@ -51,9 +51,11 @@ RECONNECT_STREAK_HARD = 3    # N failed reconnects → kill Chrome entirely
 HEALTH_INTERVAL_S = 40
 PRESENCE_KEYS = ("ArrowDown", "ArrowUp")  # Home/PageDown disrupt Lovable chat UI
 PRESENCE_POKE_TIMEOUT_S = 10
-# Every health tick also send a trivial chat prompt (no reload) — keeps sandbox warm.
+# Every health tick also send a trivial chat prompt — keeps sandbox warm.
 PRESENCE_PROMPT_AFTER_S = 3
 PRESENCE_PROMPT_TIMEOUT_S = 20
+# Every 2 min, reload chat before the presence prompt (clears upgrade modal / CDP sludge).
+PRESENCE_REFRESH_EVERY_S = 120
 # Don't full-revive on a single flaky nodoc — confirm dead first.
 HEALTH_DEAD_CONFIRM = 2
 HEALTH_DEAD_GAP_S = 12
@@ -571,8 +573,54 @@ async def send_wake_prompt(
     return await _type_and_send(chat_input, _rand.choice(WAKE_PROMPTS))
 
 
+async def refresh_chat_for_presence(chat_page, chat_url: str | None = None) -> bool:
+    """Reload chat before a presence prompt (every ~2 min). Soft-fail."""
+    if chat_page is None:
+        return False
+    try:
+        if chat_page.is_closed():
+            return False
+    except Exception:
+        return False
+    try:
+        await asyncio.wait_for(chat_page.bring_to_front(), timeout=5)
+    except Exception:
+        pass
+    # Dismiss upgrade / credits modal if it is blocking the composer
+    for label in ("Cancel", "Not now", "Close", "Maybe later"):
+        try:
+            btn = chat_page.get_by_role("button", name=label, exact=False)
+            n = await asyncio.wait_for(btn.count(), timeout=2)
+            if n > 0 and await btn.first.is_visible(timeout=1000):
+                await btn.first.click(timeout=2000)
+                log(f"  Presence refresh: dismissed '{label}'")
+                await asyncio.sleep(0.8)
+                break
+        except Exception:
+            continue
+    try:
+        cur = ""
+        try:
+            cur = chat_page.url or ""
+        except Exception:
+            cur = ""
+        log("  Presence refresh: reloading chat (2min tick)")
+        if chat_url and chat_url.rstrip("/") in (cur.split("?")[0] or ""):
+            await chat_page.reload(timeout=45000, wait_until="commit")
+        elif chat_url:
+            await chat_page.goto(chat_url, timeout=45000, wait_until="commit")
+        else:
+            await chat_page.reload(timeout=45000, wait_until="commit")
+        await asyncio.sleep(4)
+        await light_focus(chat_page)
+        return True
+    except Exception as e:
+        log(f"  Presence refresh soft-fail: {type(e).__name__}")
+        return False
+
+
 async def send_presence_prompt(chat_page) -> bool:
-    """Health-tick trivial chat prompt — no reload. Soft-fail unless crash."""
+    """Health-tick trivial chat prompt (say 'a' / 1+1? …). Soft-fail unless crash."""
     import random as _rand
 
     if chat_page is None:
@@ -2114,11 +2162,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             # Full mode: forever health — shell/worker dead → revive; crash → relaunch
             log("Starting health check loop (full mode)...")
             last_refresh = time.time()
+            last_presence_reload = 0.0  # force refresh on first 2min-eligible tick
             page_lock = asyncio.Lock()  # serialize revive vs token refresh
 
             async def daemon_health_loop():
                 """On shell/worker death: soft confirm → revive; prefer CDP reconnect over kill."""
-                nonlocal exit_mode, reconnect_streak, force_hard_kill
+                nonlocal exit_mode, reconnect_streak, force_hard_kill, last_presence_reload
                 iteration = 0
                 fail_streak = 0
                 soft_dead = 0
@@ -2143,9 +2192,14 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             log(f"  Browser dead on presence poke — {exit_mode}")
                             return
 
-                    # Trivial chat prompt every ~40s (no reload) — keeps Lovable awake
+                    # Trivial chat prompt every ~40s; every 2min reload chat first
                     if not page_lock.locked():
                         try:
+                            now_pr = time.time()
+                            if now_pr - last_presence_reload >= PRESENCE_REFRESH_EVERY_S:
+                                await refresh_chat_for_presence(
+                                    chat_page, chat_url=chat_url)
+                                last_presence_reload = now_pr
                             await send_presence_prompt(chat_page)
                         except Exception as e_pp:
                             if _is_crash_error(e_pp) or not await _browser_alive(
