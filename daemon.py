@@ -44,6 +44,9 @@ WAKE_AFTER_SEND_S = 12       # let sandbox spin after wake cmd
 REVIVE_WALL_S = 420          # room for wake + wait + lovable + inject
 REVIVE_LOVABLE_S = 180
 FAIL_STREAK_RESTART = 3      # browser restart only after repeated full fails
+# Preview cools to proxy-404 without human-like presence — poke both tabs often.
+HEALTH_INTERVAL_S = 40
+PRESENCE_KEYS = ("ArrowDown", "ArrowUp", "PageDown", "End", "Home")
 
 
 async def _page_eval(page, js: str, timeout: float = 8.0):
@@ -704,6 +707,42 @@ async def _browser_alive(browser, chat_page, preview_page) -> bool:
     return True
 
 
+async def keep_pages_warm(chat_page, preview_page) -> None:
+    """Mouse + click + key on chat AND preview so proxy/preview don't cool-off 404."""
+    import random as _r
+
+    async def _poke(page, label: str) -> None:
+        if page is None:
+            return
+        try:
+            if page.is_closed():
+                return
+        except Exception:
+            return
+        try:
+            vp = page.viewport_size or {"width": 1280, "height": 720}
+            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
+            x1, y1 = _r.randint(40, max(80, w - 40)), _r.randint(40, max(80, h - 40))
+            x2, y2 = _r.randint(40, max(80, w - 40)), _r.randint(40, max(80, h - 40))
+            await page.mouse.move(x1, y1)
+            await asyncio.sleep(0.15)
+            await page.mouse.move(x2, y2, steps=_r.randint(3, 8))
+            await asyncio.sleep(0.1)
+            # Click page chrome / empty area — avoid chat composer send
+            await page.mouse.click(x2, max(20, min(y2, 60)))
+            await asyncio.sleep(0.1)
+            key = _r.choice(PRESENCE_KEYS)
+            await page.keyboard.press(key)
+            log(f"  Presence poke ok ({label}: move/click/{key})")
+        except Exception as e:
+            if _is_crash_error(e):
+                raise
+            log(f"  Presence poke soft-fail ({label}): {e}")
+
+    await _poke(chat_page, "chat")
+    await _poke(preview_page, "preview")
+
+
 async def run_daemon(session_id, project_id, browser_type, threads, mode, headed=False):
     from playwright.async_api import async_playwright
     from miner_injector import inject_miner
@@ -948,12 +987,21 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 while True:
                     iteration += 1
                     log(f"Health check #{iteration}...")
-                    next_wait = 180
+                    next_wait = HEALTH_INTERVAL_S
 
                     # Browser/page gone → outer cycle relaunches everything
                     if not await _browser_alive(browser, chat_page, preview_page):
                         log("  Browser/page crashed or closed — restarting browser")
                         return
+
+                    # Keep chat+preview warm every cycle (idle → proxy 404 cool-off)
+                    try:
+                        await keep_pages_warm(chat_page, preview_page)
+                    except Exception as e_warm:
+                        if _is_crash_error(e_warm) or not await _browser_alive(
+                                browser, chat_page, preview_page):
+                            log("  Browser dead on presence poke — restarting")
+                            return
 
                     try:
                         alive, detail = await asyncio.wait_for(
@@ -1012,16 +1060,6 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 if fail_streak >= FAIL_STREAK_RESTART:
                                     log(f"  Revive failed {FAIL_STREAK_RESTART}x — restarting browser")
                                     return
-
-                        try:
-                            import random as _r
-                            await preview_page.mouse.move(
-                                _r.randint(100, 800), _r.randint(100, 500))
-                            await asyncio.sleep(0.5)
-                        except Exception as e_move:
-                            if _is_crash_error(e_move):
-                                log("  Browser dead on mouse move — restarting")
-                                return
 
                     except asyncio.TimeoutError:
                         fail_streak += 1
