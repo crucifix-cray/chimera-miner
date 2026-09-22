@@ -4,7 +4,7 @@
 
 Proven setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full --headed` / Chromium on Xvfb `:99` / `CHIMERA_SKIP_IDB=1`.  
 Runbook: `DAEMON-RAILWAY.md`. Fleet map: `FLEET-ARCHITECTURE.md`. Problems through **#30**.  
-Daemon may be stopped — sync md5s from runbook before relaunch.
+Canonical md5s / launch: `docs/DAEMON-RAILWAY.md`. Problems through #31.
 
 Words in this log: **preview shell**, **worker process**, **revive**. Function names like `inject_miner` mean “start the worker command in the preview”.
 
@@ -157,6 +157,11 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 - **Cause:** Frame-walking before SPA warm wedges CDP; wake reload death spiral.
 - **Fix:** Skip cold worker probe before composer; composer miss = wait not reload; wake fast-path sends without reload when already on project; CDP hung streak×3 before hard kill.
 
+## Problem 31: Sandbox wait hangs forever / cell idle after wake
+- **Symptom:** Log stuck on `Waiting for chat Preview sandbox/doc (max 120s)...` with no timeout line; `ps` shows no `daemon.py`; last stolen URL often `id-preview` while `lovableproject` probe is `no-doc` / `Error`.
+- **Cause:** Wait loop probed **every** chat frame with 12s evaluates; one wedged CDP call never returns → timeout never fires. Playwright Node `EPIPE` can also kill the driver mid-wait.
+- **Fix:** Rank frames, probe top-5 only with 6s hard bounds; 15s progress ticks; remount Preview/Shell every ~28s; post-wake spin before wait; outer `main()` catches `BaseException`, hard-kills Chrome, restarts. Launch under a shell `while true` supervisor so a dead Python still comes back.
+
 ---
 
 ## Working launch commands
@@ -164,14 +169,17 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 ### Daemon on Railway (production — recommended)
 ```bash
 cd /app/work/chimera-miner
-nohup env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 \
-  CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
-  CHIMERA_SHOT_DIR=/app/work/shots \
-  DISPLAY=:99 PYTHONUNBUFFERED=1 \
-  /opt/venv/bin/python3 -u daemon.py --session session-2 \
-  --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
-  --browser chromium --mode full --headed \
-  >> /app/work/daemon_s2.log 2>&1 &
+nohup bash -c 'while true; do
+  env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 \
+    CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
+    CHIMERA_SHOT_DIR=/app/work/shots \
+    DISPLAY=:99 PYTHONUNBUFFERED=1 \
+    /opt/venv/bin/python3 -u daemon.py --session session-2 \
+    --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
+    --browser chromium --mode full --headed
+  echo "[supervisor] daemon exited — restart in 8s" >> /app/work/daemon_s2.log
+  sleep 8
+done' >> /app/work/daemon_s2.log 2>&1 &
 ```
 See `docs/DAEMON-RAILWAY.md` for project/env/service IDs and md5 sync.
 

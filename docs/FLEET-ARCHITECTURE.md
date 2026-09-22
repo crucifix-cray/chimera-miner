@@ -109,12 +109,12 @@ flowchart TB
 - Needs small hardening + batch mode for many sessions.
 - Output must land in state store (project id per Lovable session).
 
-### Script 3 / `daemon.py` — OK, duty-cycle + sandbox bring-up gap
+### Script 3 / `daemon.py` — OK, duty-cycle polish
 - Runs on ~900 MB RAM class cells (headed Xvfb).
 - Pattern that works: **auth clear → composer (no reload) → wait real window.doc → inject → 40s presence+prompt → soft revive**.
-- Never-exit: crash / closed page / hard kill → **Browser cycle #N**.
-- Open pain: Shell `window.doc` slow/missing after cold start; wake reload → skeleton.
-- Sprint priority: shrink sandbox bring-up gap, then clone cells.
+- Never-exit: crash / closed page / hard kill → **Browser cycle #N**; shell supervisor if Python dies.
+- Pain addressed: sandbox wait no longer hangs forever (ranked probes + ticks + remount).
+- Sprint priority: shrink remaining inject gaps, then clone cells.
 
 ---
 
@@ -201,7 +201,7 @@ Implementation can be GitHub JSON / DB module already in tree — one writer, ma
 Canonical ops: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)  
 Problems / fixes: [`SCRIPT3-PROBLEMS-SOLUTIONS.md`](SCRIPT3-PROBLEMS-SOLUTIONS.md)
 
-Today: cell-16 service — code on `master` with headed Xvfb, chat-iframe inject, `SKIP_IDB`, 40s presence+prompt, auth-wall login, soft revive, no fake `window.doc`. **Daemon stopped** pending relaunch; md5s / launch: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md). Open issue: reliable Shell `window.doc` bring-up after cold start.
+Today: cell-16 service — code on `master` with headed Xvfb, chat-iframe inject, `SKIP_IDB`, 40s presence+prompt, auth-wall login, soft revive, no fake `window.doc`, ranked sandbox wait (problem 31). md5s / supervisor launch: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md). Open issue: shrink remaining duty-cycle gaps after cold start.
 
 ---
 

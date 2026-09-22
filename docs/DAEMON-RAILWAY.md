@@ -2,10 +2,10 @@
 
 **Updated:** 2026-09-22  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `8fdab97649e55be84db0041ab65c18f8` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
+**Canonical md5:** `daemon.py` = `142eaa572d8eea5f02c9b2a0caec1eb2` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
 
-**Status:** daemon **stopped** on cell-16 (2026-09-22). Relaunch with cmd below after sync.  
-Last healthy stretch earlier same day had workers; later session hit auth-wall / missing `window.doc` / CDP wedge during revive — see problems 26–30.
+**Status:** sandbox bring-up hardened (problem 31) — sync + relaunch with supervisor cmd below.  
+Workers were healthy earlier same day; later stuck on sandbox wait (no timeout line) / Node EPIPE — see problems 26–31.
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 
@@ -27,17 +27,22 @@ Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 | Python | `/opt/venv/bin/python3` |
 | Display | `Xvfb :99` (headed Chromium) |
 
-**Launch:**
+**Launch** (shell supervisor — restarts if Python dies after Node EPIPE):
 ```bash
 cd /app/work/chimera-miner
-nohup env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 \
-  CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
-  CHIMERA_SHOT_DIR=/app/work/shots \
-  DISPLAY=:99 PYTHONUNBUFFERED=1 \
-  /opt/venv/bin/python3 -u daemon.py --session session-2 \
-  --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
-  --browser chromium --mode full --headed \
-  >> /app/work/daemon_s2.log 2>&1 &
+nohup bash -c 'while true; do
+  env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 \
+    CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
+    CHIMERA_SHOT_DIR=/app/work/shots \
+    DISPLAY=:99 PYTHONUNBUFFERED=1 \
+    /opt/venv/bin/python3 -u daemon.py --session session-2 \
+    --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
+    --browser chromium --mode full --headed
+  ec=$?
+  echo "[$(date -u +%H:%M:%S)] supervisor: daemon exited $ec — restart in 8s" \
+    >> /app/work/daemon_s2.log
+  sleep 8
+done' >> /app/work/daemon_s2.log 2>&1 &
 ```
 
 - Lovable session: `session-2`  
@@ -74,7 +79,8 @@ Outer forever (main + run_daemon)
 │   ├── Composer hunt: wait (no reload); CDP timeout streak×3 → hard kill
 │   ├── Wake: prefer no-reload if already on project; trivial prompts only
 │   ├── Prefer inject into chat Preview lovableproject.com Shell Sandbox
-│   │     wait real window.doc('pwd') BEFORE inject (no blind inject)
+│   │     post-wake spin; ranked top-5 frame probes (6s); 15s ticks
+│   │     remount Preview/Shell ~28s; wait real doc('pwd') BEFORE inject
 │   │     never install fake window.doc object (poisons Shell)
 │   │     fallback tab only with stolen sessioned URL (never bare host)
 │   ├── save_trio(chat) — cookies+LS only when SKIP_IDB=1
@@ -98,7 +104,7 @@ Outer forever (main + run_daemon)
 ## SSH
 
 ```bash
-export HOME=/home/alae/Documents/repos/automation-toolkit/sessions/session-2
+export HOME=/home/alan/Documents/repos/automation-toolkit/sessions/session-2
 cd "$HOME"
 unset RAILWAY_TOKEN HTTP_PROXY HTTPS_PROXY https_proxy http_proxy
 railway ssh -p 340b7baa-d67f-42ae-8c58-fd803b75dc72 \
@@ -121,7 +127,8 @@ Note: `Documents/railways/session-16` CLI token may be 403 — cell SSH uses too
 | Idle cool-off / proxy-404 risk | 40s presence poke + trivial chat prompt |
 | Flaky `nodoc` | Soft re-probe + confirm ×2 before revive |
 | Sandbox dead (confirmed) | Iframe soft revive (no reload) → wake only if soft fails |
-| No `window.doc` yet | Wait + presence prompts; **do not** blind-inject |
+| No `window.doc` yet | Wait + presence + remount; **do not** blind-inject |
+| Stuck on `Waiting for sandbox/doc` forever | Ranked probes + ticks (problem 31); hard-kill + supervisor restart |
 | Fake `window.doc` object | Injector clears it; never re-installs stub |
 | Auth / private project wall | `detect_auth_wall` → `do_login` → goto project |
 | Inject picks cold `id-preview` | Prefer `lovableproject.com` + working `pwd` |

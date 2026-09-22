@@ -739,68 +739,138 @@ async def ensure_preview_shell_panel(chat_page) -> None:
         log(f"  Panel open soft-fail: {type(e).__name__}")
 
 
+def _sandbox_frame_score(frame) -> int:
+    """Rank chat Preview frames for window.doc probes (skip chat chrome)."""
+    try:
+        u = (frame.url or "").lower()
+    except Exception:
+        return -1
+    if "auth-bridge" in u:
+        return -1
+    if "lovable.dev" in u and "lovableproject" not in u:
+        return -1
+    try:
+        is_main = frame.parent_frame is None
+    except Exception:
+        is_main = False
+    if not u or u.startswith("about:"):
+        return 8 if not is_main else -1
+    score = 0
+    if "lovableproject.com" in u:
+        score += 100
+    if "webcontainer" in u or "stackblitz" in u:
+        score += 40
+    if "id-preview" in u or ("lovable.app" in u and "preview" in u):
+        score += 20
+    if "localhost:" in u or "127.0.0.1:" in u:
+        score += 10
+    return score
+
+
+async def _probe_frame_doc_pwd(fr, timeout: float = 6.0):
+    """Hard-bounded doc+pwd probe. Never let one frame wedge the wait loop."""
+    try:
+        return await asyncio.wait_for(
+            fr.evaluate(
+                """async () => {
+                if (window.doc && typeof window.doc !== 'function') {
+                    try { delete window.doc; } catch (e) { window.doc = undefined; }
+                    return { ok: false, err: 'cleared-fake' };
+                }
+                if (!window.doc || typeof window.doc !== 'function') {
+                    if (window.lovable) return { ok: false, err: 'lovable-obj-no-doc' };
+                    return { ok: false, err: 'no-doc' };
+                }
+                try {
+                    if (window.doc.connect) {
+                        try { await window.doc.connect(); } catch (e) {}
+                    }
+                    const r = await window.doc('pwd');
+                    return { ok: true, r: r };
+                } catch (e) {
+                    return { ok: false, err: String(e && e.message || e).slice(0, 120) };
+                }
+            }"""
+            ),
+            timeout=timeout,
+        )
+    except Exception as e:
+        return {"ok": False, "err": type(e).__name__}
+
+
 async def wait_for_chat_preview_sandbox(
     chat_page, timeout_seconds: int = 120
 ) -> bool:
     """Wait until a chat Preview frame exposes window.doc (Shell Sandbox).
 
     Prefers lovableproject.com; also accepts id-preview / nested shell frames.
+    Probes only top-ranked frames with short timeouts so CDP wedges cannot
+    stall past timeout_seconds (seen as 'Waiting...' forever on Railway).
     """
     log(f"Waiting for chat Preview sandbox/doc (max {timeout_seconds}s)...")
     await ensure_preview_shell_panel(chat_page)
 
     start = asyncio.get_running_loop().time()
     last_note = ""
+    last_tick = 0.0
+    last_remount = 0.0
     while True:
         elapsed = asyncio.get_running_loop().time() - start
         if elapsed > timeout_seconds:
             log(f"  Chat Preview sandbox timeout after {timeout_seconds}s"
                 + (f" ({last_note})" if last_note else ""))
             return False
+
+        # Remount Preview/Shell periodically — doc often appears only after remount
+        if elapsed - last_remount >= 28:
+            last_remount = elapsed
+            try:
+                await asyncio.wait_for(
+                    ensure_preview_shell_panel(chat_page), timeout=20)
+            except Exception as e:
+                last_note = f"remount:{type(e).__name__}"
+
         try:
             frames = list(chat_page.frames)
         except Exception:
             frames = []
-        soft = None  # non-lovableproject frame with working pwd
+
+        ranked = []
         for fr in frames:
+            sc = _sandbox_frame_score(fr)
+            if sc > 0:
+                ranked.append((sc, fr))
+        ranked.sort(key=lambda x: -x[0])
+        # Cap probes per pass — many frames × long evaluate = apparent forever hang
+        candidates = ranked[:5]
+
+        if elapsed - last_tick >= 15:
+            last_tick = elapsed
+            urls = []
+            for sc, fr in candidates:
+                try:
+                    urls.append(f"{sc}:{(fr.url or '')[:55]}")
+                except Exception:
+                    urls.append(f"{sc}:?")
+            log(f"  Sandbox wait {int(elapsed)}s "
+                f"frames={len(frames)} probe={len(candidates)} "
+                f"[{', '.join(urls) or 'none'}] "
+                f"last={last_note or '-'}")
+
+        soft = None  # non-lovableproject frame with working pwd
+        for sc, fr in candidates:
             try:
                 u = fr.url or ""
             except Exception:
-                continue
+                u = ""
             ul = u.lower()
-            if "lovable.dev" in ul and "lovableproject" not in ul:
-                continue
-            if "auth-bridge" in ul:
-                last_note = "auth-bridge"
-                continue
-            try:
-                probe = await asyncio.wait_for(
-                    fr.evaluate(
-                        """async () => {
-                        if (!window.doc || typeof window.doc !== 'function')
-                            return { ok: false, err: 'no-doc' };
-                        try {
-                            if (window.doc.connect) {
-                                try { await window.doc.connect(); } catch (e) {}
-                            }
-                            const r = await window.doc('pwd');
-                            return { ok: true, r: r };
-                        } catch (e) {
-                            return { ok: false, err: String(e && e.message || e).slice(0, 120) };
-                        }
-                    }"""
-                    ),
-                    timeout=12,
-                )
-            except Exception as e:
-                last_note = f"{u[:60]}:{type(e).__name__}"
-                continue
+            probe = await _probe_frame_doc_pwd(fr, timeout=6.0)
             if not isinstance(probe, dict):
                 continue
             if not probe.get("ok"):
-                if any(x in ul for x in (
-                        "lovableproject.com", "id-preview", "lovable.app")):
-                    last_note = f"{u[:70]}:{probe.get('err', '?')[:40]}"
+                err = str(probe.get("err", "?"))[:50]
+                if sc >= 20:
+                    last_note = f"{u[:70]}:{err}"
                 continue
             if "lovableproject.com" in ul:
                 log(f"  Chat Preview sandbox ready (lovableproject+pwd): {u[:120]}")
@@ -809,7 +879,7 @@ async def wait_for_chat_preview_sandbox(
         if soft:
             log(f"  Chat Preview sandbox ready (pwd): {soft[:120]}")
             return True
-        await asyncio.sleep(5)
+        await asyncio.sleep(4)
 
 
 async def wait_for_lovable_console(preview_page, timeout_seconds: int = 300) -> bool:
@@ -1914,11 +1984,14 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
               await asyncio.sleep(0.3)
               await chat_page.keyboard.press("Enter")
               log("Wake prompt sent!")
+              log(f"  Post-wake spin {WAKE_AFTER_SEND_S}s for Shell Sandbox...")
+              await asyncio.sleep(WAKE_AFTER_SEND_S)
 
               # --- Step 4: Inject into chat Preview lovableproject iframe (1 tab)
               preview_page = chat_page
               injected = False
               try:
+                  await ensure_preview_shell_panel(chat_page)
                   stolen0 = await asyncio.wait_for(
                       steal_preview_url_from_chat(chat_page), timeout=30)
                   if stolen0 and "lovableproject.com" in stolen0:
@@ -1927,7 +2000,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                   log(f"  Preview tab click/steal soft-fail: {type(e).__name__}")
 
               sandbox_in_chat = await wait_for_chat_preview_sandbox(
-                  chat_page, timeout_seconds=120)
+                  chat_page, timeout_seconds=150)
               if not sandbox_in_chat:
                   for wake_i in range(1, 3):
                       log(f"  Sandbox missing — presence prompt {wake_i}/2 "
@@ -2305,7 +2378,8 @@ def main():
     args = parser.parse_args()
     headed = args.headed or os.environ.get("CHIMERA_HEADED", "") == "1"
 
-    # Even if run_daemon returns or asyncio blows up — keep going in full mode
+    # Even if run_daemon returns or asyncio/Playwright blows up — keep going
+    # in full mode. Node EPIPE / driver death must not leave the cell idle.
     while True:
         try:
             asyncio.run(run_daemon(
@@ -2313,14 +2387,29 @@ def main():
                 args.mode, headed=headed))
             if args.mode != "full":
                 break
-            log("run_daemon returned unexpectedly — restarting in 10s")
+            log("run_daemon returned unexpectedly — hard-kill + restart in 10s")
+            try:
+                hard_kill_chrome()
+            except Exception:
+                pass
             time.sleep(10)
         except KeyboardInterrupt:
             log("Interrupted")
             break
-        except Exception as e:
-            log(f"Fatal outer error (restarting in 10s): {e}")
+        except BaseException as e:
+            # Catch BaseException so SystemExit from driver death still restarts
+            if isinstance(e, KeyboardInterrupt):
+                log("Interrupted")
+                break
+            log(f"Fatal outer error (hard-kill + restart in 10s): "
+                f"{type(e).__name__}: {e}")
             traceback.print_exc()
+            try:
+                hard_kill_chrome()
+            except Exception:
+                pass
+            if args.mode != "full":
+                raise
             time.sleep(10)
 
 

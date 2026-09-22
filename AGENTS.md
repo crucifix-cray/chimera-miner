@@ -22,9 +22,9 @@ Control plane: **WSS bridges**. Sprint map + math: `docs/FLEET-ARCHITECTURE.md`.
 
 ## Current status (2026-09-22)
 
-- **1 cell LIVE:** cell-16 / Lovable `session-2` / project `7d6f77a6…` / `daemon.py --mode full` / Chromium  
-- **Heal path:** refresh chat → wake → wait → preview → inject; crashes → **Browser cycle #N** (never exit)  
-- **Live md5:** `daemon.py` = `13d5b7cb4b8b6961f2acd561aba2ad67` (`5492fdf`)  
+- **1 cell:** cell-16 / Lovable `session-2` / project `7d6f77a6…` / `daemon.py --mode full` / Chromium headed  
+- **Heal path:** soft presence → wait real `window.doc` → inject; crashes → **Browser cycle #N**; shell supervisor restarts dead Python  
+- **Canonical md5:** `daemon.py` = `142eaa572d8eea5f02c9b2a0caec1eb2` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
 - **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`  
 - Preview shells still drop sometimes; daemon recovers. Short gaps expected.  
 - ~34 Lovable sessions on disk path; scale goal in fleet doc (~1K services + ~1K sessions)
