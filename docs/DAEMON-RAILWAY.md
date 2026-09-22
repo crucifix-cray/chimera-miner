@@ -1,9 +1,10 @@
 # Daemon on Railway (cell-16) — Canonical Runbook
 
-**Updated:** 2026-09-21 ~22:15 UTC  
+**Updated:** 2026-09-22 ~00:20 UTC  
 **Source of truth in repo:** `daemon.py` + `miner_injector.py` on branch `master`  
 **Live cell:** hashes of those two files on the box MUST match `master` after each deploy.  
-**Live md5:** `daemon.py` = `13d5b7cb4b8b6961f2acd561aba2ad67` · `miner_injector.py` = `c69482d1db5be44b36554bb37f07fa7a`
+**Live md5:** `daemon.py` = `13d5b7cb4b8b6961f2acd561aba2ad67` · `miner_injector.py` = `c69482d1db5be44b36554bb37f07fa7a`  
+**Commit:** `5492fdf` — never-exit + simple revive
 
 ---
 
@@ -14,7 +15,8 @@
 | Railway project | `340b7baa-d67f-42ae-8c58-fd803b75dc72` |
 | Environment | `801b5148-b8e5-445a-a9e5-a813998e5f9d` |
 | Service | `46ab5f8c-b0c2-4e42-aab2-e055e5f61b1d` (cell-16) |
-| SSH key | `automation-toolkit/sessions/session-2/.ssh/cellkey` (agent: session-16) |
+| SSH key | `automation-toolkit/sessions/session-2/.ssh/cellkey` |
+| CLI auth | `HOME=/home/alan/Documents/railways/sessions/session-2` (mendo.zakian56) |
 | Workdir on cell | `/app/work/chimera-miner/` |
 | Session trio | `/app/work/scripts/sessions/session-2/` |
 | Log | `/app/work/daemon_s2.log` |
@@ -23,17 +25,17 @@
 **Launch command (production):**
 ```bash
 cd /app/work/chimera-miner
-nohup env CHIMERA_NO_PROXY=1 CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
+nohup env CHIMERA_NO_PROXY=1 CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions DISPLAY=:99 \
   /opt/venv/bin/python3 -u daemon.py --session session-2 \
   --project 7d6f77a6-69a1-4b06-a1d3-53094c4c8019 \
   --browser chromium --mode full \
-  > /app/work/daemon_s2.log 2>&1 &
+  >> /app/work/daemon_s2.log 2>&1 &
 ```
 
 **Account / project:**
 - Session: `session-2` / `altonlehman16@gmail.com`
 - Project: `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`
-- Bridge: `wss://chimera-bridge-production-0703.up.railway.app` (in `daemon.py` / `miner_injector.py`)
+- Bridge: `wss://chimera-bridge-production-0703.up.railway.app`
 
 ---
 
@@ -43,17 +45,15 @@ nohup env CHIMERA_NO_PROXY=1 CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
 |---|---|
 | `daemon.py` | Autonomous miner (full-mode health + revive) — **primary** |
 | `miner_injector.py` | `inject_miner()`, worker command builder |
-| (session trio, not in chimera-miner git) | `cookies.json` / `localstorage.json` / `indexeddb.json` / `config.json` under sessions dir |
+| (session trio, not in chimera-miner git) | cookies / LS / IDB / config under sessions dir |
 
-Deploy path used in practice: **base64 pipe of `daemon.py` over `railway ssh`** (reliable).  
-Alternate: `curl` raw GitHub `master/daemon.py` on the cell after push.
-
-Verify sync:
+**Deploy:** after `git push`, on cell:
 ```bash
-# local
-md5sum daemon.py miner_injector.py
-# cell
-md5sum /app/work/chimera-miner/daemon.py /app/work/chimera-miner/miner_injector.py
+curl -fsSL -o /app/work/chimera-miner/daemon.py \
+  https://raw.githubusercontent.com/crucifix-cray/chimera-miner/master/daemon.py
+# kill by exact PID of /opt/venv/bin/python3 -u daemon.py — never pkill -f
+# then relaunch (see Launch command)
+md5sum /app/work/chimera-miner/daemon.py   # must match local master
 ```
 
 ---
@@ -61,54 +61,48 @@ md5sum /app/work/chimera-miner/daemon.py /app/work/chimera-miner/miner_injector.
 ## Daemon behavior (full mode) — current
 
 ```
-Cold start
-├── Chromium headless (CHIMERA_NO_PROXY=1)
-├── Load cookies → restore LS + IDB (IDB restore hard-timeout 15s)
-├── Open chat → wake prompt (say 'a' / 1+1? / 2+2? / …)  [NOT script2 debug-terminal]
-├── Open preview → wait_for_lovable_console
-│     (auth-bridge: wait, don't reload-spam; reload uses wait_until=commit)
-│     until console 'lovable' OR window.doc / window.lovable
-└── inject_miner() → save_trio from chat page → health loop
-
-Health loop (~180s when healthy; ~30s after failed revive)
-├── shell_worker_status: proxy-404 / auth-bridge / login / nodoc / probe=0 → DEAD
-├── If DEAD → simple revive (serialized vs token refresh, 420s wall):
-│     refresh chat → send wake cmd → wait 12s → goto preview → wait doc → inject
-│     (retry wake once if no doc; keep looping)
-├── Revive fail streak ≥ 3 → browser restart in 5s
-├── Browser/page crash / TargetClosed / script error → outer cycle relaunch (never exit)
-└── Token refresh every 40m (skipped while revive lock held; 20s hard timeout)
-    save_trio always from chat origin (never preview — preview wipe bug)
+Outer forever (main + run_daemon while True)
+├── Browser cycle #N
+│   ├── Chromium headless (CHIMERA_NO_PROXY=1)
+│   ├── cookies → LS + IDB (timeouts)
+│   ├── wake chat → preview wait until window.doc
+│   ├── inject_miner → save_trio (chat page only)
+│   └── Health loop (~180s / ~30s on fail)
+│         ├── shell_worker_status → DEAD?
+│         ├── YES → simple revive:
+│         │     refresh chat → wake cmd → wait 12s → preview → wait doc → inject
+│         ├── revive fail ×3 → end cycle → relaunch browser
+│         └── page/browser crash → end cycle → relaunch browser
+├── Any script/Playwright error → clean up → sleep → next cycle
+└── NEVER exit full mode
 ```
 
-**Flags:**
-- `--mode full` — forever health (production)
-- `--mode oneshot` — inject once, exit
-- `--headed` / `CHIMERA_HEADED=1` — local diagnose only (not on Railway)
+**Expected reality:** Lovable sandbox still dies sometimes (proxy-404 / nodoc / slow page). Daemon recovers via revive or browser cycle. Short 0-worker gaps are normal; permanent stop is not.
+
+**Success log lines:** `Worker alive (probe: N)` + `Preview healthy`  
+**Recovery lines:** `Revive: refresh chat → wake → wait → preview → inject` · `Browser cycle #N`
 
 ---
 
 ## SSH helper
 
 ```bash
-# From automation-toolkit (dedicated agent + cellkey)
-# Or the pattern used in ops:
-SOCK=/tmp/agents/cell16.sock
-# ssh-add session-2 cellkey → HOME=railways/session-16
-railway ssh -p 340b7baa-… -e 801b5148-… -s 46ab5f8c-… -- 'tail -40 /app/work/daemon_s2.log'
+export HOME=/home/alan/Documents/railways/sessions/session-2
+unset RAILWAY_TOKEN HTTP_PROXY HTTPS_PROXY
+railway ssh -p 340b7baa-… -e 801b5148-… -s 46ab5f8c-… -i ~/.ssh/cellkey -- \
+  'tail -40 /app/work/daemon_s2.log'
 ```
-
-Success log lines: `Worker alive (probe: N)` + `Preview healthy`.
 
 ---
 
-## Known failure modes (see also SCRIPT3-PROBLEMS-SOLUTIONS.md)
+## Known failure modes (see SCRIPT3-PROBLEMS-SOLUTIONS.md)
 
 | Symptom | Fix in daemon |
 |---|---|
-| Preview proxy 404 | Full revive: wake → lovable → inject |
-| Chat input missing during revive | Always goto chat; re-login; 4 rounds; browser restart after 3 fails |
-| Token refresh vs revive race | `page_lock` — refresh skipped during revive |
-| save from preview wipes LS/IDB | `save_trio(chat_page)` only |
-| reload hangs on `load` | `wait_until="commit"` |
-| IDB save/restore hang | 15s timeout, continue |
+| Preview proxy 404 / nodoc | Simple revive: refresh chat → wake → preview → inject |
+| Chat composer missing | Reload/goto chat up to 5 rounds; no abort-on-eval |
+| Token refresh vs revive race | `page_lock` |
+| save from preview wipes trio | `save_trio(chat_page)` only |
+| reload hangs on `load` | `wait_until="commit"` + timed `_page_eval` |
+| Console lovable without doc | Require `window.doc` / `window.lovable` |
+| Browser/script crash | Outer cycle relaunch; `main()` while True |

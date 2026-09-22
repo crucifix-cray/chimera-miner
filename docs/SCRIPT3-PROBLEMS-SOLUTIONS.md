@@ -88,16 +88,18 @@ Railway details: `docs/DAEMON-RAILWAY.md`.
 - **Fix:** `_page_eval` + 20s token refresh timeout; click "Skip to chat input"; revive wall-clock; log when waiting for `page_lock`.
 
 ## Problem 17: Fail-slow revive keeps fleet at 0 workers for ~30 min
-- **Symptom:** proxy-404 → wake with `body unreadable` / goto timeouts → 3×600s revive = ~30 min downtime; empty body falsely treated as Loading → reload+goto pileup; `?_wake=` cache-bust interrupted navigations.
-- **Cause:** Too-tolerant wake/revive; false Loading detection on empty eval; overlapping reload/goto.
-- **Fix:** `REVIVE_WALL_S=120`, `FAIL_STREAK_RESTART=2`, abort wake after 2 dead evals/gotos, no cache-bust query, no reload-on-empty, health probe 30s timeout, browser restart in 5s; probe TimeoutError skips revive.
-
----
+- **Symptom:** proxy-404 → wake with `body unreadable` / goto timeouts → 3×600s revive = ~30 min downtime.
+- **Fix (evolved):** simple revive + wall caps; see problems 18–19 for current behavior.
 
 ## Problem 18: Console 'lovable' without window.doc → inject abort
-- **Symptom:**  then inject  ×6 → abort; 0 workers.
-- **Cause:**  treated console text alone as ready.
-- **Fix:** Require  ( / ); console hit alone keeps waiting.
+- **Symptom:** `Lovable ready (console=True js=-)` then inject `no doc bridge` ×6 → abort.
+- **Cause:** `wait_for_lovable_console` treated console text alone as ready.
+- **Fix:** Require `js_ready` (`window.doc` / `window.lovable`); console hit alone keeps waiting.
+
+## Problem 19: Browser/script crash must not stop the daemon
+- **Symptom:** TargetClosed / page closed / inject exception → process dies or stuck.
+- **Cause:** errors escaped outer loop; `main()` only ran `asyncio.run` once.
+- **Fix:** detect crash errors + closed pages → end Browser cycle; outer `while True` + `main()` forever loop; log `Forever mode` / `Browser cycle #N`.
 
 ---
 

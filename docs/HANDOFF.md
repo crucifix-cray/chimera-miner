@@ -1,30 +1,28 @@
 # HANDOFF — Continue Chimera Fleet Deployment
 
-**Updated:** 2026-09-21 ~22:15 UTC
+**Updated:** 2026-09-22 ~00:20 UTC
 
 You are continuing autonomous miner fleet deployment. One miner is live and self-healing on cell-16. Your job: scale to all 34 sessions.
 
 **Read first:** `docs/DAEMON-RAILWAY.md` (exact Railway service IDs, launch cmd, sync rules).
 
 ## What's Already Done
-- `daemon.py` is the production miner — full-mode health + **fail-fast** revive (wake → lovable → inject)
-- Session-2 (`altonlehman16@gmail.com`) on **cell-16**, project `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`
-- Live cell `daemon.py` + `miner_injector.py` md5-match repo `master` after each deploy
-- GitHub DB backend (`github_db.py`) — Mega retired for this fleet path
+- `daemon.py` production miner — **simple revive** + **never-exit** browser cycles
+- Session-2 on **cell-16**, project `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`
+- Live cell md5 = `13d5b7cb4b8b6961f2acd561aba2ad67` (`5492fdf`)
 - Bridge: `wss://chimera-bridge-production-0703.up.railway.app` (**not** 0ef2)
-- Documented problems + fixes: `docs/SCRIPT3-PROBLEMS-SOLUTIONS.md` (incl. 11–17 revive/fail-fast)
+- Problems doc: `docs/SCRIPT3-PROBLEMS-SOLUTIONS.md` (through 19)
 
 ## Critical Rules (NEVER VIOLATE)
-- `CHIMERA_NO_PROXY=1` always — proxied IPs get Lovable error pages
-- `--browser chromium` on containers — Firefox dies after ~3min
-- `--mode full` on Railway (oneshot exits after inject)
-- Never commit secrets/cookies/tokens
-- Skip session-1 (burned)
-- One browser per cell; never `pkill -f` matching own SSH cmdline — kill by exact PID/`/opt/venv/bin/python3 -u daemon.py` only
-- **save_trio always from chat page** (lovable.dev) — never from preview
-- Wake prompts only (`say 'a'`, `2+2?`, …) — NOT script2 “Build a debug terminal”
-- **Fail-fast revive:** wall 180s, 2 fails → browser restart; no `?_wake=`; no reload-on-empty body
-- After every `daemon.py` push: `curl` raw GitHub onto cell + restart daemon; verify md5
+- `CHIMERA_NO_PROXY=1` always
+- `--browser chromium` + `--mode full` on Railway
+- Never commit secrets/cookies/tokens; skip session-1
+- Kill daemon by exact PID only — never `pkill -f` (matches SSH cmdline)
+- **save_trio from chat page only**
+- Wake = trivial prompts only (not script2 debug-terminal)
+- Revive = refresh chat → wake → wait → preview → inject
+- Crash / script error → Browser cycle relaunch (never exit full mode)
+- After every push: curl raw GitHub `daemon.py` onto cell + restart; verify md5
 
 ## Credentials
 - **OnKernel API:** `sk_65153b1d-9bc1-081c-f09f-9c97f1ddb02b.RR1CxEZUyjkV4yKV53f59W8gLKX4O90HfWTFZciIwyA`
