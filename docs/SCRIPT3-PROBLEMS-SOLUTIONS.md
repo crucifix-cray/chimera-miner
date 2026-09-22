@@ -165,7 +165,11 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 ## Problem 32: Upgrade modal / credits wall wedges presence prompts
 - **Symptom:** Xvfb shows "Upgrade your plan" / "0 free build credits"; presence `1+1?` times out; health probe ×3 → hard kill.
 - **Cause:** Modal blocks composer; CDP sludge accumulates if chat never reloads during health.
-- **Fix:** Every 2 min before presence prompt: try dismiss Cancel → reload chat → then send only tiny prompts (`say 'a'`, `1+1?`, …).
+- **Fix:** Every tick dismiss popups; on close (or every 2 min) reload chat; tiny prompts only; human mouse+type; shell check skip-if-running.
+
+## Problem 33: Duty cycle must never sound like "stopping"
+- **Symptom:** Logs said "Health cycle ended" / "Cleaning up" / "Interrupted" — looks like the agent quit.
+- **Fix:** Wording = "Browser cycle continue / relaunch"; KeyboardInterrupt also continues in full mode; supervisor `while true` still wraps Python.
 
 ---
 

@@ -49,18 +49,23 @@ FAIL_STREAK_RESTART = 3      # soft reconnect after this; hard kill only if CDP 
 RECONNECT_STREAK_HARD = 3    # N failed reconnects → kill Chrome entirely
 # Preview cools to proxy-404 without human-like presence — poke both tabs often.
 HEALTH_INTERVAL_S = 40
+HEALTH_INTERVAL_MAX_S = 60  # randomize next tick in [40, 60]
 PRESENCE_KEYS = ("ArrowDown", "ArrowUp")  # Home/PageDown disrupt Lovable chat UI
-PRESENCE_POKE_TIMEOUT_S = 10
+PRESENCE_POKE_TIMEOUT_S = 12
 # Every health tick also send a trivial chat prompt — keeps sandbox warm.
 PRESENCE_PROMPT_AFTER_S = 3
 PRESENCE_PROMPT_TIMEOUT_S = 20
-# Every 2 min, reload chat before the presence prompt (clears upgrade modal / CDP sludge).
+# Periodic chat reload even without a popup (CDP sludge / stuck UI).
 PRESENCE_REFRESH_EVERY_S = 120
 # Don't full-revive on a single flaky nodoc — confirm dead first.
 HEALTH_DEAD_CONFIRM = 2
 HEALTH_DEAD_GAP_S = 12
 SOFT_DEAD_DETAILS = ("nodoc", "worker-missing", "no-probe", "probe-error",
                      "doc-eval-error", "body-error", "probe-eval-error")
+POPUP_DISMISS_LABELS = (
+    "Cancel", "Not now", "Close", "Maybe later", "No thanks",
+    "Dismiss", "Got it", "Continue", "Skip", "Later",
+)
 # Startup composer hunt: look → miss → wait → repeat; then kill+rerun (no 5min nap).
 COMPOSER_TRIES = 15
 COMPOSER_WAIT_S = 10
@@ -573,8 +578,60 @@ async def send_wake_prompt(
     return await _type_and_send(chat_input, _rand.choice(WAKE_PROMPTS))
 
 
+async def dismiss_blocking_popups(chat_page) -> bool:
+    """Close upgrade / credits / cookie / dialog overlays. True if something closed."""
+    if chat_page is None:
+        return False
+    try:
+        if chat_page.is_closed():
+            return False
+    except Exception:
+        return False
+    closed = False
+    try:
+        await asyncio.wait_for(chat_page.bring_to_front(), timeout=5)
+    except Exception:
+        pass
+    for label in POPUP_DISMISS_LABELS:
+        try:
+            btn = chat_page.get_by_role("button", name=label, exact=False)
+            n = await asyncio.wait_for(btn.count(), timeout=1.5)
+            if n <= 0:
+                continue
+            if not await btn.first.is_visible(timeout=800):
+                continue
+            await btn.first.click(timeout=2000)
+            log(f"  Popup: closed '{label}'")
+            closed = True
+            await asyncio.sleep(0.6)
+        except Exception:
+            continue
+    # dialog X / aria-label close
+    for sel in (
+        '[role="dialog"] button[aria-label*="Close" i]',
+        '[role="dialog"] button[aria-label*="Dismiss" i]',
+        '[data-state="open"] button[aria-label*="Close" i]',
+    ):
+        try:
+            loc = chat_page.locator(sel).first
+            if await loc.count() and await loc.is_visible(timeout=600):
+                await loc.click(timeout=1500)
+                log("  Popup: closed via X")
+                closed = True
+                await asyncio.sleep(0.5)
+                break
+        except Exception:
+            continue
+    if closed:
+        try:
+            await chat_page.keyboard.press("Escape")
+        except Exception:
+            pass
+    return closed
+
+
 async def refresh_chat_for_presence(chat_page, chat_url: str | None = None) -> bool:
-    """Reload chat before a presence prompt (every ~2 min). Soft-fail."""
+    """Reload chat (after popup close or 2min tick). Soft-fail."""
     if chat_page is None:
         return False
     try:
@@ -586,25 +643,13 @@ async def refresh_chat_for_presence(chat_page, chat_url: str | None = None) -> b
         await asyncio.wait_for(chat_page.bring_to_front(), timeout=5)
     except Exception:
         pass
-    # Dismiss upgrade / credits modal if it is blocking the composer
-    for label in ("Cancel", "Not now", "Close", "Maybe later"):
-        try:
-            btn = chat_page.get_by_role("button", name=label, exact=False)
-            n = await asyncio.wait_for(btn.count(), timeout=2)
-            if n > 0 and await btn.first.is_visible(timeout=1000):
-                await btn.first.click(timeout=2000)
-                log(f"  Presence refresh: dismissed '{label}'")
-                await asyncio.sleep(0.8)
-                break
-        except Exception:
-            continue
     try:
         cur = ""
         try:
             cur = chat_page.url or ""
         except Exception:
             cur = ""
-        log("  Presence refresh: reloading chat (2min tick)")
+        log("  Presence refresh: reloading chat")
         if chat_url and chat_url.rstrip("/") in (cur.split("?")[0] or ""):
             await chat_page.reload(timeout=45000, wait_until="commit")
         elif chat_url:
@@ -613,6 +658,8 @@ async def refresh_chat_for_presence(chat_page, chat_url: str | None = None) -> b
             await chat_page.reload(timeout=45000, wait_until="commit")
         await asyncio.sleep(4)
         await light_focus(chat_page)
+        # popups often reappear after reload — close again
+        await dismiss_blocking_popups(chat_page)
         return True
     except Exception as e:
         log(f"  Presence refresh soft-fail: {type(e).__name__}")
@@ -1675,24 +1722,38 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
             await asyncio.sleep(_r.uniform(0.08, 0.2))
             await page.mouse.wheel(0, _r.choice([-120, 120]))
             await asyncio.sleep(_r.uniform(0.08, 0.2))
-            await page.mouse.move(px, py, steps=_r.randint(3, 7))
+            await page.mouse.move(px, py, steps=_r.randint(5, 10))
             await asyncio.sleep(0.08)
-            await page.mouse.wheel(0, _r.choice([-100, 100]))
+            await page.mouse.wheel(0, _r.choice([-100, 100, -60, 60]))
             await page.mouse.click(px, py)
+            # second short mouse drift (human fidget)
+            await page.mouse.move(
+                px + _r.randint(-40, 40),
+                py + _r.randint(-30, 30),
+                steps=_r.randint(2, 5),
+            )
             key = _r.choice(PRESENCE_KEYS)
             await page.keyboard.press(key)
-            if _r.random() < 0.25:
+            # light typing into composer then clear — looks human, does not send
+            if _r.random() < 0.55:
                 try:
                     await asyncio.wait_for(page.evaluate("""() => {
                         const el = document.querySelector(
-                          '[contenteditable="true"], textarea');
-                        if (el) el.focus();
+                          'div[contenteditable="true"][role="textbox"], '
+                          + '[contenteditable="true"], textarea');
+                        if (el) { el.focus(); return true; }
+                        return false;
                     }"""), timeout=2)
-                    await asyncio.sleep(0.2)
+                    snippet = _r.choice(("ok", "hi", "a", "x", "1"))
+                    await page.keyboard.type(snippet, delay=_r.randint(40, 90))
+                    await asyncio.sleep(_r.uniform(0.15, 0.35))
+                    for _ in range(len(snippet)):
+                        await page.keyboard.press("Backspace")
+                        await asyncio.sleep(0.04)
                     await page.keyboard.press("Escape")
                 except Exception:
                     pass
-            log(f"  Presence poke ok ({label}: scroll/hover/wheel/{key})")
+            log(f"  Presence poke ok ({label}: scroll/hover/wheel/type/{key})")
 
         try:
             await asyncio.wait_for(_do(), timeout=PRESENCE_POKE_TIMEOUT_S)
@@ -2182,21 +2243,24 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         log(f"  Browser/page closed — {exit_mode}")
                         return
 
-                    # Keep chat+preview warm every cycle (idle → proxy 404 cool-off)
+                    # Keep chat+preview warm every cycle (human mouse + light typing)
                     try:
                         await keep_pages_warm(chat_page, preview_page)
                     except Exception as e_warm:
                         if _is_crash_error(e_warm) or not await _browser_alive(
                                 browser, chat_page, preview_page):
                             exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                            log(f"  Browser dead on presence poke — {exit_mode}")
+                            log(f"  Browser dead on presence poke — relaunch cycle")
                             return
 
-                    # Trivial chat prompt every ~40s; every 2min reload chat first
+                    # Popup → close + refresh; else periodic 2min refresh; then tiny prompt
                     if not page_lock.locked():
                         try:
                             now_pr = time.time()
-                            if now_pr - last_presence_reload >= PRESENCE_REFRESH_EVERY_S:
+                            popped = await dismiss_blocking_popups(chat_page)
+                            if popped or (
+                                    now_pr - last_presence_reload
+                                    >= PRESENCE_REFRESH_EVERY_S):
                                 await refresh_chat_for_presence(
                                     chat_page, chat_url=chat_url)
                                 last_presence_reload = now_pr
@@ -2205,7 +2269,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             if _is_crash_error(e_pp) or not await _browser_alive(
                                     browser, chat_page, preview_page):
                                 exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                                log(f"  Browser dead on presence prompt — {exit_mode}")
+                                log(f"  Browser dead on presence prompt — relaunch cycle")
                                 return
                             log(f"  Presence prompt skip: {type(e_pp).__name__}")
 
@@ -2221,7 +2285,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             fail_streak = 0
                             soft_dead = 0
                             reconnect_streak = 0
-                            log(f"  Worker alive (probe: {detail})")
+                            log(f"  Worker alive (probe: {detail}) — skip inject")
                             log("  Preview healthy")
                         else:
                             soft_dead += 1
@@ -2232,7 +2296,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 await asyncio.sleep(next_wait)
                                 continue
                             soft_dead = 0
-                            log(f"  Shell/worker dead confirmed ({detail}) — revive")
+                            log(f"  Worker not running ({detail}) — inject/revive")
                             await capture_debug(
                                 chat_page, preview_page,
                                 f"dead-{detail.replace('/', '-')[:40]}")
@@ -2258,15 +2322,15 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                         await save_trio(context, chat_page, session_id)
                                     except Exception:
                                         pass
-                                    log("  Revive OK")
+                                    log("  Revive OK — worker running again")
                                 else:
                                     fail_streak += 1
-                                    log(f"  Revive failed (streak={fail_streak}) — retry sooner")
+                                    log(f"  Revive missed (streak={fail_streak}) — retry next tick")
                                     next_wait = 30
                                     if fail_streak >= FAIL_STREAK_RESTART:
                                         exit_mode = (
                                             "reconnect" if cdp_http_alive() else "kill")
-                                        log(f"  Revive failed {FAIL_STREAK_RESTART}x — {exit_mode}")
+                                        log(f"  Revive missed {FAIL_STREAK_RESTART}x — relaunch browser")
                                         return
                             except asyncio.TimeoutError:
                                 fail_streak += 1
@@ -2275,7 +2339,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 if fail_streak >= FAIL_STREAK_RESTART:
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
-                                    log(f"  Revive timeout x{FAIL_STREAK_RESTART} — {exit_mode}")
+                                    log(f"  Revive timeout x{FAIL_STREAK_RESTART} — relaunch browser")
                                     return
                             except Exception as e2:
                                 fail_streak += 1
@@ -2284,7 +2348,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                         browser, chat_page, preview_page):
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
-                                    log(f"  Crash during revive — {exit_mode}")
+                                    log(f"  Crash during revive — relaunch browser")
                                     return
                                 next_wait = 30
                                 if fail_streak >= FAIL_STREAK_RESTART:
@@ -2300,21 +2364,26 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             # HTTP :9222 can still answer while renderer is wedged
                             exit_mode = "kill"
                             force_hard_kill = True
-                            log(f"  Probe dead {FAIL_STREAK_RESTART}x — hard kill (likely CDP wedge)")
+                            log(f"  Probe dead {FAIL_STREAK_RESTART}x — relaunch Chrome (CDP wedge)")
                             return
                     except Exception as e:
                         log(f"  Health check error: {e}")
                         if _is_crash_error(e) or not await _browser_alive(
                                 browser, chat_page, preview_page):
-                            log("  Crash in health check — restarting browser")
+                            log("  Crash in health check — relaunch browser")
                             return
                         next_wait = 30
                         fail_streak += 1
                         if fail_streak >= FAIL_STREAK_RESTART:
                             exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                            log(f"  Health errors {FAIL_STREAK_RESTART}x — {exit_mode}")
+                            log(f"  Health errors {FAIL_STREAK_RESTART}x — relaunch cycle")
                             return
 
+                    # Randomize human cadence 40–60s when on the normal path
+                    if next_wait == HEALTH_INTERVAL_S:
+                        import random as _rh
+                        next_wait = _rh.randint(
+                            HEALTH_INTERVAL_S, HEALTH_INTERVAL_MAX_S)
                     log(f"  Next check in {next_wait}s...")
                     await asyncio.sleep(next_wait)
 
@@ -2356,9 +2425,9 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             # Soft CDP reconnect only when we attached (Chrome survives disconnect).
             # Playwright-launched Chrome dies with browser.close/pw.stop — hard cycle.
             if exit_mode != "kill" and attached and cdp_http_alive():
-                log("Health cycle ended — CDP reconnect (Chrome stays up)...")
+                log("Browser cycle continue — CDP reconnect (Chrome stays up)...")
                 raise RuntimeError("cdp-reconnect")
-            log("Health cycle ended — hard Chrome restart...")
+            log("Browser cycle continue — relaunch Chrome...")
             raise RuntimeError("cycle-restart")
 
         except Exception as e:
@@ -2408,7 +2477,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 pass
             if do_hard_kill:
                 hard_kill_chrome()
-            log(f"Cleaning up — next cycle in {wait_s}s "
+            log(f"Relaunching browser in {wait_s}s "
                 f"({'HARD KILL' if do_hard_kill else 'CDP reconnect'})...")
             await asyncio.sleep(wait_s)
         finally:
@@ -2441,21 +2510,26 @@ def main():
                 args.mode, headed=headed))
             if args.mode != "full":
                 break
-            log("run_daemon returned unexpectedly — hard-kill + restart in 10s")
+            log("run_daemon returned unexpectedly — hard-kill + continue in 10s")
             try:
                 hard_kill_chrome()
             except Exception:
                 pass
             time.sleep(10)
         except KeyboardInterrupt:
-            log("Interrupted")
-            break
+            log("KeyboardInterrupt — outer loop continues in 5s")
+            time.sleep(5)
+            if args.mode != "full":
+                break
         except BaseException as e:
             # Catch BaseException so SystemExit from driver death still restarts
             if isinstance(e, KeyboardInterrupt):
-                log("Interrupted")
-                break
-            log(f"Fatal outer error (hard-kill + restart in 10s): "
+                log("KeyboardInterrupt — outer loop continues in 5s")
+                time.sleep(5)
+                if args.mode != "full":
+                    break
+                continue
+            log(f"Outer error (hard-kill + continue in 10s): "
                 f"{type(e).__name__}: {e}")
             traceback.print_exc()
             try:

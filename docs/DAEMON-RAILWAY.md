@@ -2,9 +2,9 @@
 
 **Updated:** 2026-09-22  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `d7ecf38ca960c370515784a2d3ca55f5` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
+**Canonical md5:** `daemon.py` = `b53d9f696a9c14cfca45cf1b2bd7912a` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
 
-**Status:** cell-16 **LIVE** after problem-31 patch (`94a0d36`). Supervisor + headed daemon; md5s below.
+**Status:** cell-16 forever duty-cycle — human mouse/type, popup close+refresh, shell check skip-if-running (`b53d9f69`).
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 
@@ -84,8 +84,9 @@ Outer forever (main + run_daemon)
 │   │     fallback tab only with stolen sessioned URL (never bare host)
 │   ├── save_trio(chat) — cookies+LS only when SKIP_IDB=1
 │   └── Health every ~40s
-│         presence: scroll/hover/wheel + trivial chat prompt every ~40s
-│         every 2min: dismiss upgrade modal if any + reload chat, then small prompt
+│         presence: human mouse + light typing + trivial prompt every 40–60s
+│         popup → close (Cancel/X) + reload chat; else reload every 2min
+│         shell check: worker alive → skip inject; dead → inject/revive
 │         soft-confirm nodoc ×2 before revive
 │         iframe soft revive = wait sandbox + reinject (NO chat reload first)
 │         CDP evaluate hung → HARD kill Chrome
