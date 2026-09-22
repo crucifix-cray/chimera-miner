@@ -4,8 +4,7 @@
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
 **Canonical md5:** `daemon.py` = `142eaa572d8eea5f02c9b2a0caec1eb2` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
 
-**Status:** sandbox bring-up hardened (problem 31) — sync + relaunch with supervisor cmd below.  
-Workers were healthy earlier same day; later stuck on sandbox wait (no timeout line) / Node EPIPE — see problems 26–31.
+**Status:** cell-16 **LIVE** after problem-31 patch (`94a0d36`). Supervisor + headed daemon; md5s below.
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 
