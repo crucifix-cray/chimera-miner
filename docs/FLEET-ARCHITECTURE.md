@@ -109,12 +109,12 @@ flowchart TB
 - Needs small hardening + batch mode for many sessions.
 - Output must land in state store (project id per Lovable session).
 
-### Script 3 / `daemon.py` — OK, duty-cycle gap
+### Script 3 / `daemon.py` — OK, duty-cycle + sandbox bring-up gap
 - Runs on ~900 MB RAM class cells (headed Xvfb).
-- Pattern that works: **prefer chat iframe inject → 40s presence → soft-confirm → soft revive → hard kill if CDP wedged**.
+- Pattern that works: **auth clear → composer (no reload) → wait real window.doc → inject → 40s presence+prompt → soft revive**.
 - Never-exit: crash / closed page / hard kill → **Browser cycle #N**.
-- Real pain: preview shell still flaps → throughput dips until revive.
-- Sprint priority: shrink that gap (duty cycle), then clone cells.
+- Open pain: Shell `window.doc` slow/missing after cold start; wake reload → skeleton.
+- Sprint priority: shrink sandbox bring-up gap, then clone cells.
 
 ---
 
