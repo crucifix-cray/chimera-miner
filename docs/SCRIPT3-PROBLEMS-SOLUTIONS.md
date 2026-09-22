@@ -178,6 +178,11 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 - **Cause:** Real humans use curved paths, Fitts timing, overshoot, IKI ~180ms, reading pauses; hover more than click.
 - **Fix:** Bezier+jitter+overshoot `human_mouse_to`, chunked scroll, `human_type_text` (IKI/typo), presence prompt uses them; click ~30%.
 
+## Problem 35: Browser kill/reload spiral + fake "Worker command sent"
+- **Symptom:** Health fail×3 → HARD kill Chrome; 2min chat reload; inject logs success after hanging start with empty reply.
+- **Cause:** Soft UI issues were treated as browser death; inject trusted start reply without checking `sysoptd`.
+- **Fix:** Keep one Chromium; handle popup/dead-worker in place (no reload); fresh tab only if tab wedges; browser relaunch only if process died or 4 tabs never reach health; inject verifies worker procs before returning True.
+
 ## Working launch commands
 
 ### Daemon on Railway (production — recommended)

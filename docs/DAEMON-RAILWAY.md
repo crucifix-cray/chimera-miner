@@ -1,10 +1,10 @@
 # Daemon on Railway (cell-16) — runbook
 
-**Updated:** 2026-09-22  
+**Updated:** 2026-09-23  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `729fbf685de49ec08a4129fc2f717c20` · `miner_injector.py` = `9441b4768314cab9ad7dbc94089bf13a`  
+**Canonical md5:** `daemon.py` = `a65c10bae394650e3d17d91a907cd31f` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
 
-**Status:** cell-16 forever duty-cycle — human mouse/type, popup close+refresh, shell check skip-if-running (`88b07200`).
+**Status:** cell-16 — **one Chromium kept up**; issues handled in place (no reload); fresh tab only if a tab wedges; browser relaunch last resort.
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 
@@ -71,34 +71,27 @@ md5sum /app/work/chimera-miner/daemon.py /app/work/chimera-miner/miner_injector.
 
 ```text
 Outer forever (main + run_daemon)
-├── Browser cycle #N  (Playwright launch primary; CDP soft-reattach only if attached)
-│   ├── Chromium headed on :99 (--js-flags max-old-space-size=512)
+├── ONE Chromium kept up (headed :99)
+│   ├── Cycle #N = same browser, fresh tab (only if tab wedged)
+│   │     browser relaunch ONLY if process died OR 4 fresh tabs never reached health
 │   ├── cookies → LS; SKIP_IDB=1
-│   ├── Auth wall ("You don't have access") → do_login + goto project
-│   ├── Composer hunt: wait (no reload); CDP timeout streak×3 → hard kill
-│   ├── Wake: prefer no-reload if already on project; trivial prompts only
-│   ├── Prefer inject into chat Preview lovableproject.com Shell Sandbox
-│   │     post-wake spin; ranked top-5 frame probes (6s); 15s ticks
-│   │     remount Preview/Shell ~28s; wait real doc('pwd') BEFORE inject
-│   │     never install fake window.doc object (poisons Shell)
-│   │     fallback tab only with stolen sessioned URL (never bare host)
-│   ├── save_trio(chat) — cookies+LS only when SKIP_IDB=1
-│   └── Health every ~40s
-│         presence: human mouse + light typing + trivial prompt every 40–60s
-│         popup → close (Cancel/X) + reload chat; else reload every 2min
-│         shell check: worker alive → skip inject; dead → inject/revive
-│         soft-confirm nodoc ×2 before revive
-│         iframe soft revive = wait sandbox + reinject (NO chat reload first)
-│         CDP evaluate hung → HARD kill Chrome
-│         fail×3 → end cycle → relaunch
+│   ├── Auth wall → do_login + goto project (no hard kill)
+│   ├── Composer hunt: wait (no reload); CDP hung ×3 → fresh tab
+│   ├── Wake + inject into chat Preview lovableproject Shell
+│   │     wait real doc('pwd'); inject confirms sysoptd running (not just "sent")
+│   └── Health every 40–60s (in place — no page reload)
+│         human Bezier mouse + light type + tiny prompt
+│         popup → close Cancel/X (NO reload)
+│         shell check: alive → skip; dead → soft reinject (no reload)
+│         fail×6 → fresh tab (browser stays up)
 └── NEVER exit full mode
 ```
 
 **OK lines:**  
-`Presence poke ok` · `Presence prompt: sent` · `Worker alive (probe: N@…lovableproject.)` · `Preview healthy` · `Next check in 40s` · `Chat Preview sandbox ready (lovableproject+pwd)`
+`Presence poke ok` · `Presence prompt: sent` · `Worker confirmed running` · `Worker alive (probe: N@…) — skip inject` · `Preview healthy` · `Next check in 40s`
 
 **Heal lines:**  
-`Auth wall after restore — re-login` · `Shell/worker soft-dead … confirm 1/2` · `Revive: iframe soft path (no reload)` · `HARD kill (renderer wedged)` · `Browser cycle #N`
+`Popup: closed` · `Shell/worker soft-dead … confirm` · `Revive: iframe soft path (no reload)` · `fresh tab (browser stays up)` · `Cycle #N — same browser, fresh tab`
 
 ---
 

@@ -45,8 +45,13 @@ WAKE_SEL_MS = 10000
 WAKE_AFTER_SEND_S = 12       # let sandbox spin after wake cmd
 REVIVE_WALL_S = 420          # room for wake + wait + lovable + inject
 REVIVE_LOVABLE_S = 180
-FAIL_STREAK_RESTART = 3      # soft reconnect after this; hard kill only if CDP dead
-RECONNECT_STREAK_HARD = 3    # N failed reconnects → kill Chrome entirely
+# Consecutive failed health ticks before we give up on the current tab and open
+# a fresh tab in the SAME browser (browser is never killed for soft issues).
+FAIL_STREAK_RESTART = 6
+RECONNECT_STREAK_HARD = 3    # legacy, unused for launched browsers
+# Browser relaunch is last resort: only if the process died, or this many fresh
+# tabs in a row never got past startup (renderer shared + wedged).
+TAB_FAILS_BEFORE_BROWSER = 4
 # Preview cools to proxy-404 without human-like presence — poke both tabs often.
 HEALTH_INTERVAL_S = 40
 HEALTH_INTERVAL_MAX_S = 60  # randomize next tick in [40, 60]
@@ -55,8 +60,6 @@ PRESENCE_POKE_TIMEOUT_S = 22
 # Every health tick also send a trivial chat prompt — keeps sandbox warm.
 PRESENCE_PROMPT_AFTER_S = 3
 PRESENCE_PROMPT_TIMEOUT_S = 28
-# Periodic chat reload even without a popup (CDP sludge / stuck UI).
-PRESENCE_REFRESH_EVERY_S = 120
 # Track last cursor so moves are continuous (humans don't teleport).
 _HUMAN_MOUSE = {"x": 640.0, "y": 400.0}
 # Don't full-revive on a single flaky nodoc — confirm dead first.
@@ -495,7 +498,7 @@ async def send_wake_prompt(
         chat_input, cdp_hung = await find_chat_composer(
             chat_page, tag="wake-fast")
         if cdp_hung:
-            log("  Wake: CDP hung on fast path — HARD kill needed")
+            log("  Wake: CDP hung on fast path — tab wedged")
             return False
         if chat_input:
             return await _type_and_send(chat_input, _rand.choice(WAKE_PROMPTS))
@@ -567,7 +570,7 @@ async def send_wake_prompt(
             log(f"  Wake: chat input found (round {round_n})")
             break
         if cdp_hung:
-            log("  Wake: CDP hung — HARD kill needed (renderer wedged)")
+            log("  Wake: CDP hung — tab wedged")
             return False
 
         log(f"  Wake: no composer yet — refresh again")
@@ -589,7 +592,6 @@ async def human_mouse_to(page, x: float, y: float) -> None:
     import math
     import random as _r
 
-    global _HUMAN_MOUSE
     x0 = float(_HUMAN_MOUSE.get("x", 640))
     y0 = float(_HUMAN_MOUSE.get("y", 400))
     x1, y1 = float(x), float(y)
@@ -616,10 +618,10 @@ async def human_mouse_to(page, x: float, y: float) -> None:
         # retarget bezier end at overshoot, then correct
         x1, y1 = tx, ty
 
-    steps = max(10, min(42, int(dist / 10) + _r.randint(0, 6)))
+    steps = max(8, min(28, int(dist / 14) + _r.randint(0, 4)))
     # Fitts-ish: MT ≈ a + b·log2(D/W + 1); W~40px target
-    duration = 0.10 + 0.16 * math.log2(dist / 40.0 + 1.0)
-    duration *= _r.uniform(0.85, 1.25)
+    duration = 0.08 + 0.12 * math.log2(dist / 40.0 + 1.0)
+    duration *= _r.uniform(0.85, 1.15)
 
     def _bez(t: float):
         u = 1.0 - t
@@ -1413,12 +1415,10 @@ async def revive_sandbox(
             if ok:
                 log("  Revive inject: OK (soft)")
                 return True
-        log("  Revive: soft path failed — wake + retry (may reload)")
-        woke = await send_wake_prompt(
-            chat_page, chat_url=chat_url, session_config=session_config)
-        if not woke:
-            log("  Revive: wake failed — browser restart needed")
-            return False
+        log("  Revive: soft path missed — presence prompt + panel remount (no reload)")
+        await dismiss_blocking_popups(chat_page)
+        await send_presence_prompt(chat_page)
+        await ensure_preview_shell_panel(chat_page)
         ready = await wait_for_chat_preview_sandbox(
             chat_page, timeout_seconds=min(REVIVE_LOVABLE_S, 120))
         if not ready:
@@ -1880,16 +1880,36 @@ async def _browser_alive(browser, chat_page, preview_page) -> bool:
     return True
 
 
-async def capture_debug(chat_page, preview_page, tag: str) -> None:
-    """Playwright page shots + Xvfb root shot so we can see headed :99 state."""
+async def _shutdown_browser(pw, browser) -> None:
+    """Close browser + Playwright driver with hard timeouts (driver may be dead)."""
+    if browser is not None:
+        try:
+            await asyncio.wait_for(browser.close(), timeout=15)
+        except Exception:
+            pass
+    if pw is not None:
+        try:
+            await asyncio.wait_for(pw.stop(), timeout=15)
+        except Exception:
+            pass
+
+
+async def capture_debug(chat_page, preview_page, tag: str,
+                        xvfb_only: bool = False) -> None:
+    """Playwright page shots + Xvfb root shot so we can see headed :99 state.
+
+    xvfb_only skips page.screenshot — those go through CDP and time out /
+    add load on a busy renderer; the Xvfb grab is an external process.
+    """
     try:
         SHOT_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         log(f"  Shot dir fail: {e}")
         return
     stamp = time.strftime("%H%M%S")
-    pages = [(chat_page, "chat")]
-    if preview_page is not None and preview_page is not chat_page:
+    pages = [] if xvfb_only else [(chat_page, "chat")]
+    if (not xvfb_only and preview_page is not None
+            and preview_page is not chat_page):
         pages.append((preview_page, "preview"))
     for page, label in pages:
         if page is None:
@@ -1935,7 +1955,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
     log(f"Session: {session_id} ({config.get('email', '?')})")
     log(f"Project: {project_id}")
     log(f"Browser: {browser_type} headed={headed}")
-    log("Forever mode: crash / script error → revive → continue (never exit)")
+    log("Forever mode: one browser kept up; issues handled in place, fresh tab only if a tab wedges")
 
     preview_url = f"https://{project_id}.lovableproject.com"
     chat_url = f"https://lovable.dev/projects/{project_id}"
@@ -1943,42 +1963,40 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
     cycle = 0
     reconnect_streak = 0
     force_hard_kill = False
-    while True:  # outer forever — prefer CDP reconnect; hard-kill only when needed
+    tab_fail_streak = 0  # fresh tabs in a row that never reached the health loop
+    # One Playwright + one browser kept across cycles. A "cycle" is a fresh tab
+    # in the same browser; the browser is only relaunched if its process died.
+    pw = None
+    browser = None
+    context = None
+    while True:
         cycle += 1
-        log(f"=== Browser cycle #{cycle} (reconnect_streak={reconnect_streak}) ===")
-        pw = None
-        browser = None
         attached = False
-        exit_mode = "reconnect"  # health sets kill when CDP dead
+        exit_mode = "tab"
+        reached_health = False
+        browser_up = False
         try:
-            # Hard kill clears wedged Chrome before relaunch
-            if force_hard_kill or reconnect_streak >= RECONNECT_STREAK_HARD:
-                log("  Hard-killing Chrome (reconnect exhausted or forced)")
-                hard_kill_chrome()
-                force_hard_kill = False
-                reconnect_streak = 0
+            browser_up = browser is not None and browser.is_connected()
+        except Exception:
+            browser_up = False
+        need_new_browser = (not browser_up
+                            or tab_fail_streak >= TAB_FAILS_BEFORE_BROWSER)
+        log(f"=== Cycle #{cycle} — "
+            f"{'launch browser' if need_new_browser else 'same browser, fresh tab'} "
+            f"(tab_fail_streak={tab_fail_streak}) ===")
+        try:
+            if need_new_browser:
+                if browser_up:
+                    log(f"  {tab_fail_streak} fresh tabs never came up — "
+                        f"relaunching browser (last resort)")
+                await _shutdown_browser(pw, browser)
+                pw = browser = context = None
+                tab_fail_streak = 0
+                if cdp_http_alive():
+                    hard_kill_chrome()
 
-            pw = await async_playwright().start()
-
-            # Prefer Playwright launch (stable on Railway). CDP attach only for
-            # soft reconnect when Chrome was left up intentionally.
-            want_attach = (
-                reconnect_streak > 0
-                and cdp_http_alive()
-                and not force_hard_kill
-            )
-            if browser_type == "chromium":
-                if want_attach:
-                    try:
-                        browser = await connect_cdp_browser(pw)
-                        attached = True
-                        log(f"  Soft-reattached via CDP {CDP_URL}")
-                    except Exception as e:
-                        log(f"  CDP attach fail ({e}) — fresh launch")
-                        want_attach = False
-                if not want_attach:
-                    if cdp_http_alive():
-                        hard_kill_chrome()
+                pw = await async_playwright().start()
+                if browser_type == "chromium":
                     _args = ["--no-sandbox", "--disable-dev-shm-usage",
                              "--disable-blink-features=AutomationControlled",
                              "--js-flags=--max-old-space-size=512",
@@ -1986,37 +2004,34 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                              "--remote-debugging-port=9222"]
                     browser = await pw.chromium.launch(
                         headless=not headed, args=_args)
-                    attached = False
                     log("  Launched Chromium via Playwright")
-                if attached:
-                    context, chat_page = await find_or_open_chat(
-                        browser, chat_url, project_id)
                 else:
-                    context = await browser.new_context(
-                        viewport={"width": 1280, "height": 720},
-                        user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
-                    chat_page = await context.new_page()
-                    log(f"Opening chat: {chat_url}")
-                    try:
-                        await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
-                    except Exception:
-                        pass
-                    await chat_page.wait_for_timeout(3000)
-            else:
-                browser = await pw.firefox.launch(headless=not headed)
-                attached = False
+                    browser = await pw.firefox.launch(headless=not headed)
+                    log("  Launched Firefox via Playwright")
                 context = await browser.new_context(
                     viewport={"width": 1280, "height": 720},
                     user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
-                chat_page = await context.new_page()
-                log(f"Opening chat: {chat_url}")
+
+            old_pages = []
+            try:
+                old_pages = list(context.pages)
+            except Exception:
+                old_pages = []
+            chat_page = await context.new_page()
+            for op in old_pages:
                 try:
-                    await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
+                    await asyncio.wait_for(op.close(), timeout=8)
                 except Exception:
                     pass
-                await chat_page.wait_for_timeout(3000)
+            if old_pages:
+                log(f"  Opened fresh tab, closed {len(old_pages)} old tab(s) — browser stays up")
+            log(f"Opening chat: {chat_url}")
+            try:
+                await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
+            except Exception:
+                pass
+            await chat_page.wait_for_timeout(3000)
 
             # Load cookies into context (no-op if profile already has them)
             try:
@@ -2136,7 +2151,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     config.get("totp_secret"),
                 )
                 if not logged:
-                    log("  Re-login failed — HARD kill cycle")
+                    log("  Re-login failed — fresh tab")
                     force_hard_kill = True
                     raise RuntimeError("cycle-restart")
                 try:
@@ -2146,7 +2161,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     pass
                 await asyncio.sleep(15)
                 if await detect_auth_wall(chat_page):
-                    log("  Still auth-walled after login — HARD kill cycle")
+                    log("  Still auth-walled after login — fresh tab")
                     force_hard_kill = True
                     raise RuntimeError("cycle-restart")
                 log("  Auth wall cleared — continuing")
@@ -2193,7 +2208,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     log(f"CDP slow on composer (round {round_n}, "
                         f"streak={cdp_hung_streak}/3) — retry not hard-kill yet")
                     if cdp_hung_streak >= 3:
-                        log("CDP hung 3x on composer hunt — HARD kill")
+                        log("CDP hung 3x on composer hunt — fresh tab (browser stays up)")
                         force_hard_kill = True
                         raise RuntimeError("cycle-restart")
                 else:
@@ -2211,7 +2226,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await asyncio.sleep(COMPOSER_WAIT_S)
 
               if not chat_input:
-                log("Chat input not found — CDP reconnect (keep Chrome if up)")
+                log("Chat input not found — fresh tab (browser stays up)")
                 raise RuntimeError(
                     "cdp-reconnect" if cdp_http_alive() else "cycle-restart")
 
@@ -2355,15 +2370,17 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await pw.stop()
                 return
 
-            # Full mode: forever health — shell/worker dead → revive; crash → relaunch
+            # Full mode: forever health on this tab — issues handled in place,
+            # no reloads, browser never killed from here.
             log("Starting health check loop (full mode)...")
+            reached_health = True
+            tab_fail_streak = 0
             last_refresh = time.time()
-            last_presence_reload = 0.0  # force refresh on first 2min-eligible tick
             page_lock = asyncio.Lock()  # serialize revive vs token refresh
 
             async def daemon_health_loop():
-                """On shell/worker death: soft confirm → revive; prefer CDP reconnect over kill."""
-                nonlocal exit_mode, reconnect_streak, force_hard_kill, last_presence_reload
+                """Shell/worker dead → soft confirm → reinject in place (no reload)."""
+                nonlocal exit_mode, reconnect_streak
                 iteration = 0
                 fail_streak = 0
                 soft_dead = 0
@@ -2385,33 +2402,27 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         if _is_crash_error(e_warm) or not await _browser_alive(
                                 browser, chat_page, preview_page):
                             exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                            log(f"  Browser dead on presence poke — relaunch cycle")
+                            log(f"  Page dead on presence poke — fresh tab")
                             return
 
-                    # Popup → close + refresh; else periodic 2min refresh; then tiny prompt
+                    # Popup → close it (no reload), then tiny human-typed prompt
                     if not page_lock.locked():
                         try:
-                            now_pr = time.time()
-                            popped = await dismiss_blocking_popups(chat_page)
-                            if popped or (
-                                    now_pr - last_presence_reload
-                                    >= PRESENCE_REFRESH_EVERY_S):
-                                await refresh_chat_for_presence(
-                                    chat_page, chat_url=chat_url)
-                                last_presence_reload = now_pr
+                            await dismiss_blocking_popups(chat_page)
                             await send_presence_prompt(chat_page)
                         except Exception as e_pp:
                             if _is_crash_error(e_pp) or not await _browser_alive(
                                     browser, chat_page, preview_page):
                                 exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                                log(f"  Browser dead on presence prompt — relaunch cycle")
+                                log(f"  Page dead on presence prompt — fresh tab")
                                 return
                             log(f"  Presence prompt skip: {type(e_pp).__name__}")
 
-                    # Shots every other check — less CDP load on Railway
-                    if iteration == 1 or iteration % 2 == 0:
+                    # Xvfb-only shots every 3rd check — page screenshots load CDP
+                    if iteration == 1 or iteration % 3 == 0:
                         await capture_debug(
-                            chat_page, preview_page, f"h{iteration}")
+                            chat_page, preview_page, f"h{iteration}",
+                            xvfb_only=True)
 
                     try:
                         alive, detail = await asyncio.wait_for(
@@ -2434,7 +2445,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             log(f"  Worker not running ({detail}) — inject/revive")
                             await capture_debug(
                                 chat_page, preview_page,
-                                f"dead-{detail.replace('/', '-')[:40]}")
+                                f"dead-{detail.replace('/', '-')[:40]}",
+                                xvfb_only=True)
                             try:
                                 if page_lock.locked():
                                     log("  waiting for page_lock (token refresh?)...")
@@ -2465,7 +2477,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     if fail_streak >= FAIL_STREAK_RESTART:
                                         exit_mode = (
                                             "reconnect" if cdp_http_alive() else "kill")
-                                        log(f"  Revive missed {FAIL_STREAK_RESTART}x — relaunch browser")
+                                        log(f"  Revive missed {FAIL_STREAK_RESTART}x — fresh tab (browser stays up)")
                                         return
                             except asyncio.TimeoutError:
                                 fail_streak += 1
@@ -2474,7 +2486,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 if fail_streak >= FAIL_STREAK_RESTART:
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
-                                    log(f"  Revive timeout x{FAIL_STREAK_RESTART} — relaunch browser")
+                                    log(f"  Revive timeout x{FAIL_STREAK_RESTART} — fresh tab (browser stays up)")
                                     return
                             except Exception as e2:
                                 fail_streak += 1
@@ -2483,7 +2495,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                         browser, chat_page, preview_page):
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
-                                    log(f"  Crash during revive — relaunch browser")
+                                    log(f"  Page crashed during revive — fresh tab")
                                     return
                                 next_wait = 30
                                 if fail_streak >= FAIL_STREAK_RESTART:
@@ -2496,22 +2508,20 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         log(f"  Health probe timed out 45s (streak={fail_streak})")
                         next_wait = 30
                         if fail_streak >= FAIL_STREAK_RESTART:
-                            # HTTP :9222 can still answer while renderer is wedged
-                            exit_mode = "kill"
-                            force_hard_kill = True
-                            log(f"  Probe dead {FAIL_STREAK_RESTART}x — relaunch Chrome (CDP wedge)")
+                            log(f"  Probe timed out {FAIL_STREAK_RESTART}x — tab wedged, "
+                                f"fresh tab (browser stays up)")
                             return
                     except Exception as e:
                         log(f"  Health check error: {e}")
                         if _is_crash_error(e) or not await _browser_alive(
                                 browser, chat_page, preview_page):
-                            log("  Crash in health check — relaunch browser")
+                            log("  Page crashed in health check — fresh tab")
                             return
                         next_wait = 30
                         fail_streak += 1
                         if fail_streak >= FAIL_STREAK_RESTART:
                             exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                            log(f"  Health errors {FAIL_STREAK_RESTART}x — relaunch cycle")
+                            log(f"  Health errors {FAIL_STREAK_RESTART}x — fresh tab (browser stays up)")
                             return
 
                     # Randomize human cadence 40–60s when on the normal path
@@ -2557,71 +2567,30 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 except Exception:
                     pass
 
-            # Soft CDP reconnect only when we attached (Chrome survives disconnect).
-            # Playwright-launched Chrome dies with browser.close/pw.stop — hard cycle.
-            if exit_mode != "kill" and attached and cdp_http_alive():
-                log("Browser cycle continue — CDP reconnect (Chrome stays up)...")
-                raise RuntimeError("cdp-reconnect")
-            log("Browser cycle continue — relaunch Chrome...")
-            raise RuntimeError("cycle-restart")
+            log("Tab handed back — fresh tab in same browser...")
+            raise RuntimeError("tab-restart")
 
         except Exception as e:
             msg = str(e)
-            do_hard_kill = False
             if msg == "login-failed-retry":
                 wait_s = 300
-                do_hard_kill = True
-            elif msg == "sandbox-never-ready":
-                wait_s = 120
-                do_hard_kill = True
-            elif msg == "cdp-reconnect":
-                wait_s = 3
-                reconnect_streak += 1
-                log(f"  CDP reconnect streak={reconnect_streak}/{RECONNECT_STREAK_HARD}")
-                if reconnect_streak >= RECONNECT_STREAK_HARD:
-                    do_hard_kill = True
-                    force_hard_kill = True
-                    wait_s = 5
-            elif msg == "cycle-restart":
+            elif msg in ("tab-restart", "cycle-restart", "cdp-reconnect",
+                         "sandbox-never-ready"):
                 wait_s = 5
-                do_hard_kill = True
-                force_hard_kill = True
-                reconnect_streak = 0
             else:
-                log(f"Daemon error (will revive): {e}")
+                log(f"Handled error (same browser): {type(e).__name__}: {e}")
                 traceback.print_exc()
-                wait_s = 15
-                # Prefer reconnect if Chrome CDP still answers
-                do_hard_kill = not cdp_http_alive()
-                if not do_hard_kill:
-                    reconnect_streak += 1
-                    msg = "cdp-reconnect"
+                wait_s = 10
+            if not reached_health:
+                tab_fail_streak += 1
             try:
-                # CDP attach: close() disconnects without killing Chrome
-                # Launched browser: close() kills it — only call on hard kill
-                if browser is not None:
-                    if do_hard_kill or not attached:
-                        await browser.close()
-                    else:
-                        # Disconnect Playwright from CDP session only
-                        try:
-                            await browser.close()
-                        except Exception:
-                            pass
+                still_up = browser is not None and browser.is_connected()
             except Exception:
-                pass
-            if do_hard_kill:
-                hard_kill_chrome()
-            log(f"Relaunching browser in {wait_s}s "
-                f"({'HARD KILL' if do_hard_kill else 'CDP reconnect'})...")
+                still_up = False
+            log(f"Continuing in {wait_s}s — "
+                f"{'browser up, fresh tab next' if still_up else 'browser process gone, relaunch next'}"
+                f" (tab_fail_streak={tab_fail_streak}/{TAB_FAILS_BEFORE_BROWSER})")
             await asyncio.sleep(wait_s)
-        finally:
-            try:
-                if pw is not None:
-                    await pw.stop()
-            except Exception:
-                pass
-            # Never auto-kill here — hard path already did; reconnect must keep Chrome
 
 
 def main():
