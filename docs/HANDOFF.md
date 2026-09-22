@@ -1,89 +1,72 @@
-# HANDOFF — Continue Chimera Fleet Deployment
+# HANDOFF — continue the fleet
 
-**Updated:** 2026-09-22 ~00:20 UTC
+**Updated:** 2026-09-22  
 
-You are continuing autonomous miner fleet deployment. One miner is live and self-healing on cell-16. Your job: scale to all 34 sessions.
+You are continuing **Lovable + Railway cell** automation. One cell is live and self-healing. Scale is the job.
 
-**Read first:** `docs/DAEMON-RAILWAY.md` (exact Railway service IDs, launch cmd, sync rules).
+**Read first:**
+1. [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md) — map, sprint, math  
+2. [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md) — cell IDs, launch, md5  
 
-## What's Already Done
-- `daemon.py` production miner — **simple revive** + **never-exit** browser cycles
-- Session-2 on **cell-16**, project `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`
-- Live cell md5 = `13d5b7cb4b8b6961f2acd561aba2ad67` (`5492fdf`)
-- Bridge: `wss://chimera-bridge-production-0703.up.railway.app` (**not** 0ef2)
-- Problems doc: `docs/SCRIPT3-PROBLEMS-SOLUTIONS.md` (through 19)
+## Already done
 
-## Critical Rules (NEVER VIOLATE)
-- `CHIMERA_NO_PROXY=1` always
-- `--browser chromium` + `--mode full` on Railway
-- Never commit secrets/cookies/tokens; skip session-1
-- Kill daemon by exact PID only — never `pkill -f` (matches SSH cmdline)
-- **save_trio from chat page only**
-- Wake = trivial prompts only (not script2 debug-terminal)
-- Revive = refresh chat → wake → wait → preview → inject
-- Crash / script error → Browser cycle relaunch (never exit full mode)
-- After every push: curl raw GitHub `daemon.py` onto cell + restart; verify md5
+- `daemon.py` on cell-16 — simple revive + never-exit browser cycles  
+- Session-2 / project `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`  
+- Live md5 `13d5b7cb4b8b6961f2acd561aba2ad67` (`5492fdf`)  
+- Bridge `wss://chimera-bridge-production-0703.up.railway.app`  
+- Problems log through #19 in `SCRIPT3-PROBLEMS-SOLUTIONS.md`  
 
-## Credentials
-- **OnKernel API:** `sk_65153b1d-9bc1-081c-f09f-9c97f1ddb02b.RR1CxEZUyjkV4yKV53f59W8gLKX4O90HfWTFZciIwyA`
-- **ZenRows (fallback):** `7213c8436771ba990ec226f68d64b3d6c1e666f3`
-- **GH PAT:** See `automation-toolkit/docs/CREDENTIALS.md` (never commit token values)
-- **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`
-- **Railway SSH:** cellkey under `automation-toolkit/sessions/session-2/.ssh/cellkey`; project/env/service IDs in `docs/DAEMON-RAILWAY.md`
+## Rules (do not violate)
 
-## Sessions Needing Rescue (33 remaining)
-Sessions: 4, 6, 7, 8, 9, 11, 16, 20, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
+- `CHIMERA_NO_PROXY=1` for Lovable browsers  
+- Chromium + `--mode full` on cells  
+- Daemons live on Railway **services**, not sandboxes  
+- `save_trio` from chat page only  
+- Kill by exact PID — never `pkill -f` on SSH  
+- Wake = trivial prompts only  
+- Revive = refresh chat → wake → wait → preview → start worker  
+- Crash → Browser cycle relaunch; full mode never exits  
+- After push: curl `daemon.py` to cell, restart, verify md5  
+- No secrets in commits; see automation-toolkit credentials doc  
+
+## Credentials (pointers only)
+
+- OnKernel / ZenRows / GH: `automation-toolkit` credentials doc — **do not paste into git**  
+- Bridge URL: production `0703` host (see runbook)  
+- SSH: `automation-toolkit/sessions/session-2/.ssh/cellkey` + runbook project/env/service IDs  
+- Railway CLI login: `HOME=…/railways/sessions/session-2`  
+
+## Sessions still needing rescue / projects
+
+See architecture doc for scale targets. Local list often includes sessions 4+ (skip burned session-1).
 
 ```bash
 cd /home/alan/Documents/repos/automation-toolkit
 CHIMERA_NO_PROXY=1 python3 -u src/lovable/load_session_with_rescue.py N --kernel
 ```
 
-## Per-Session Deployment Steps
-1. Rescue session (above)
-2. Verify/create project — `stable_browser.py --shot` or script2 `--mode template`
-3. Push `daemon.py` (+ `miner_injector.py` if changed) to cell — prefer base64 over SSH, or curl raw `master` after git push
-4. Launch with `--mode full` (see `docs/DAEMON-RAILWAY.md`)
-5. Verify log: `Worker alive (probe: N)` + `Preview healthy`
+## Deploy daemon to a cell
 
-```bash
-cd /app/work/chimera-miner
-# after deploying daemon.py from master
-CHIMERA_NO_PROXY=1 CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
-/opt/venv/bin/python3 -u daemon.py --session session-N --project <project-id> \
-  --browser chromium --mode full \
-  > /app/work/daemon_sN.log 2>&1 &
-```
+1. Rescue / verify session trio  
+2. Ensure Lovable project exists (script 2)  
+3. `git push` then on cell: curl raw `master/daemon.py` (and injector if changed)  
+4. Restart with launch cmd in `DAEMON-RAILWAY.md`  
+5. Log: `Worker alive` + `Preview healthy` (worker process in preview shell)  
 
-## Key Files
-| File | Purpose |
+## Key files
+
+| File | Role |
 |---|---|
-| `daemon.py` | **Production** autonomous miner (Railway) |
-| `miner_injector.py` | `inject_miner()` + worker cmd |
-| `docs/DAEMON-RAILWAY.md` | Cell-16 IDs, launch, sync checklist |
-| `script3_launch_miner.py` | Manual launcher (legacy) |
-| `github_db.py` | GitHub DB backend |
-| `docs/SCRIPT3-PROBLEMS-SOLUTIONS.md` | Problems + fixes |
-| `automation-toolkit/.../load_session_with_rescue.py` | Session rescue |
+| `daemon.py` | Forever agent on a cell |
+| `miner_injector.py` | Builds/starts worker command in preview |
+| `script2_remix_link.py` | Project factory |
+| `script3_launch_miner.py` | Legacy launcher |
+| `docs/FLEET-ARCHITECTURE.md` | Vision + sprint |
 
-## Daemon Architecture (full mode)
-```
-daemon.py
-├── Chromium → cookies → LS + IDB (IDB restore ≤15s timeout)
-├── Chat wake prompt → preview wait_for_lovable_console (commit reloads)
-├── inject_miner → save_trio(chat_page)
-├── Health (~3 min): shell_worker_status
-│     DEAD → revive (wake+login+lovable+inject); 3 fails → browser restart
-└── Token refresh (40 min) — locked out during revive
-```
+## Next sprint lanes (pick one)
 
-## What Success Looks Like
-- 34 cells, each running one daemon `--mode full`
-- Health: Worker alive + Preview healthy
-- Cell file md5 == `master` `daemon.py` / `miner_injector.py`
-- Bridge receiving hashes from workers
+**A — Duty cycle:** measure bridge throughput 1h; harden revive so gaps shrink  
+**B — State + script 1:** schema, service verify, provider failover  
+**C — Script 2 batch:** fill project IDs for ready sessions  
 
-## Current Blockers
-1. Only 1 project proven (`7d6f77a6`) — need script2 for remaining sessions
-2. 33 sessions not rescued
-3. Prefer deploy via base64 SSH or curl-from-GitHub after push
+Do not start all three at once.

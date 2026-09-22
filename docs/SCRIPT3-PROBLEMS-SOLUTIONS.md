@@ -1,9 +1,11 @@
-# Script3 / Daemon Problems & Solutions
+# Script3 / Daemon — problems & solutions
 
-**Last updated:** 2026-09-21 ~18:00 UTC
+**Updated:** 2026-09-22  
 
-Proven working setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full` / `--browser chromium`.  
-Railway details: `docs/DAEMON-RAILWAY.md`.
+Proven setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full` / Chromium.  
+Runbook: `DAEMON-RAILWAY.md`. Fleet map: `FLEET-ARCHITECTURE.md`.
+
+Words in this log: **preview shell**, **worker process**, **revive**. Function names like `inject_miner` mean “start the worker command in the preview”.
 
 ---
 
@@ -139,9 +141,9 @@ CHIMERA_NO_PROXY=1 python3 load_session_with_rescue.py 2 --kernel
 ## Key scripts
 | Script | Purpose |
 |---|---|
-| `daemon.py` | **Production** autonomous miner (Railway) |
-| `miner_injector.py` | Worker injection + `inject_miner()` — must match cell |
-| `script3_launch_miner.py` | Manual miner launcher (legacy) |
-| `github_db.py` | GitHub DB backend |
-| `stable_browser.py` | Reusable Chromium launcher + state save/restore |
-| `src/lovable/load_session_with_rescue.py` | Session rescue |
+| `daemon.py` | **Production** forever agent on a Railway service cell |
+| `miner_injector.py` | Start worker command in preview (`inject_miner`) — must match cell |
+| `script3_launch_miner.py` | Manual / legacy launcher |
+| `github_db.py` | GitHub-backed state helpers |
+| `stable_browser.py` | Chromium launcher + trio save/restore |
+| `load_session_with_rescue.py` | Session rescue (automation-toolkit) |

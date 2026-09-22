@@ -1,62 +1,61 @@
-# CHIMERA INDEX — Roadmap & Fleet Status
+# INDEX — roadmap & fleet status
 
-**Updated:** 2026-09-22 ~00:20 UTC
+**Updated:** 2026-09-22  
 
-## Where we are now
-- **1 miner LIVE:** cell-16 / session-2 / project `7d6f77a6` / `daemon.py --mode full` / Chromium.
-- **Self-heal:** simple revive (refresh chat → wake → wait → preview → inject) + never-exit browser cycles.
-- **Live md5:** `13d5b7cb4b8b6961f2acd561aba2ad67` (`5492fdf`).
-- **Canonical runbook:** `docs/DAEMON-RAILWAY.md`.
-- Sandbox still drops occasionally; daemon recovers. Short gaps expected; permanent stop is a bug.
-- **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app` (never 0ef2).
+**Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 
-## Architecture (current daemon)
+## Where we are
 
-```
+- **1 cell LIVE:** cell-16 / session-2 / project `7d6f77a6` / `daemon.py --mode full` / Chromium  
+- **Self-heal:** refresh chat → wake → wait → preview → start worker; never-exit browser cycles  
+- **Live md5:** `13d5b7cb4b8b6961f2acd561aba2ad67` (`5492fdf`)  
+- **Runbook:** [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)  
+- Preview shells flap; daemon recovers. Scoreboard = bridge throughput over time  
+- **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`  
+
+## Architecture (daemon)
+
+```text
 daemon.py --mode full  (never exits)
 ├── Browser cycle #N
 │   ├── Chromium → cookies → LS/IDB
-│   ├── wake → wait window.doc → inject → save_trio(chat)
+│   ├── wake → wait window.doc → start worker → save_trio(chat)
 │   └── Health (~180s):
 │         dead → refresh chat → wake → wait → preview → inject
 │         fail×3 or crash → next Browser cycle
-└── main() while True wraps everything
+└── main() while True
 ```
 
 ## Docs map
+
 | Doc | What |
 |---|---|
-| `docs/INDEX.md` | This file — roadmap, fleet status |
-| `docs/DAEMON-RAILWAY.md` | **Railway cell-16 runbook + sync** |
-| `docs/SCRIPT3-PROBLEMS-SOLUTIONS.md` | Problems + fixes (incl. revive) |
-| `docs/HANDOFF.md` | Handoff for continuing agent |
-| `AGENTS.md` | Agent source of truth |
+| `FLEET-ARCHITECTURE.md` | **Visuals, sprint, capacity math, script 1–3** |
+| `DAEMON-RAILWAY.md` | Cell-16 IDs, launch, sync |
+| `SCRIPT3-PROBLEMS-SOLUTIONS.md` | Fixes log |
+| `HANDOFF.md` | Continue-here checklist |
+| `../AGENTS.md` | Agent rules |
 
-## Roadmap to all-Lovables mining
+## Roadmap
 
-### Phase 1 — Prove & lock single-miner stability ✅ DONE (ongoing harden)
-- [x] cell-16 via `daemon.py --mode full`
-- [x] Health + proxy-404 revive path
-- [x] Auth-bridge wait, IDB timeouts, chat save_trio, revive vs token lock
-- [x] Browser restart after 3 failed revives
-- [ ] 24h continuous green without revive thrash
+### Phase 1 — One cell stable ✅ (ongoing)
+- [x] cell-16 full-mode daemon  
+- [x] Simple revive + never-exit cycles  
+- [ ] Shrink revive gaps (duty cycle) — **sprint day 1**
 
-### Phase 2 — Project factory (script2 per session)
-- [ ] script2 `--mode template` for sessions missing projects
-- [ ] Verify with `stable_browser.py --shot`
-- [ ] Register in GitHub DB
+### Phase 2 — Project factory (script 2)
+- [ ] Batch template/accept for sessions missing projects  
+- [ ] Persist project IDs into state store  
 
-### Phase 3 — Fleet rollout (34 sessions)
-- [ ] Rescue → project → deploy daemon `--mode full` per cell
-- [ ] Verify Worker alive + md5 sync to master
+### Phase 3 — Account + service factory (script 1)
+- [ ] State store schema  
+- [ ] Verify Ubuntu **services** (not sandboxes)  
+- [ ] Provider failover (OnKernel ↔ ZenRows), mobile/human-like  
 
-### Phase 4 — Operations
-- [ ] Bridge capacity at 34 workers
-- [ ] Cookie hygiene via daemon token refresh
+### Phase 4 — Scale
+- [ ] Many cells × many sessions toward fleet capacity target in architecture doc  
+- [ ] Bridge sharding when connections saturate  
 
-## TODO list (ordered)
-1. [ ] Monitor cell-16 for 24h stability
-2. [ ] Rescue remaining 33 sessions
-3. [ ] Script2 for verified projects
-4. [ ] Deploy daemon to each cell
-5. [ ] Bridge load test 10 → 34
+## Out of scope (for now)
+
+New browser engines, Mega as primary DB, hosting daemons on Railway sandboxes.

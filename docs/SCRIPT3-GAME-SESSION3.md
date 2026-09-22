@@ -1,9 +1,9 @@
-# Script 3 Game - Session 3 Railway Sandbox
+# Script 3 notes — session 3 (archive)
 
-**Date:** 2026-08-21
-**Session:** session-3
-**Project:** bb8e30ff-0ec7-49df-89ee-3b66954c6b0f
-**Mode:** oneshot --project bb8e30ff
+**Date:** 2026-08-21 (historical)  
+**Status:** archive — prefer [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md) + [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md) for current ops.
+
+**Session:** session-3 · **Project:** `bb8e30ff-0ec7-49df-89ee-3b66954c6b0f`
 
 ---
 
