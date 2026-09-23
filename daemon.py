@@ -337,6 +337,44 @@ async def find_or_open_chat(browser, chat_url: str, project_id: str):
 
 async def light_focus(page) -> None:
     """Bring tab forward + gentle mouse — no PageDown/End (scrolls composer away)."""
+    await ensure_page_focused(page)
+
+
+async def install_focus_spoof(context) -> None:
+    """Xvfb windows often look unfocused/hidden to the page — spoof visibility.
+
+    Without this, Lovable / Chrome throttle timers & iframes on Railway headed
+    Xvfb while local :99 can still look 'active' enough for Shell to mount.
+    """
+    if context is None:
+        return
+    try:
+        await context.add_init_script(
+            """
+            (() => {
+              try {
+                Object.defineProperty(document, 'hidden', {
+                  configurable: true, get: () => false
+                });
+                Object.defineProperty(document, 'visibilityState', {
+                  configurable: true, get: () => 'visible'
+                });
+                document.hasFocus = () => true;
+                window.addEventListener('blur', (e) => {
+                  e.stopImmediatePropagation();
+                  setTimeout(() => window.focus(), 0);
+                }, true);
+              } catch (e) {}
+            })();
+            """
+        )
+        log("  Focus spoof installed (document.hidden=false / hasFocus=true)")
+    except Exception as e:
+        log(f"  Focus spoof skip: {type(e).__name__}")
+
+
+async def ensure_page_focused(page) -> None:
+    """Force focused + visible on Xvfb: bring_to_front, CDP focus, click into page."""
     if page is None:
         return
     try:
@@ -348,11 +386,63 @@ async def light_focus(page) -> None:
         await asyncio.wait_for(page.bring_to_front(), timeout=3)
     except Exception:
         pass
+    # CDP: make target active (helps when Xvfb has no real WM focus)
     try:
-        await asyncio.wait_for(page.mouse.move(200, 200), timeout=3)
-        await asyncio.sleep(0.1)
-        await asyncio.wait_for(page.mouse.move(400, 400, steps=4), timeout=3)
-        await asyncio.wait_for(page.mouse.click(400, 40), timeout=3)
+        cdp = await page.context.new_cdp_session(page)
+        try:
+            await asyncio.wait_for(
+                cdp.send("Page.bringToFront"), timeout=3)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(
+                cdp.send(
+                    "Emulation.setFocusEmulationEnabled",
+                    {"enabled": True},
+                ),
+                timeout=3,
+            )
+        except Exception:
+            pass
+        try:
+            await cdp.detach()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        await asyncio.wait_for(
+            page.evaluate(
+                """() => {
+                try { window.focus(); } catch (e) {}
+                try {
+                  Object.defineProperty(document, 'hidden', {
+                    configurable: true, get: () => false
+                  });
+                  Object.defineProperty(document, 'visibilityState', {
+                    configurable: true, get: () => 'visible'
+                  });
+                  document.dispatchEvent(new Event('visibilitychange'));
+                  window.dispatchEvent(new Event('focus'));
+                } catch (e) {}
+                return {
+                  hidden: document.hidden,
+                  vis: document.visibilityState,
+                  focus: document.hasFocus()
+                };
+            }"""
+            ),
+            timeout=5,
+        )
+    except Exception:
+        pass
+    # Physical click into content area so Chromium marks window active on Xvfb
+    try:
+        vp = page.viewport_size or {"width": 1280, "height": 720}
+        x = int(vp.get("width", 1280) * 0.45)
+        y = int(vp.get("height", 720) * 0.45)
+        await asyncio.wait_for(page.mouse.move(x, y, steps=3), timeout=3)
+        await asyncio.wait_for(page.mouse.click(x, y), timeout=3)
     except Exception:
         pass
 
@@ -2133,14 +2223,29 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
 
                 pw = await async_playwright().start()
                 if browser_type == "chromium":
-                    _args = ["--no-sandbox", "--disable-dev-shm-usage",
-                             "--disable-blink-features=AutomationControlled",
-                             "--js-flags=--max-old-space-size=512",
-                             "--disable-gpu", "--disable-software-rasterizer",
-                             "--remote-debugging-port=9222"]
+                    # Xvfb: without these Chrome treats the window as occluded /
+                    # backgrounded → timers + iframes throttle (Shell never mounts).
+                    _args = [
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-blink-features=AutomationControlled",
+                        "--js-flags=--max-old-space-size=512",
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                        "--remote-debugging-port=9222",
+                        "--window-size=1280,720",
+                        "--window-position=0,0",
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
+                        "--disable-background-timer-throttling",
+                        "--disable-features=CalculateNativeWinOcclusion,"
+                        "IntensiveWakeUpThrottling",
+                        "--force-device-scale-factor=1",
+                    ]
                     browser = await pw.chromium.launch(
                         headless=not headed, args=_args)
-                    log("  Launched Chromium via Playwright")
+                    log("  Launched Chromium via Playwright "
+                        "(Xvfb focus/anti-throttle flags)")
                 else:
                     browser = await pw.firefox.launch(headless=not headed)
                     log("  Launched Firefox via Playwright")
@@ -2148,6 +2253,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     viewport={"width": 1280, "height": 720},
                     user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
+                await install_focus_spoof(context)
 
             old_pages = []
             try:
@@ -2167,7 +2273,9 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
             except Exception:
                 pass
-            await chat_page.wait_for_timeout(3000)
+            # asyncio.sleep — wait_for_timeout throws TargetClosedError if page dies
+            await asyncio.sleep(3)
+            await ensure_page_focused(chat_page)
 
             # Load cookies into context (no-op if profile already has them)
             try:
