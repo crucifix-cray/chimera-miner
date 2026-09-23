@@ -200,10 +200,7 @@ def spawn_chrome_cdp(headed: bool = True) -> bool:
         "--disable-dev-shm-usage", "--no-sandbox",
         "--disable-blink-features=AutomationControlled",
         "--disable-gpu", "--disable-software-rasterizer",
-        "--js-flags=--max-old-space-size=256",
-        "--renderer-process-limit=1",
-        "--disable-features=IsolateOrigins,site-per-process",
-    ]
+            ]
     if not headed:
         args.append("--headless=new")
     try:
@@ -627,13 +624,15 @@ async def ensure_page_focused(page) -> None:
 
 
 def _chromium_lean_args() -> list:
-    """Chromium flags for Railway 1GB cells — OOM → Aw Snap error 5."""
+    """Chromium flags for Railway 1GB cells — OOM → Aw Snap error 5.
+
+    Do NOT set a tiny --max-old-space-size: that kills the Lovable SPA mid-load
+    and leaves CDP Runtime.evaluate permanently hung (composer never appears).
+    """
     return [
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
-        # Cap V8 heap so the renderer dies soft instead of OOMing the cgroup.
-        "--js-flags=--max-old-space-size=256",
         "--disable-gpu",
         "--disable-software-rasterizer",
         "--remote-debugging-port=9222",
@@ -645,7 +644,6 @@ def _chromium_lean_args() -> list:
         "--disable-features=CalculateNativeWinOcclusion,"
         "IntensiveWakeUpThrottling,TranslateUI",
         "--force-device-scale-factor=1",
-        "--renderer-process-limit=1",
         "--disable-hang-monitor",
         "--disable-ipc-flooding-protection",
         "--disable-component-update",
@@ -694,7 +692,7 @@ async def find_chat_composer(page, tag: str = ""):
         js_timed_out = True
         log(f"  Composer: JS probe timeout{tag_s} — try locators before calling hung")
     except Exception as e:
-        log(f"  Composer: JS probe fail ({type(e).__name__}){tag_s}")
+        log(f"  Composer: JS probe fail ({type(e).__name__}: {e}){tag_s}")
 
     # 2) Light Ask Lovable click (short caps)
     for click_try in (
