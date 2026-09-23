@@ -384,15 +384,15 @@ async def page_is_aw_snap(page) -> bool:
             return True
     except Exception:
         return True
+    title = ""
     try:
         title = await asyncio.wait_for(page.title(), timeout=3)
     except Exception:
         title = ""
     tl = (title or "").lower()
-    if "aw, snap" in tl or "sad tab" in tl or tl.strip() in ("", "about:blank"):
-        # blank title alone is weak; confirm via body when possible
-        if "aw, snap" in tl or "sad tab" in tl:
-            return True
+    if "aw, snap" in tl or "sad tab" in tl:
+        return True
+    # Don't treat blank/evaluate-fail as crash — SPA hydrate is slow on Railway.
     try:
         body = await asyncio.wait_for(
             page.evaluate(
@@ -401,48 +401,70 @@ async def page_is_aw_snap(page) -> bool:
             timeout=4,
         )
     except Exception:
-        # evaluate hang/fail on dead renderer → treat as crash
-        return True
+        return False
     bl = (body or "").lower()
     return (
         "aw, snap" in bl
         or "something went wrong while displaying this webpage" in bl
         or "error code: 5" in bl
-        or "error code: 1" in bl
         or "renderer process crashed" in bl
     )
 
 
-async def recover_aw_snap(page, url: str, tag: str = "") -> bool:
-    """Reload or re-goto after Aw Snap. Returns False if still dead."""
+async def recover_aw_snap(page, url: str, tag: str = "", context=None):
+    """Recover after Aw Snap / closed page. Returns (ok, page) — page may be new."""
     prefix = f"  {tag}: " if tag else "  "
+    cur = page
     for attempt in range(1, 4):
+        closed = False
         try:
-            if page is None or page.is_closed():
-                return False
+            closed = cur is None or cur.is_closed()
         except Exception:
-            return False
-        crashed = await page_is_aw_snap(page)
-        if not crashed:
-            return True
-        log(f"{prefix}Aw Snap detected — recover attempt {attempt}/3")
-        try:
-            await asyncio.wait_for(page.reload(timeout=25000, wait_until="commit"),
-                                  timeout=30)
-        except Exception:
+            closed = True
+        crashed = closed
+        if not closed:
             try:
-                await asyncio.wait_for(
-                    page.goto(url, timeout=25000, wait_until="commit"),
-                    timeout=30,
-                )
+                crashed = await page_is_aw_snap(cur)
+            except Exception:
+                crashed = False
+        if not crashed:
+            return True, cur
+        log(f"{prefix}Aw Snap/closed — recover attempt {attempt}/3")
+        # Dead Playwright page object cannot reload — open a fresh tab.
+        if closed and context is not None:
+            try:
+                nxt = await asyncio.wait_for(context.new_page(), timeout=15)
+                try:
+                    if cur is not None:
+                        await asyncio.wait_for(cur.close(), timeout=5)
+                except Exception:
+                    pass
+                cur = nxt
             except Exception as e:
-                log(f"{prefix}recover goto fail: {type(e).__name__}")
-        await asyncio.sleep(2)
-        if not await page_is_aw_snap(page):
-            log(f"{prefix}Aw Snap recovered")
-            return True
-    log(f"{prefix}Aw Snap still dead after 3 recovers")
-    return False
+                log(f"{prefix}new_page fail: {type(e).__name__}")
+                return False, cur
+        try:
+            await asyncio.wait_for(
+                cur.goto(url, timeout=30000, wait_until="commit"),
+                timeout=35,
+            )
+        except Exception as e:
+            log(f"{prefix}recover goto fail: {type(e).__name__}")
+            # If goto closed the page again, loop will new_page next attempt
+            try:
+                if cur.is_closed() and context is not None:
+                    cur = await asyncio.wait_for(context.new_page(), timeout=15)
+            except Exception:
+                pass
+        await asyncio.sleep(3)
+        try:
+            if cur is not None and not cur.is_closed() and not await page_is_aw_snap(cur):
+                log(f"{prefix}page recovered")
+                return True, cur
+        except Exception:
+            pass
+    log(f"{prefix}still dead after 3 recovers")
+    return False, cur
 
 
 async def ensure_page_focused(page) -> None:
@@ -544,10 +566,9 @@ def _chromium_lean_args() -> list:
         "--disable-renderer-backgrounding",
         "--disable-background-timer-throttling",
         "--disable-features=CalculateNativeWinOcclusion,"
-        "IntensiveWakeUpThrottling,TranslateUI,BlinkGenPropertyTrees,"
-        "IsolateOrigins,site-per-process",
+        "IntensiveWakeUpThrottling,TranslateUI",
         "--force-device-scale-factor=1",
-        "--renderer-process-limit=1",
+        "--renderer-process-limit=2",
         "--disable-hang-monitor",
         "--disable-ipc-flooding-protection",
         "--disable-component-update",
@@ -2403,7 +2424,9 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 log(f"  goto soft-fail: {type(e).__name__}")
             # asyncio.sleep — wait_for_timeout throws TargetClosedError if page dies
             await asyncio.sleep(3)
-            if not await recover_aw_snap(chat_page, chat_url, tag="open"):
+            ok, chat_page = await recover_aw_snap(
+                chat_page, chat_url, tag="open", context=context)
+            if not ok:
                 raise RuntimeError("aw-snap-on-open")
             await ensure_page_focused(chat_page)
 
@@ -2439,7 +2462,9 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 except Exception:
                     pass
                 await asyncio.sleep(3)
-                if not await recover_aw_snap(chat_page, chat_url, tag="post-login"):
+                ok, chat_page = await recover_aw_snap(
+                    chat_page, chat_url, tag="post-login", context=context)
+                if not ok:
                     raise RuntimeError("aw-snap-post-login")
 
             # --- Step 2: Restore localStorage + IndexedDB ---
@@ -2515,7 +2540,9 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             # After LS restore: wait for hydrate. Avoid reload here — it often
             # wedges CDP on Railway while Lovable SPA is still compiling.
             await asyncio.sleep(12)
-            if not await recover_aw_snap(chat_page, chat_url, tag="hydrate"):
+            ok, chat_page = await recover_aw_snap(
+                chat_page, chat_url, tag="hydrate", context=context)
+            if not ok:
                 raise RuntimeError("aw-snap-hydrate")
 
             # Cookie banner + auth wall (SKIP_IDB often leaves us logged-out)
@@ -2887,12 +2914,14 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             raise RuntimeError("tab-restart")
 
         except Exception as e:
-            msg = str(e)
+            msg = str(e).strip()
             if msg == "login-failed-retry":
                 wait_s = 300
-            elif msg in ("tab-restart", "cycle-restart", "cdp-reconnect",
-                         "sandbox-never-ready"):
+            elif msg.startswith("aw-snap") or msg in (
+                    "tab-restart", "cycle-restart", "cdp-reconnect",
+                    "sandbox-never-ready"):
                 wait_s = 5
+                log(f"  soft-restart: {msg}")
             else:
                 log(f"Handled error (same browser): {type(e).__name__}: {e}")
                 traceback.print_exc()
