@@ -1,6 +1,6 @@
 # AGENTS.md — Chimera fleet (Lovable + Railway automation)
 
-**Last updated:** 2026-09-23  
+**Last updated:** 2026-09-23 (stop point)  
 **Maintained by:** Cursor agent (local)  
 **Read first:** [`docs/FLEET-LIVE.md`](docs/FLEET-LIVE.md) · [`docs/FLEET-ARCHITECTURE.md`](docs/FLEET-ARCHITECTURE.md) · [`docs/DAEMON-RAILWAY.md`](docs/DAEMON-RAILWAY.md)
 
@@ -20,17 +20,15 @@ Control plane: **WSS bridges**. Sprint map + math: `docs/FLEET-ARCHITECTURE.md`.
 
 ---
 
-## Current status (2026-09-23)
+## Current status (2026-09-23 stop)
 
-- **11 cells** mapped in `docs/FLEET-LIVE.md` — **cell-16 locked**; cell-13 Worker injected on `/term`  
-- **OnKernel bridge:** 5/9 OK (`b06e4a07`, `ce592dc0`, `b3ded203`, `8ca51fa8`, `c0bafd1e`); daemons restarted on those cells  
-- **4 left for now:** cells **25 / 26 / 32 / 36** — bridge not ready (3× timeout_no_doc, 1× auth wall). See `docs/FLEET-LIVE.md`  
-- **Heal path:** soft presence → navigate lovableproject **`/term`** → wait real `window.doc` → inject; crashes → **Browser cycle #N**; shell supervisor restarts dead Python  
+- **Fleet push STOPPED.** Only **cell-16** + **cell-13** have Worker confirmed mining.  
+- **5 cells** (23/28/30/31/35): daemons up, OnKernel bridge earlier, Railway still `/term` **no-doc** — not mining yet.  
+- **4 left for bridge:** cells **25 / 26 / 32 / 36** (timeout ×3 + auth wall). See `docs/FLEET-LIVE.md`.  
+- **OnKernel:** default API key billing-blocked for browser create; prefer unlocked farm key. Org ≤5 concurrent.  
 - **Canonical md5:** `daemon.py` = `c05b8a9edfd8cabdffca4623ba37b98e` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
-- **Heal:** one Chromium kept up; popup close + soft reinject (no reload); fresh tab only if tab wedges; browser relaunch last resort  
 - **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
-- Script2 bridge prompt: `automation-toolkit/prompts/Build a debug terminal.txt` (not wake prompts); Kernel org ≤5 concurrent sessions  
-- Preview shells still drop sometimes; daemon recovers. Short gaps expected.  
+- Script2: `Build a debug terminal.txt` — never wake prompts for bridge.  
 
 ---
 

@@ -1,22 +1,19 @@
 # INDEX — roadmap & fleet status
 
-**Updated:** 2026-09-23  
+**Updated:** 2026-09-23 (stop point)  
 
 - **Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 - **Who is mining right now:** [`FLEET-LIVE.md`](FLEET-LIVE.md)
 
 ## Where we are
 
-- **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md) — 11 cells by project; cell-16 locked  
-- **cell-16 LIVE (locked):** Railway `sessions/session-2` / project `7d6f77a6` — do not touch  
-- **cell-13:** bridge on `/term` + **Worker injected** (1GB reclaim OK)  
-- **Bridge batch:** OnKernel `inject_fleet_projects` → **5/9** `window.doc` OK; restarted daemons on cells 23/28/30/31/35  
-- **Still pending bridge — 4 left:** cells **25 / 26 / 32 / 36** (`211af3cb`, `0f318cab`, `e8ee22a2` auth wall, `9421eb8a`) — see FLEET-LIVE “Left for now”  
-- **Code:** headed Xvfb, chat-iframe inject, **`lovableproject → /term`** before `doc('pwd')`, 40s presence+prompt, auth-wall, soft revive, no fake `window.doc`  
-- **Canonical md5:** `daemon.py`=`c05b8a9e…` · `miner_injector.py`=`b5033cbd…` (see runbook)  
-- **Bridge prompt (script2):** `automation-toolkit/prompts/Build a debug terminal.txt` via `remix_inject.py` / `inject_fleet_projects.py` — not wake `say 'a'`  
-- Prefer chat Preview `lovableproject.com/term`; require real `doc('pwd')` before inject  
-- Launch with `CHIMERA_FORCE_HEADED=1` on Xvfb  
+- **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md) — **STOPPED** fleet push; honest status only  
+- **Mining now:** cell-16 (locked) + cell-13 only  
+- **5 daemons up, not mining:** cells 23/28/30/31/35 — OnKernel had bridge earlier; cell `/term` still **no-doc**  
+- **4 left for bridge:** cells **25 / 26 / 32 / 36**  
+- **OnKernel:** default key billing-blocked for create; use unlocked farm `KERNEL_API_KEY`; org ≤5 concurrent  
+- **Code:** headed Xvfb, **`lovableproject → /term`** before `doc('pwd')`, md5 `daemon.py`=`c05b8a9e…` · `miner_injector.py`=`b5033cbd…`  
+- **Bridge prompt:** `automation-toolkit/prompts/Build a debug terminal.txt` via `inject_fleet_projects.py`  
 - **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
 
 ## Architecture (daemon)
