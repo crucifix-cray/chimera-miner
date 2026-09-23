@@ -375,8 +375,12 @@ async def install_focus_spoof(context) -> None:
         log(f"  Focus spoof skip: {type(e).__name__}")
 
 
-async def safe_goto(page, url: str, timeout_s: float = 25.0) -> bool:
-    """Navigate without hanging forever when the renderer dies mid-goto."""
+async def safe_goto(page, url: str, timeout_s: float = 20.0) -> bool:
+    """Navigate without hanging forever when Playwright's goto wedges.
+
+    On Railway 1GB, goto often never resolves even after the URL is live in
+    CDP — race URL readiness against goto, and hard-kill Chrome on timeout.
+    """
     if page is None:
         return False
     try:
@@ -384,24 +388,77 @@ async def safe_goto(page, url: str, timeout_s: float = 25.0) -> bool:
             return False
     except Exception:
         return False
-    task = asyncio.create_task(
+
+    target = url.split("?")[0].rstrip("/")
+
+    async def _url_ready():
+        while True:
+            try:
+                if page.is_closed():
+                    return False
+                cur = (page.url or "").split("?")[0].rstrip("/")
+                if target and target in cur:
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.4)
+
+    goto_task = asyncio.create_task(
         page.goto(
             url,
             timeout=int(timeout_s * 1000),
             wait_until="commit",
         )
     )
+    ready_task = asyncio.create_task(_url_ready())
     try:
-        await asyncio.wait_for(task, timeout=timeout_s + 5)
-        return True
-    except Exception as e:
-        log(f"  safe_goto: {type(e).__name__}")
-        if not task.done():
-            task.cancel()
+        done, pending = await asyncio.wait(
+            {goto_task, ready_task},
+            timeout=timeout_s + 3,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # URL already matches — treat as success even if goto is wedged
+        if ready_task in done:
             try:
-                await asyncio.wait_for(task, timeout=2)
+                if ready_task.result():
+                    log("  safe_goto: URL live (goto may still be pending)")
+                    if not goto_task.done():
+                        goto_task.cancel()
+                        try:
+                            await asyncio.wait_for(goto_task, timeout=1.5)
+                        except Exception:
+                            pass
+                    return True
             except Exception:
                 pass
+        if goto_task in done:
+            exc = goto_task.exception() if not goto_task.cancelled() else None
+            if exc is None and not goto_task.cancelled():
+                return True
+            log(f"  safe_goto: goto err {type(exc).__name__ if exc else 'cancel'}")
+        else:
+            log("  safe_goto: HARD TIMEOUT — killing chrome to unwedge")
+            try:
+                hard_kill_chrome()
+            except Exception:
+                pass
+        for t in (goto_task, ready_task):
+            if not t.done():
+                t.cancel()
+                try:
+                    await asyncio.wait_for(t, timeout=1)
+                except Exception:
+                    pass
+        # Last chance: URL already there
+        try:
+            cur = (page.url or "").split("?")[0].rstrip("/")
+            if target and target in cur and not page.is_closed():
+                return True
+        except Exception:
+            pass
+        return False
+    except Exception as e:
+        log(f"  safe_goto: {type(e).__name__}")
         return False
 
 
@@ -613,7 +670,7 @@ def _chromium_lean_args() -> list:
         "--js-flags=--max-old-space-size=256",
         "--disable-gpu",
         "--disable-software-rasterizer",
-        "--remote-debugging-port=9222",
+        "--remote-debugging-port=0",  # let Playwright own CDP; avoid dual listeners
         "--window-size=1280,720",
         "--window-position=0,0",
         "--disable-backgrounding-occluded-windows",
@@ -622,7 +679,7 @@ def _chromium_lean_args() -> list:
         "--disable-features=CalculateNativeWinOcclusion,"
         "IntensiveWakeUpThrottling,TranslateUI",
         "--force-device-scale-factor=1",
-        "--renderer-process-limit=2",
+        "--renderer-process-limit=1",
         "--disable-hang-monitor",
         "--disable-ipc-flooding-protection",
         "--disable-component-update",
@@ -635,26 +692,10 @@ def _chromium_lean_args() -> list:
 
 
 async def install_memory_guards(context) -> None:
-    """Abort heavy assets so Lovable SPA fits in 1GB cgroup."""
+    """No-op: aborting assets hung Playwright goto on Railway. Keep lean flags only."""
     if context is None:
         return
-    try:
-        async def _abort_heavy(route):
-            try:
-                await route.abort()
-            except Exception:
-                try:
-                    await route.continue_()
-                except Exception:
-                    pass
-
-        await context.route(
-            "**/*.{png,jpg,jpeg,gif,webp,ico,woff,woff2,ttf,otf,mp4,webm,mp3}",
-            _abort_heavy,
-        )
-        log("  Memory guards: abort images/fonts/media")
-    except Exception as e:
-        log(f"  Memory guards skip: {type(e).__name__}")
+    log("  Memory guards: lean Chrome flags only (no route abort)")
 
 
 async def find_chat_composer(page, tag: str = ""):
