@@ -200,7 +200,9 @@ def spawn_chrome_cdp(headed: bool = True) -> bool:
         "--disable-dev-shm-usage", "--no-sandbox",
         "--disable-blink-features=AutomationControlled",
         "--disable-gpu", "--disable-software-rasterizer",
-        "--js-flags=--max-old-space-size=512",
+        "--js-flags=--max-old-space-size=256",
+        "--renderer-process-limit=1",
+        "--disable-features=IsolateOrigins,site-per-process",
     ]
     if not headed:
         args.append("--headless=new")
@@ -325,7 +327,7 @@ async def find_or_open_chat(browser, chat_url: str, project_id: str):
             await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
         except Exception:
             pass
-        await chat_page.wait_for_timeout(2000)
+        await asyncio.sleep(2)
     else:
         log(f"  Reusing existing chat tab: {(chat_page.url or '')[:100]}")
         try:
@@ -373,6 +375,76 @@ async def install_focus_spoof(context) -> None:
         log(f"  Focus spoof skip: {type(e).__name__}")
 
 
+async def page_is_aw_snap(page) -> bool:
+    """True when Chromium shows Aw, Snap / crashed renderer (OOM on 1GB cells)."""
+    if page is None:
+        return False
+    try:
+        if page.is_closed():
+            return True
+    except Exception:
+        return True
+    try:
+        title = await asyncio.wait_for(page.title(), timeout=3)
+    except Exception:
+        title = ""
+    tl = (title or "").lower()
+    if "aw, snap" in tl or "sad tab" in tl or tl.strip() in ("", "about:blank"):
+        # blank title alone is weak; confirm via body when possible
+        if "aw, snap" in tl or "sad tab" in tl:
+            return True
+    try:
+        body = await asyncio.wait_for(
+            page.evaluate(
+                "() => (document.body && document.body.innerText || '').slice(0, 240)"
+            ),
+            timeout=4,
+        )
+    except Exception:
+        # evaluate hang/fail on dead renderer → treat as crash
+        return True
+    bl = (body or "").lower()
+    return (
+        "aw, snap" in bl
+        or "something went wrong while displaying this webpage" in bl
+        or "error code: 5" in bl
+        or "error code: 1" in bl
+        or "renderer process crashed" in bl
+    )
+
+
+async def recover_aw_snap(page, url: str, tag: str = "") -> bool:
+    """Reload or re-goto after Aw Snap. Returns False if still dead."""
+    prefix = f"  {tag}: " if tag else "  "
+    for attempt in range(1, 4):
+        try:
+            if page is None or page.is_closed():
+                return False
+        except Exception:
+            return False
+        crashed = await page_is_aw_snap(page)
+        if not crashed:
+            return True
+        log(f"{prefix}Aw Snap detected — recover attempt {attempt}/3")
+        try:
+            await asyncio.wait_for(page.reload(timeout=25000, wait_until="commit"),
+                                  timeout=30)
+        except Exception:
+            try:
+                await asyncio.wait_for(
+                    page.goto(url, timeout=25000, wait_until="commit"),
+                    timeout=30,
+                )
+            except Exception as e:
+                log(f"{prefix}recover goto fail: {type(e).__name__}")
+        await asyncio.sleep(2)
+        if not await page_is_aw_snap(page):
+            log(f"{prefix}Aw Snap recovered")
+            return True
+    log(f"{prefix}Aw Snap still dead after 3 recovers")
+    return False
+
+
 async def ensure_page_focused(page) -> None:
     """Force focused + visible on Xvfb: bring_to_front, CDP focus, click into page."""
     if page is None:
@@ -382,13 +454,21 @@ async def ensure_page_focused(page) -> None:
             return
     except Exception:
         return
+    # Never touch CDP/evaluate on a crashed tab — that hung Railway for hours.
+    try:
+        if await asyncio.wait_for(page_is_aw_snap(page), timeout=8):
+            return
+    except Exception:
+        return
     try:
         await asyncio.wait_for(page.bring_to_front(), timeout=3)
     except Exception:
         pass
     # CDP: make target active (helps when Xvfb has no real WM focus)
+    # new_cdp_session MUST be timed — hangs forever on Aw Snap / dead renderer.
     try:
-        cdp = await page.context.new_cdp_session(page)
+        cdp = await asyncio.wait_for(
+            page.context.new_cdp_session(page), timeout=5)
         try:
             await asyncio.wait_for(
                 cdp.send("Page.bringToFront"), timeout=3)
@@ -445,6 +525,61 @@ async def ensure_page_focused(page) -> None:
         await asyncio.wait_for(page.mouse.click(x, y), timeout=3)
     except Exception:
         pass
+
+
+def _chromium_lean_args() -> list:
+    """Chromium flags for Railway 1GB cells — OOM → Aw Snap error 5."""
+    return [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        # Cap V8 heap so the renderer dies soft instead of OOMing the cgroup.
+        "--js-flags=--max-old-space-size=256",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--remote-debugging-port=9222",
+        "--window-size=1280,720",
+        "--window-position=0,0",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--disable-features=CalculateNativeWinOcclusion,"
+        "IntensiveWakeUpThrottling,TranslateUI,BlinkGenPropertyTrees,"
+        "IsolateOrigins,site-per-process",
+        "--force-device-scale-factor=1",
+        "--renderer-process-limit=1",
+        "--disable-hang-monitor",
+        "--disable-ipc-flooding-protection",
+        "--disable-component-update",
+        "--disable-sync",
+        "--metrics-recording-only",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+
+
+async def install_memory_guards(context) -> None:
+    """Abort heavy assets so Lovable SPA fits in 1GB cgroup."""
+    if context is None:
+        return
+    try:
+        async def _abort_heavy(route):
+            try:
+                await route.abort()
+            except Exception:
+                try:
+                    await route.continue_()
+                except Exception:
+                    pass
+
+        await context.route(
+            "**/*.{png,jpg,jpeg,gif,webp,ico,woff,woff2,ttf,otf,mp4,webm,mp3}",
+            _abort_heavy,
+        )
+        log("  Memory guards: abort images/fonts/media")
+    except Exception as e:
+        log(f"  Memory guards skip: {type(e).__name__}")
 
 
 async def find_chat_composer(page, tag: str = ""):
@@ -1439,6 +1574,10 @@ async def bring_up_lovableproject_doc(
         log(f"  Bring-up lovableproject iframe+doc "
             f"(round {round_n}{'' if not max_rounds else f'/{max_rounds}'})...")
         try:
+            await ensure_page_focused(chat_page)
+        except Exception:
+            pass
+        try:
             await dismiss_blocking_popups(chat_page, max_passes=5)
         except Exception:
             pass
@@ -2012,7 +2151,7 @@ async def do_login(page, email, password, totp_secret=None):
         await page.goto("https://lovable.dev/login?redirect=%2Fdashboard", timeout=30000, wait_until="commit")
     except Exception:
         pass
-    await page.wait_for_timeout(3000)
+    await asyncio.sleep(3)
 
     if "/dashboard" in page.url or "/projects" in page.url:
         log("  Already logged in")
@@ -2021,7 +2160,7 @@ async def do_login(page, email, password, totp_secret=None):
     try:
         await page.locator('input[placeholder="Email"]').fill(email)
         await page.locator('[data-testid="auth-submit-button"]').click()
-        await page.wait_for_timeout(3000)
+        await asyncio.sleep(3)
     except Exception as e:
         log(f"  Email step failed: {e}")
         return False
@@ -2029,13 +2168,16 @@ async def do_login(page, email, password, totp_secret=None):
     try:
         await page.locator('input[placeholder="Password"]').fill(password)
         await page.locator('[data-testid="auth-submit-button"]').click()
-        await page.wait_for_timeout(6000)
+        await asyncio.sleep(6)
     except Exception as e:
         log(f"  Password step failed: {e}")
         return False
 
     try:
-        body = await page.evaluate("() => document.body.innerText.slice(0, 500)")
+        body = await asyncio.wait_for(
+            page.evaluate("() => document.body.innerText.slice(0, 500)"),
+            timeout=8,
+        )
     except Exception:
         body = ""
 
@@ -2047,9 +2189,9 @@ async def do_login(page, email, password, totp_secret=None):
             inp = page.locator('input[inputmode="numeric"], input[autocomplete="one-time-code"]').first
             await inp.wait_for(state="visible", timeout=8000)
             await inp.fill(code)
-            await page.wait_for_timeout(1000)
+            await asyncio.sleep(1)
             await page.get_by_role("button", name="Verify").click(timeout=5000)
-            await page.wait_for_timeout(6000)
+            await asyncio.sleep(6)
         except Exception as e:
             log(f"  TOTP error: {e}")
 
@@ -2223,29 +2365,11 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
 
                 pw = await async_playwright().start()
                 if browser_type == "chromium":
-                    # Xvfb: without these Chrome treats the window as occluded /
-                    # backgrounded → timers + iframes throttle (Shell never mounts).
-                    _args = [
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-blink-features=AutomationControlled",
-                        "--js-flags=--max-old-space-size=512",
-                        "--disable-gpu",
-                        "--disable-software-rasterizer",
-                        "--remote-debugging-port=9222",
-                        "--window-size=1280,720",
-                        "--window-position=0,0",
-                        "--disable-backgrounding-occluded-windows",
-                        "--disable-renderer-backgrounding",
-                        "--disable-background-timer-throttling",
-                        "--disable-features=CalculateNativeWinOcclusion,"
-                        "IntensiveWakeUpThrottling",
-                        "--force-device-scale-factor=1",
-                    ]
+                    # Xvfb anti-throttle + 1GB lean flags (Aw Snap #5 = cgroup OOM).
                     browser = await pw.chromium.launch(
-                        headless=not headed, args=_args)
+                        headless=not headed, args=_chromium_lean_args())
                     log("  Launched Chromium via Playwright "
-                        "(Xvfb focus/anti-throttle flags)")
+                        "(Xvfb focus + 1GB lean/anti-OOM flags)")
                 else:
                     browser = await pw.firefox.launch(headless=not headed)
                     log("  Launched Firefox via Playwright")
@@ -2253,6 +2377,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     viewport={"width": 1280, "height": 720},
                     user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
+                await install_memory_guards(context)
                 await install_focus_spoof(context)
 
             old_pages = []
@@ -2270,23 +2395,31 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 log(f"  Opened fresh tab, closed {len(old_pages)} old tab(s) — browser stays up")
             log(f"Opening chat: {chat_url}")
             try:
-                await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
-            except Exception:
-                pass
+                await asyncio.wait_for(
+                    chat_page.goto(chat_url, timeout=30000, wait_until="commit"),
+                    timeout=35,
+                )
+            except Exception as e:
+                log(f"  goto soft-fail: {type(e).__name__}")
             # asyncio.sleep — wait_for_timeout throws TargetClosedError if page dies
             await asyncio.sleep(3)
+            if not await recover_aw_snap(chat_page, chat_url, tag="open"):
+                raise RuntimeError("aw-snap-on-open")
             await ensure_page_focused(chat_page)
 
             # Load cookies into context (no-op if profile already has them)
             try:
                 cookies = load_cookies_sync(session_id)
-                await context.add_cookies(cookies)
+                await asyncio.wait_for(context.add_cookies(cookies), timeout=15)
                 log(f"Loaded {len(cookies)} cookies")
             except Exception as e:
                 log(f"  Cookie load soft-fail: {e}")
 
             # Check if logged in
-            cur_url = chat_page.url
+            try:
+                cur_url = chat_page.url or ""
+            except Exception:
+                cur_url = ""
             if "/login" in cur_url:
                 log("Not logged in — doing login...")
                 ok = await do_login(
@@ -2299,10 +2432,15 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     raise RuntimeError("login-failed-retry")
                 # Reload chat after login
                 try:
-                    await chat_page.goto(chat_url, timeout=30000, wait_until="commit")
+                    await asyncio.wait_for(
+                        chat_page.goto(chat_url, timeout=30000, wait_until="commit"),
+                        timeout=35,
+                    )
                 except Exception:
                     pass
-                await chat_page.wait_for_timeout(3000)
+                await asyncio.sleep(3)
+                if not await recover_aw_snap(chat_page, chat_url, tag="post-login"):
+                    raise RuntimeError("aw-snap-post-login")
 
             # --- Step 2: Restore localStorage + IndexedDB ---
             sdir = _sess_dir(session_id)
@@ -2377,6 +2515,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             # After LS restore: wait for hydrate. Avoid reload here — it often
             # wedges CDP on Railway while Lovable SPA is still compiling.
             await asyncio.sleep(12)
+            if not await recover_aw_snap(chat_page, chat_url, tag="hydrate"):
+                raise RuntimeError("aw-snap-hydrate")
 
             # Cookie banner + auth wall (SKIP_IDB often leaves us logged-out)
             try:
