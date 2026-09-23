@@ -2615,9 +2615,11 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             elif idb_file.exists():
                 log("Skipping IndexedDB restore (CHIMERA_SKIP_IDB=1)")
 
-            # After LS restore: short hydrate wait. Skip aw-snap recover on
-            # Railway — CDP probes freeze the loop after a good goto.
-            await asyncio.sleep(6)
+            # Cookies + LS only stick after a reload of the project chat.
+            log("  Reloading chat so cookies/LS apply…")
+            if not await safe_goto(chat_page, chat_url, timeout_s=25):
+                log("  post-LS reload soft-fail — continuing")
+            await asyncio.sleep(5)
             log("  hydrate: skip aw-snap recover (1GB path)")
 
             # Cookie/auth probes freeze the asyncio loop on 1GB — URL-only check.
