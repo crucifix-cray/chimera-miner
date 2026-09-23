@@ -10,7 +10,8 @@
 - **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md) — 11 cells by project; cell-16 locked  
 - **cell-16 LIVE (locked):** Railway `sessions/session-2` / project `7d6f77a6` — do not touch  
 - **cell-13:** bridge on `/term` + **Worker injected** (1GB reclaim OK)  
-- **cell-23:** bridge verified; daemon `/term` nav + re-inject  
+- **Bridge batch:** OnKernel `inject_fleet_projects` → **5/9** `window.doc` OK; restarted daemons on cells 23/28/30/31/35  
+- **Still pending bridge:** cells 25/26/32/36 (timeout or auth wall)  
 - **Code:** headed Xvfb, chat-iframe inject, **`lovableproject → /term`** before `doc('pwd')`, 40s presence+prompt, auth-wall, soft revive, no fake `window.doc`  
 - **Canonical md5:** `daemon.py`=`c05b8a9e…` · `miner_injector.py`=`b5033cbd…` (see runbook)  
 - **Bridge prompt (script2):** `automation-toolkit/prompts/Build a debug terminal.txt` via `remix_inject.py` / `inject_fleet_projects.py` — not wake `say 'a'`  

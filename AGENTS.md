@@ -23,11 +23,13 @@ Control plane: **WSS bridges**. Sprint map + math: `docs/FLEET-ARCHITECTURE.md`.
 ## Current status (2026-09-23)
 
 - **11 cells** mapped in `docs/FLEET-LIVE.md` — **cell-16 locked**; cell-13 Worker injected on `/term`  
+- **OnKernel bridge:** 5/9 OK (`b06e4a07`, `ce592dc0`, `b3ded203`, `8ca51fa8`, `c0bafd1e`); daemons restarted on those cells  
+- **Pending:** cells 25/26/36 timeout_no_doc; cell-32 auth wall  
 - **Heal path:** soft presence → navigate lovableproject **`/term`** → wait real `window.doc` → inject; crashes → **Browser cycle #N**; shell supervisor restarts dead Python  
 - **Canonical md5:** `daemon.py` = `c05b8a9edfd8cabdffca4623ba37b98e` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
 - **Heal:** one Chromium kept up; popup close + soft reinject (no reload); fresh tab only if tab wedges; browser relaunch last resort  
 - **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
-- Script2 bridge prompt: `automation-toolkit/prompts/Build a debug terminal.txt` (not wake prompts)  
+- Script2 bridge prompt: `automation-toolkit/prompts/Build a debug terminal.txt` (not wake prompts); Kernel org ≤5 concurrent sessions  
 - Preview shells still drop sometimes; daemon recovers. Short gaps expected.  
 
 ---
