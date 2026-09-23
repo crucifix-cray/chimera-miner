@@ -196,11 +196,8 @@ def spawn_chrome_cdp(headed: bool = True) -> bool:
         bin_,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={CHROME_PROFILE}",
-        "--no-first-run", "--no-default-browser-check",
-        "--disable-dev-shm-usage", "--no-sandbox",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-gpu", "--disable-software-rasterizer",
-            ]
+    ] + [a for a in _chromium_lean_args()
+         if not a.startswith("--remote-debugging-port")]
     if not headed:
         args.append("--headless=new")
     try:
@@ -441,6 +438,76 @@ def cgroup_mem_gb() -> float:
             return 0.0
 
 
+def cgroup_mem_used_frac() -> float:
+    """Fraction of cgroup memory used (0..1), or 0 if unknown."""
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            cur = int(f.read().strip())
+        with open("/sys/fs/cgroup/memory.max") as f:
+            raw = f.read().strip()
+        if raw == "max":
+            return 0.0
+        mx = int(raw)
+        if mx <= 0:
+            return 0.0
+        return min(1.0, cur / mx)
+    except Exception:
+        try:
+            with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:
+                cur = int(f.read().strip())
+            with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
+                mx = int(f.read().strip())
+            if mx <= 0 or mx > (1 << 60):
+                return 0.0
+            return min(1.0, cur / mx)
+        except Exception:
+            return 0.0
+
+
+def reap_zombies_only() -> int:
+    """waitpid(-1, WNOHANG) only — never SIGKILL live Chrome."""
+    reaped = 0
+    while True:
+        try:
+            wpid, _ = os.waitpid(-1, os.WNOHANG)
+            if wpid <= 0:
+                break
+            reaped += 1
+        except ChildProcessError:
+            break
+        except Exception:
+            break
+    if reaped:
+        log(f"  Reaped zombies={reaped}")
+    return reaped
+
+
+def mem_pressure_tier() -> str:
+    """ok | careful | critical — babysit load before Aw Snap on 1GB."""
+    frac = cgroup_mem_used_frac()
+    if frac >= 0.94:
+        return "critical"
+    if frac >= 0.88:
+        return "careful"
+    return "ok"
+
+
+def reclaim_if_pressure(tag: str = "") -> bool:
+    """Reap zombies. Hard-kill only at absolute cgroup ceiling (≥99.5%).
+
+    Healthy Lovable+Chrome on 1GB sits at 90–97%. Killing there caused
+    needless relaunch loops. Prefer mem_pressure_tier babysitting instead.
+    """
+    reap_zombies_only()
+    frac = cgroup_mem_used_frac()
+    if frac < 0.995:
+        return False
+    prefix = f"  {tag}: " if tag else "  "
+    log(f"{prefix}Cgroup ceiling {frac:.0%} — hard-kill Chrome + reap zombies")
+    hard_kill_chrome()
+    return True
+
+
 async def page_is_aw_snap(page) -> bool:
     """True when Chromium shows Aw, Snap / crashed renderer (OOM on 1GB cells)."""
     if page is None:
@@ -627,10 +694,12 @@ async def ensure_page_focused(page) -> None:
 
 
 def _chromium_lean_args() -> list:
-    """Chromium flags for Railway 1GB cells — OOM → Aw Snap error 5.
+    """Chromium stripped for Railway ~1GB — Lovable SPA + OOM = Aw Snap #5.
 
-    Do NOT set a tiny --max-old-space-size: that kills the Lovable SPA mid-load
-    and leaves CDP Runtime.evaluate permanently hung (composer never appears).
+    Rules learned the hard way:
+    - Do NOT use --max-old-space-size ≤256 (wedges CDP forever).
+    - Do NOT keep a crashed browser open (eats the whole cgroup).
+    - Block images/fonts via context routes, not by aborting documents.
     """
     return [
         "--no-sandbox",
@@ -638,35 +707,85 @@ def _chromium_lean_args() -> list:
         "--disable-blink-features=AutomationControlled",
         "--disable-gpu",
         "--disable-software-rasterizer",
+        "--disable-gpu-compositing",
+        "--in-process-gpu",
         "--remote-debugging-port=9222",
-        "--window-size=1280,720",
+        # Tiny window — less raster RAM
+        "--window-size=1024,576",
         "--window-position=0,0",
+        "--force-device-scale-factor=1",
+        # Low-end / single-site process model
+        "--enable-low-end-device-mode",
+        "--renderer-process-limit=1",
+        "--process-per-site",
+        "--disable-site-isolation-trials",
+        # Modest V8 heap (384 OK; unlimited OOMs 1GB; ≤256 wedges CDP)
+        "--js-flags=--max-old-space-size=384,--optimize-for-size",
+        # Kill background / extras
+        "--disable-background-networking",
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-background-timer-throttling",
-        "--disable-features=CalculateNativeWinOcclusion,"
-        "IntensiveWakeUpThrottling,TranslateUI",
-        "--force-device-scale-factor=1",
         "--disable-hang-monitor",
         "--disable-ipc-flooding-protection",
         "--disable-component-update",
+        "--disable-domain-reliability",
+        "--disable-client-side-phishing-detection",
         "--disable-sync",
+        "--disable-translate",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-breakpad",
+        "--disable-crash-reporter",
         "--metrics-recording-only",
         "--mute-audio",
         "--no-first-run",
         "--no-default-browser-check",
-        # Cap renderer count + modest V8 heap — unlimited heap OOMs the 1GB cgroup
-        # (Aw Snap code 5). Tiny heaps (≤256) wedge CDP; 512 is the compromise.
-        "--renderer-process-limit=2",
-        "--js-flags=--max-old-space-size=512",
+        "--no-zygote",
+        "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,"
+        "site-per-process,TranslateUI,BackForwardCache,AcceptCHFrame,"
+        "MediaRouter,OptimizationHints,PaintHolding,"
+        "CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,"
+        "InterestFeedContentSuggestions,CertificateTransparencyComponentUpdater",
+        # Tiny caches
+        "--disk-cache-size=1048576",
+        "--media-cache-size=1048576",
+        "--aggressive-cache-discard",
+        "--disable-remote-fonts",
+        "--blink-settings=imagesEnabled=false",
     ]
 
 
 async def install_memory_guards(context) -> None:
-    """No-op: aborting assets hung Playwright goto on Railway. Keep lean flags only."""
+    """Drop images/fonts/media only — never block document/script/xhr (hangs goto)."""
     if context is None:
         return
-    log("  Memory guards: lean Chrome flags only (no route abort)")
+
+    _ASSET_EXT = (
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp",
+        ".avif", ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".mp4", ".webm", ".mp3", ".wav", ".ogg", ".m4a",
+    )
+
+    async def _drop(route):
+        try:
+            url = (route.request.url or "").lower().split("?", 1)[0]
+            if any(url.endswith(ext) for ext in _ASSET_EXT):
+                await route.abort()
+            else:
+                await route.continue_()
+        except Exception:
+            try:
+                await route.continue_()
+            except Exception:
+                pass
+
+    try:
+        await context.route("**/*", _drop)
+        log("  Memory guards: block images/fonts/media (scripts OK)")
+    except Exception as e:
+        log(f"  Memory guards soft-fail: {type(e).__name__}")
+        log("  Memory guards: lean Chrome flags only")
 
 
 async def find_chat_composer(page, tag: str = ""):
@@ -1018,11 +1137,11 @@ async def human_scroll(page, amount: int | None = None) -> None:
         await asyncio.sleep(_r.uniform(0.05, 0.12))
 
 
-async def keep_pages_warm(chat_page, preview_page) -> None:
+async def keep_pages_warm(chat_page, preview_page, light: bool = False) -> None:
     """Human-like presence: Bezier mouse, scroll chunks, light type, reading pauses.
 
-    Based on ghost-cursor / Fitts / keystroke IKI research. Avoids top-chrome
-    clicks and Home/PageDown (those remount Preview → nodoc).
+    light=True (babysit under mem pressure): mouse+scroll only — no evaluate,
+    no composer typing. Cuts CDP load that triggers Aw Snap on 1GB.
     """
     import random as _r
 
@@ -1040,49 +1159,53 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
                 await page.bring_to_front()
             except Exception:
                 pass
-            # JS: soft-scroll chat column + focus/visibility (reading activity)
-            try:
-                await asyncio.wait_for(page.evaluate("""() => {
-                    const scrolls = [
-                        ...document.querySelectorAll(
-                          '[data-radix-scroll-area-viewport], .overflow-y-auto, [class*="overflow-y"]')
-                    ].filter(el => el.scrollHeight > el.clientHeight + 40);
-                    if (scrolls.length) {
-                        const el = scrolls[0];
-                        const delta = (Math.random() > 0.5 ? 1 : -1) * (40 + Math.random() * 120);
-                        el.scrollTop = Math.max(0, Math.min(el.scrollHeight, el.scrollTop + delta));
-                    }
-                    window.dispatchEvent(new Event('focus'));
-                    document.dispatchEvent(new Event('visibilitychange'));
-                    return true;
-                }"""), timeout=5)
-            except Exception:
-                pass
+            # JS soft-scroll — skipped in light mode (evaluate Aw-Snaps on 1GB)
+            if not light:
+                try:
+                    await asyncio.wait_for(page.evaluate("""() => {
+                        const scrolls = [
+                            ...document.querySelectorAll(
+                              '[data-radix-scroll-area-viewport], .overflow-y-auto, [class*="overflow-y"]')
+                        ].filter(el => el.scrollHeight > el.clientHeight + 40);
+                        if (scrolls.length) {
+                            const el = scrolls[0];
+                            const delta = (Math.random() > 0.5 ? 1 : -1) * (40 + Math.random() * 120);
+                            el.scrollTop = Math.max(0, Math.min(el.scrollHeight, el.scrollTop + delta));
+                        }
+                        window.dispatchEvent(new Event('focus'));
+                        document.dispatchEvent(new Event('visibilitychange'));
+                        return true;
+                    }"""), timeout=5)
+                except Exception:
+                    pass
 
-            # brief "reading" pause before moving
-            await asyncio.sleep(_r.uniform(0.25, 0.9))
+            await asyncio.sleep(_r.uniform(0.15, 0.5 if light else 0.9))
 
-            vp = page.viewport_size or {"width": 1280, "height": 720}
-            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
-            # chat column (left) then preview (right) — stay off top chrome
+            vp = page.viewport_size or {"width": 1024, "height": 576}
+            w, h = int(vp.get("width", 1024)), int(vp.get("height", 576))
             cx = _r.uniform(w * 0.12, w * 0.38)
             cy = _r.uniform(h * 0.32, h * 0.78)
             px = _r.uniform(w * 0.52, w * 0.90)
             py = _r.uniform(h * 0.32, h * 0.78)
 
             await human_mouse_to(page, cx, cy)
-            await asyncio.sleep(_r.uniform(0.15, 0.45))  # glance pause
-            await human_scroll(page)
-            await asyncio.sleep(_r.uniform(0.12, 0.35))
-            await human_mouse_to(page, px, py)
             await asyncio.sleep(_r.uniform(0.1, 0.3))
             await human_scroll(page)
-            # humans hover more than click; click ~30%
+            await asyncio.sleep(_r.uniform(0.08, 0.25))
+            await human_mouse_to(page, px, py)
+            if light:
+                # Arrow key only — no click, no composer type
+                key = _r.choice(PRESENCE_KEYS)
+                await page.keyboard.press(key)
+                log(f"  Presence poke light ({label}: mouse/scroll/{key})")
+                return
+
+            await asyncio.sleep(_r.uniform(0.1, 0.3))
+            await human_scroll(page)
             if _r.random() < 0.30:
-                await asyncio.sleep(_r.uniform(0.08, 0.22))  # hesitate before click
+                await asyncio.sleep(_r.uniform(0.08, 0.22))
                 await page.mouse.click(px, py)
                 await asyncio.sleep(_r.uniform(0.1, 0.25))
-            # fidget drift
             await human_mouse_to(
                 page,
                 px + _r.uniform(-50, 50),
@@ -1090,7 +1213,6 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
             )
             key = _r.choice(PRESENCE_KEYS)
             await page.keyboard.press(key)
-            # light typing into composer then clear — does not send
             if _r.random() < 0.6:
                 try:
                     await asyncio.wait_for(page.evaluate("""() => {
@@ -1100,7 +1222,7 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
                         if (el) { el.focus(); return true; }
                         return false;
                     }"""), timeout=2)
-                    await asyncio.sleep(_r.uniform(0.2, 0.6))  # think before type
+                    await asyncio.sleep(_r.uniform(0.2, 0.6))
                     snippet = _r.choice(("ok", "hi", "a", "x", "1", "yo"))
                     await human_type_text(page, snippet)
                     await asyncio.sleep(_r.uniform(0.2, 0.5))
@@ -1113,9 +1235,10 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
             log(f"  Presence poke ok ({label}: bezier/scroll/type/{key})")
 
         try:
-            await asyncio.wait_for(_do(), timeout=PRESENCE_POKE_TIMEOUT_S)
+            tout = 12 if light else PRESENCE_POKE_TIMEOUT_S
+            await asyncio.wait_for(_do(), timeout=tout)
         except asyncio.TimeoutError:
-            log(f"  Presence poke timeout ({label} >{PRESENCE_POKE_TIMEOUT_S}s)")
+            log(f"  Presence poke timeout ({label})")
         except Exception as e:
             if _is_crash_error(e):
                 raise
@@ -1123,6 +1246,8 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
 
     same = preview_page is chat_page
     await _human_chat(chat_page, "chat+preview" if same else "chat")
+    if light:
+        return
     if not same and preview_page is not None:
         async def _poke_preview():
             import random as _r2
@@ -1623,6 +1748,28 @@ async def wait_for_chat_preview_sandbox(
             except Exception:
                 u = ""
             ul = u.lower()
+            # Bridge often lives on /term (Build a debug terminal), not Homepage
+            if "lovableproject.com" in ul and "/term" not in ul:
+                try:
+                    import re as _re_term
+                    m = _re_term.match(
+                        r"(https://[^/]+\.lovableproject\.com)", u.split("?")[0])
+                    if m:
+                        dest = m.group(1) + "/term"
+                        log(f"  Navigate lovableproject → /term")
+                        await asyncio.wait_for(
+                            fr.goto(dest, wait_until="domcontentloaded",
+                                    timeout=20000),
+                            timeout=25,
+                        )
+                        await asyncio.sleep(1.5)
+                        try:
+                            u = fr.url or dest
+                            ul = u.lower()
+                        except Exception:
+                            u, ul = dest, dest.lower()
+                except Exception as e:
+                    last_note = f"term-nav:{type(e).__name__}"
             probe = await _probe_frame_doc_pwd(fr, timeout=6.0)
             if not isinstance(probe, dict):
                 continue
@@ -2441,6 +2588,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
         exit_mode = "tab"
         reached_health = False
         browser_up = False
+        force_hard_kill = False
         try:
             browser_up = browser is not None and browser.is_connected()
         except Exception:
@@ -2458,8 +2606,11 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await _shutdown_browser(pw, browser)
                 pw = browser = context = None
                 tab_fail_streak = 0
+                # Always reap zombies + clear any leftover Chrome before launch
+                kill_browser_orphans()
                 if cdp_http_alive():
                     hard_kill_chrome()
+                reclaim_if_pressure("pre-launch")
 
                 pw = await async_playwright().start()
                 if browser_type == "chromium":
@@ -2475,12 +2626,16 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     browser = await pw.chromium.launch(
                         headless=not use_headed, args=_chromium_lean_args())
                     log("  Launched Chromium via Playwright "
-                        f"(headless={not use_headed}, 1GB lean flags)")
+                        f"(headless={not use_headed}, 1GB max-strip flags)")
                 else:
                     browser = await pw.firefox.launch(headless=not headed)
                     log("  Launched Firefox via Playwright")
+                # Smaller viewport on 1GB — less raster/compositor RAM
+                _vp = {"width": 1024, "height": 576}
+                if not (cgroup_mem_gb() and cgroup_mem_gb() <= 1.15):
+                    _vp = {"width": 1280, "height": 720}
                 context = await browser.new_context(
-                    viewport={"width": 1280, "height": 720},
+                    viewport=_vp,
                     user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"))
                 await install_memory_guards(context)
@@ -2755,9 +2910,13 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             f"streak={cdp_hung_streak}/{need}"
                             f"{', tab-dead' if dead_tab else ''})")
                         if cdp_hung_streak >= need:
-                            log("Composer hunt: dead tab — fresh tab (browser stays up)")
+                            log("Composer hunt: dead tab — HARD kill + relaunch (1GB)")
+                            try:
+                                hard_kill_chrome()
+                            except Exception:
+                                pass
                             force_hard_kill = True
-                            raise RuntimeError("cycle-restart")
+                            raise RuntimeError("aw-snap-relaunch")
                     else:
                         cdp_hung_streak = 0
                     log(f"Chat input missing (round {round_n}/{COMPOSER_TRIES}) — wait {COMPOSER_WAIT_S}s (no reload)")
@@ -2864,7 +3023,11 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             page_lock = asyncio.Lock()  # serialize revive vs token refresh
 
             async def daemon_health_loop():
-                """Shell/worker dead → soft confirm → reinject in place (no reload)."""
+                """Shell/worker dead → soft confirm → reinject in place (no reload).
+
+                Babysit Chromium on 1GB: under mem pressure skip chat prompts /
+                CDP-heavy pokes and widen the gap so we don't Aw Snap ourselves.
+                """
                 nonlocal exit_mode, reconnect_streak
                 iteration = 0
                 fail_streak = 0
@@ -2873,44 +3036,88 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     iteration += 1
                     log(f"Health check #{iteration}...")
                     next_wait = HEALTH_INTERVAL_S
+                    tier = mem_pressure_tier()
+                    frac = cgroup_mem_used_frac()
 
-                    # Browser/page gone → reconnect if CDP still up
+                    # Browser/page gone → kill zombies, relaunch (not soft reconnect)
                     if not await _browser_alive(browser, chat_page, preview_page):
-                        exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                        log(f"  Browser/page closed — {exit_mode}")
+                        try:
+                            hard_kill_chrome()
+                        except Exception:
+                            pass
+                        exit_mode = "kill"
+                        log("  Browser/page closed — hard-kill + relaunch")
                         return
 
-                    # Keep chat+preview warm every cycle (human mouse + light typing)
-                    try:
-                        await keep_pages_warm(chat_page, preview_page)
-                    except Exception as e_warm:
-                        if _is_crash_error(e_warm) or not await _browser_alive(
-                                browser, chat_page, preview_page):
-                            exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                            log(f"  Page dead on presence poke — fresh tab")
+                    # Zombie reap; hard-kill only at absolute cgroup ceiling
+                    if iteration == 1 or iteration % 5 == 0:
+                        if reclaim_if_pressure(f"health-{iteration}"):
+                            exit_mode = "kill"
+                            log("  Cgroup ceiling reclaim — relaunch browser")
                             return
 
-                    # Keep closing popups every tick, then tiny human-typed prompt
-                    if not page_lock.locked():
+                    # --- Babysit tiers: cut CDP load before the renderer dies ---
+                    if tier == "critical":
+                        log(f"  Babysit CRITICAL mem={frac:.0%} — probe only, "
+                            f"skip poke/prompt/shots")
+                        next_wait = 80
+                    else:
+                        # Keep chat+preview warm (light poke when careful)
                         try:
-                            await dismiss_blocking_popups(
-                                chat_page, max_passes=5)
-                            await send_presence_prompt(chat_page)
-                            await dismiss_blocking_popups(
-                                chat_page, max_passes=3)
-                        except Exception as e_pp:
-                            if _is_crash_error(e_pp) or not await _browser_alive(
+                            await keep_pages_warm(
+                                chat_page, preview_page,
+                                light=(tier == "careful"))
+                        except Exception as e_warm:
+                            if _is_crash_error(e_warm) or not await _browser_alive(
                                     browser, chat_page, preview_page):
-                                exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                                log(f"  Page dead on presence prompt — fresh tab")
+                                try:
+                                    hard_kill_chrome()
+                                except Exception:
+                                    pass
+                                exit_mode = "kill"
+                                log("  Page dead on presence poke — hard-kill + relaunch")
                                 return
-                            log(f"  Presence prompt skip: {type(e_pp).__name__}")
 
-                    # Xvfb-only shots every 3rd check — page screenshots load CDP
-                    if iteration == 1 or iteration % 3 == 0:
-                        await capture_debug(
-                            chat_page, preview_page, f"h{iteration}",
-                            xvfb_only=True)
+                        if tier == "careful":
+                            log(f"  Babysit careful mem={frac:.0%} — light poke, "
+                                f"no chat prompt")
+                            next_wait = 65
+                            if not page_lock.locked():
+                                try:
+                                    await dismiss_blocking_popups(
+                                        chat_page, max_passes=2)
+                                except Exception:
+                                    pass
+                        else:
+                            # Full presence: prompt every 2nd tick (not every tick)
+                            if not page_lock.locked():
+                                try:
+                                    await dismiss_blocking_popups(
+                                        chat_page, max_passes=5)
+                                    if iteration % 2 == 0:
+                                        await send_presence_prompt(chat_page)
+                                    else:
+                                        log("  Presence prompt: skip (odd tick babysit)")
+                                    await dismiss_blocking_popups(
+                                        chat_page, max_passes=3)
+                                except Exception as e_pp:
+                                    if _is_crash_error(e_pp) or not await _browser_alive(
+                                            browser, chat_page, preview_page):
+                                        try:
+                                            hard_kill_chrome()
+                                        except Exception:
+                                            pass
+                                        exit_mode = "kill"
+                                        log("  Page dead on presence prompt — "
+                                            "hard-kill + relaunch")
+                                        return
+                                    log(f"  Presence prompt skip: {type(e_pp).__name__}")
+
+                            # Xvfb shots rare — every 6th, never under careful/critical
+                            if iteration == 1 or iteration % 6 == 0:
+                                await capture_debug(
+                                    chat_page, preview_page, f"h{iteration}",
+                                    xvfb_only=True)
 
                     try:
                         alive, detail = await asyncio.wait_for(
@@ -2981,9 +3188,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 log(f"  Revive error: {e2} (streak={fail_streak})")
                                 if _is_crash_error(e2) or not await _browser_alive(
                                         browser, chat_page, preview_page):
-                                    exit_mode = (
-                                        "reconnect" if cdp_http_alive() else "kill")
-                                    log(f"  Page crashed during revive — fresh tab")
+                                    try:
+                                        hard_kill_chrome()
+                                    except Exception:
+                                        pass
+                                    exit_mode = "kill"
+                                    log("  Page crashed during revive — hard-kill + relaunch")
                                     return
                                 next_wait = 30
                                 if fail_streak >= FAIL_STREAK_RESTART:
@@ -3003,7 +3213,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         log(f"  Health check error: {e}")
                         if _is_crash_error(e) or not await _browser_alive(
                                 browser, chat_page, preview_page):
-                            log("  Page crashed in health check — fresh tab")
+                            try:
+                                hard_kill_chrome()
+                            except Exception:
+                                pass
+                            exit_mode = "kill"
+                            log("  Page crashed in health check — hard-kill + relaunch")
                             return
                         next_wait = 30
                         fail_streak += 1
@@ -3026,8 +3241,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             while not health_task.done():
                 await asyncio.sleep(60)
                 if not await _browser_alive(browser, chat_page, preview_page):
-                    exit_mode = "reconnect" if cdp_http_alive() else "kill"
-                    log(f"Browser died during token loop — {exit_mode}")
+                    try:
+                        hard_kill_chrome()
+                    except Exception:
+                        pass
+                    exit_mode = "kill"
+                    log("Browser died during token loop — hard-kill + relaunch")
                     break
                 now = time.time()
                 if now - last_refresh >= TOKEN_REFRESH_INTERVAL:
@@ -3043,7 +3262,11 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     except Exception as e:
                         log(f"Token refresh error: {e}")
                         if _is_crash_error(e):
-                            exit_mode = "reconnect" if cdp_http_alive() else "kill"
+                            try:
+                                hard_kill_chrome()
+                            except Exception:
+                                pass
+                            exit_mode = "kill"
                             break
                     last_refresh = now
 
@@ -3055,23 +3278,60 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 except Exception:
                     pass
 
+            if exit_mode == "kill":
+                log("Health exited kill — hard-kill + full browser relaunch")
+                try:
+                    hard_kill_chrome()
+                except Exception:
+                    pass
+                raise RuntimeError("aw-snap-relaunch")
+
             log("Tab handed back — fresh tab in same browser...")
             raise RuntimeError("tab-restart")
 
         except Exception as e:
             msg = str(e).strip()
-            if msg == "login-failed-retry":
+            crashy = (
+                force_hard_kill
+                or msg.startswith("aw-snap")
+                or msg == "aw-snap-relaunch"
+                or _is_crash_error(e)
+            )
+            if crashy:
+                log(f"  Crash/Aw Snap — hard-kill Chrome + zombies, relaunch ({msg})")
+                try:
+                    hard_kill_chrome()
+                except Exception:
+                    pass
+                try:
+                    await _shutdown_browser(pw, browser)
+                except Exception:
+                    pass
+                pw = browser = context = None
+                tab_fail_streak = TAB_FAILS_BEFORE_BROWSER
+                force_hard_kill = False
+                wait_s = 8
+            elif msg == "login-failed-retry":
                 wait_s = 300
-            elif msg.startswith("aw-snap") or msg in (
+            elif msg in (
                     "tab-restart", "cycle-restart", "cdp-reconnect",
                     "sandbox-never-ready"):
                 wait_s = 5
                 log(f"  soft-restart: {msg}")
+                # Soft tab restart: reap zombies only — never SIGKILL live Chrome
+                try:
+                    reap_zombies_only()
+                except Exception:
+                    pass
             else:
                 log(f"Handled error (same browser): {type(e).__name__}: {e}")
                 traceback.print_exc()
                 wait_s = 10
-            if not reached_health:
+                try:
+                    reap_zombies_only()
+                except Exception:
+                    pass
+            if not reached_health and not crashy:
                 tab_fail_streak += 1
             try:
                 still_up = browser is not None and browser.is_connected()

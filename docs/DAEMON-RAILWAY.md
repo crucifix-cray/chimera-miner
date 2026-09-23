@@ -1,13 +1,15 @@
 # Daemon on Railway (cell-16) — runbook
 
-**Updated:** 2026-09-23  
+**Updated:** 2026-09-23 (evening)  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `228be8b060b77341a6d87b8ffe06e31a` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
+**Canonical md5:** `daemon.py` = `c05b8a9edfd8cabdffca4623ba37b98e` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
 
 **Status:** cell-16 — **one Chromium kept up**; issues handled in place (no reload); fresh tab only if a tab wedges; browser relaunch last resort.
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)  
 **Who is mining:** [`FLEET-LIVE.md`](FLEET-LIVE.md) (cell-16 locked to Railway `sessions/session-2`)
+
+**`window.doc` lives on `https://{project}.lovableproject.com/term`** (Build a debug terminal bridge). Daemon navigates Preview lovableproject iframe → `/term` before `doc('pwd')`. Homepage alone often shows `no-doc`.
 
 ---
 
@@ -79,7 +81,7 @@ Outer forever (main + run_daemon)
 │   ├── Auth wall → do_login + goto project (no hard kill)
 │   ├── Composer hunt: wait (no reload); CDP hung ×3 → fresh tab
 │   ├── Wake + inject into chat Preview lovableproject Shell
-│   │     wait real doc('pwd'); inject confirms sysoptd running (not just "sent")
+│   │     navigate iframe → /term; wait real doc('pwd'); inject confirms sysoptd
 │   └── Health every 40–60s (in place — no page reload)
 │         human Bezier mouse + light type + tiny prompt
 │         popup → close Cancel/X (NO reload)

@@ -1,8 +1,8 @@
 # AGENTS.md — Chimera fleet (Lovable + Railway automation)
 
-**Last updated:** 2026-09-22  
+**Last updated:** 2026-09-23  
 **Maintained by:** Cursor agent (local)  
-**Read first:** [`docs/FLEET-ARCHITECTURE.md`](docs/FLEET-ARCHITECTURE.md) · [`docs/DAEMON-RAILWAY.md`](docs/DAEMON-RAILWAY.md)
+**Read first:** [`docs/FLEET-LIVE.md`](docs/FLEET-LIVE.md) · [`docs/FLEET-ARCHITECTURE.md`](docs/FLEET-ARCHITECTURE.md) · [`docs/DAEMON-RAILWAY.md`](docs/DAEMON-RAILWAY.md)
 
 Grug source of truth for the next human or coding agent. Keep language plain. Prefer **worker / cell / bridge / throughput** in prose even when filenames say otherwise.
 
@@ -20,15 +20,15 @@ Control plane: **WSS bridges**. Sprint map + math: `docs/FLEET-ARCHITECTURE.md`.
 
 ---
 
-## Current status (2026-09-22)
+## Current status (2026-09-23)
 
-- **1 cell LIVE:** cell-16 / Lovable `session-2` / project `7d6f77a6…` / `daemon.py --mode full` / Chromium headed  
-- **Heal path:** soft presence → wait real `window.doc` → inject; crashes → **Browser cycle #N**; shell supervisor restarts dead Python  
-- **Canonical md5:** `daemon.py` = `cc5d1c02e5b9b68d4881b4ed4c5cc95b` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
+- **11 cells** mapped in `docs/FLEET-LIVE.md` — **cell-16 locked**; cell-13 Worker injected on `/term`  
+- **Heal path:** soft presence → navigate lovableproject **`/term`** → wait real `window.doc` → inject; crashes → **Browser cycle #N**; shell supervisor restarts dead Python  
+- **Canonical md5:** `daemon.py` = `c05b8a9edfd8cabdffca4623ba37b98e` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
 - **Heal:** one Chromium kept up; popup close + soft reinject (no reload); fresh tab only if tab wedges; browser relaunch last resort  
-- **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`  
+- **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
+- Script2 bridge prompt: `automation-toolkit/prompts/Build a debug terminal.txt` (not wake prompts)  
 - Preview shells still drop sometimes; daemon recovers. Short gaps expected.  
-- ~34 Lovable sessions on disk path; scale goal in fleet doc (~1K services + ~1K sessions)
 
 ---
 
@@ -36,7 +36,7 @@ Control plane: **WSS bridges**. Sprint map + math: `docs/FLEET-ARCHITECTURE.md`.
 
 1. Chromium + session trio (cookies / localStorage / IndexedDB; IDB timeouts)  
 2. Trivial chat wake (`say 'a'`, `1+1?`, …) — **not** script2 “debug terminal” prompts  
-3. Preview until `window.doc` / `window.lovable` (console text alone is not enough)  
+3. Preview until `window.doc` on **`lovableproject.com/term`** (Homepage often misses it)  
 4. `inject_miner()` = **start worker command** in preview shell; `save_trio` from **chat** origin only  
 5. Health: dead shell → simple revive; fail ×3 or crash → relaunch browser cycle  
 6. Token refresh ~40m under `page_lock`  

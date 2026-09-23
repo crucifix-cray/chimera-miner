@@ -1,20 +1,22 @@
 # INDEX — roadmap & fleet status
 
-**Updated:** 2026-09-22  
+**Updated:** 2026-09-23  
 
 - **Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 - **Who is mining right now:** [`FLEET-LIVE.md`](FLEET-LIVE.md)
 
 ## Where we are
 
-- **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md) — cell-16 + planned cells by project  
-- **cell-16 LIVE:** Railway `sessions/session-2` / project `7d6f77a6` — supervisor + headed daemon (`DAEMON-RAILWAY.md`)  
-- **Code:** headed Xvfb, chat-iframe inject, 40s presence+prompt, auth-wall, soft revive, no fake `window.doc`, ranked sandbox wait (problem 31)  
-- **Canonical md5:** `daemon.py`=`228be8b0…` · `miner_injector.py`=`b5033cbd…` (see runbook)  
-- **Open blocker:** 1GB cgroup → Aw Snap error 5; need ≥1.5–2GB for reliable Shell  
-- Prefer chat Preview `lovableproject.com` Shell Sandbox; require real `doc('pwd')` before inject  
+- **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md) — 11 cells by project; cell-16 locked  
+- **cell-16 LIVE (locked):** Railway `sessions/session-2` / project `7d6f77a6` — do not touch  
+- **cell-13:** bridge on `/term` + **Worker injected** (1GB reclaim OK)  
+- **cell-23:** bridge verified; daemon `/term` nav + re-inject  
+- **Code:** headed Xvfb, chat-iframe inject, **`lovableproject → /term`** before `doc('pwd')`, 40s presence+prompt, auth-wall, soft revive, no fake `window.doc`  
+- **Canonical md5:** `daemon.py`=`c05b8a9e…` · `miner_injector.py`=`b5033cbd…` (see runbook)  
+- **Bridge prompt (script2):** `automation-toolkit/prompts/Build a debug terminal.txt` via `remix_inject.py` / `inject_fleet_projects.py` — not wake `say 'a'`  
+- Prefer chat Preview `lovableproject.com/term`; require real `doc('pwd')` before inject  
 - Launch with `CHIMERA_FORCE_HEADED=1` on Xvfb  
-- **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`  
+- **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
 
 ## Architecture (daemon)
 
@@ -23,7 +25,7 @@ daemon.py --mode full --headed  (never exits)
 ├── Browser cycle #N  (Playwright launch; soft CDP reattach only if attached)
 │   ├── Chromium :99 → cookies → LS (SKIP_IDB) → auth-wall? login
 │   ├── Composer wait (no reload) → wake (prefer no-reload)
-│   ├── Wait real window.doc → inject (ranked probes + ticks; no fake stub)
+│   ├── lovableproject → /term → wait real window.doc → inject (no fake stub)
 │   ├── save_trio(chat)
 │   └── Health (~40s):
 │         presence scroll/hover/wheel + trivial chat prompt
