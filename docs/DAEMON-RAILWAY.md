@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-23  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `cc5d1c02e5b9b68d4881b4ed4c5cc95b` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
+**Canonical md5:** `daemon.py` = `228be8b060b77341a6d87b8ffe06e31a` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
 
 **Status:** cell-16 — **one Chromium kept up**; issues handled in place (no reload); fresh tab only if a tab wedges; browser relaunch last resort.
 
@@ -30,7 +30,7 @@ Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 ```bash
 cd /app/work/chimera-miner
 nohup bash -c 'while true; do
-  env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 \
+  env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 CHIMERA_FORCE_HEADED=1 \
     CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
     CHIMERA_SHOT_DIR=/app/work/shots \
     DISPLAY=:99 PYTHONUNBUFFERED=1 \

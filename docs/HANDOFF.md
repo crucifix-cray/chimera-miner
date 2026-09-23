@@ -13,13 +13,14 @@ You are continuing **Lovable + Railway cell** automation. Scale is the job. Cell
 - `daemon.py` / `miner_injector.py` — headed Xvfb, chat-iframe inject, 40s presence+prompt, soft revive, auth-wall re-login, no fake `window.doc`, never-exit cycles  
 - Sandbox wait hardened (ranked probes, ticks, remount, post-wake spin, outer BaseException + shell supervisor) — problem 31  
 - Session-2 / project `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`  
-- Canonical md5 `daemon.py`=`142eaa572d8eea5f02c9b2a0caec1eb2` · `miner_injector.py`=`9441b4768314cab9ad7dbc94089bf13a`  
+- Canonical md5 `daemon.py`=`228be8b060b77341a6d87b8ffe06e31a` · `miner_injector.py`=`b5033cbdcafd3fe2320b14489c54ef13`  
+- Problems log through #36 in `SCRIPT3-PROBLEMS-SOLUTIONS.md`  
+- **1GB Railway Aw Snap is the open blocker** — bump cell to ≥1.5–2GB when possible  
 - Bridge `wss://chimera-bridge-production-0703.up.railway.app`  
-- Problems log through #31 in `SCRIPT3-PROBLEMS-SOLUTIONS.md`  
 
 ## Rules (do not violate)
 
-- `CHIMERA_NO_PROXY=1` + `CHIMERA_SKIP_IDB=1` + `DISPLAY=:99` + `--headed` on cells  
+- `CHIMERA_NO_PROXY=1` + `CHIMERA_SKIP_IDB=1` + `CHIMERA_FORCE_HEADED=1` + `DISPLAY=:99` + `--headed` on cells  
 - Chromium + `--mode full` on cells  
 - Daemons live on Railway **services**, not sandboxes  
 - Prefer inject into chat Preview `lovableproject.com` iframe (not a 2nd tab)  

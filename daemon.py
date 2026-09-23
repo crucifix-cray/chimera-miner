@@ -459,6 +459,7 @@ async def page_is_aw_snap(page) -> bool:
     if "aw, snap" in tl or "sad tab" in tl:
         return True
     # Don't treat blank/evaluate-fail as crash — SPA hydrate is slow on Railway.
+    # But Target crashed / closed IS a crash.
     try:
         body = await asyncio.wait_for(
             page.evaluate(
@@ -466,7 +467,9 @@ async def page_is_aw_snap(page) -> bool:
             ),
             timeout=4,
         )
-    except Exception:
+    except Exception as e:
+        if _is_crash_error(e):
+            return True
         return False
     bl = (body or "").lower()
     return (
@@ -652,6 +655,10 @@ def _chromium_lean_args() -> list:
         "--mute-audio",
         "--no-first-run",
         "--no-default-browser-check",
+        # Cap renderer count + modest V8 heap — unlimited heap OOMs the 1GB cgroup
+        # (Aw Snap code 5). Tiny heaps (≤256) wedge CDP; 512 is the compromise.
+        "--renderer-process-limit=2",
+        "--js-flags=--max-old-space-size=512",
     ]
 
 
@@ -667,32 +674,40 @@ async def find_chat_composer(page, tag: str = ""):
 
     Returns (locator_or_None, cdp_hung: bool).
     cdp_hung only when JS *and* locator probes all hard-timeout (true wedge).
+    On ~1GB cells, skip the opening evaluate (it Aw-Snaps a hydrating SPA).
     """
     if page is None:
         return None, False
     tag_s = f" {tag}" if tag else ""
     js_timed_out = False
+    low_mem = bool(cgroup_mem_gb() and cgroup_mem_gb() <= 1.15)
 
-    # 1) Fast JS count (hard 8s) — cold SPA hydrate often exceeds 4s without true wedge
-    try:
-        n = await _page_eval(
-            page,
-            "() => document.querySelectorAll('[contenteditable=\"true\"]').length",
-            timeout=8,
-        )
-        log(f"  Composer: JS contenteditable count={n}{tag_s}")
-        if n and int(n) >= 1:
-            loc = page.locator('[contenteditable="true"]').first
-            try:
-                await asyncio.wait_for(loc.click(timeout=2000), timeout=3)
-            except Exception:
-                pass
-            return loc, False
-    except asyncio.TimeoutError:
-        js_timed_out = True
-        log(f"  Composer: JS probe timeout{tag_s} — try locators before calling hung")
-    except Exception as e:
-        log(f"  Composer: JS probe fail ({type(e).__name__}: {e}){tag_s}")
+    # 1) Fast JS count (hard 8s) — skipped on 1GB (evaluate → Target crashed)
+    if low_mem:
+        log(f"  Composer: skip JS probe on 1GB{tag_s} — locators only")
+    else:
+        try:
+            n = await _page_eval(
+                page,
+                "() => document.querySelectorAll('[contenteditable=\"true\"]').length",
+                timeout=8,
+            )
+            log(f"  Composer: JS contenteditable count={n}{tag_s}")
+            if n and int(n) >= 1:
+                loc = page.locator('[contenteditable="true"]').first
+                try:
+                    await asyncio.wait_for(loc.click(timeout=2000), timeout=3)
+                except Exception:
+                    pass
+                return loc, False
+        except asyncio.TimeoutError:
+            js_timed_out = True
+            log(f"  Composer: JS probe timeout{tag_s} — try locators before calling hung")
+        except Exception as e:
+            log(f"  Composer: JS probe fail ({type(e).__name__}: {e}){tag_s}")
+            if _is_crash_error(e):
+                log(f"  Composer: target dead{tag_s} — treat as hung (fresh tab)")
+                return None, True
 
     # 2) Light Ask Lovable click (short caps)
     for click_try in (
@@ -2290,10 +2305,11 @@ async def do_login(page, email, password, totp_secret=None):
 
 
 def _is_crash_error(exc: BaseException | str) -> bool:
-    """True when Playwright/browser is dead and only a full relaunch helps."""
+    """True when Playwright page/browser is dead — fresh tab / relaunch."""
     s = str(exc).lower()
     needles = (
         "target closed",
+        "target crashed",
         "target page, context or browser has been closed",
         "browser has been closed",
         "browser closed",
@@ -2305,6 +2321,8 @@ def _is_crash_error(exc: BaseException | str) -> bool:
         "browser disconnected",
         "websocket",
         "execution context was destroyed",
+        "aw, snap",
+        "page crashed",
     )
     return any(n in s for n in needles)
 
@@ -2473,6 +2491,39 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 old_pages = list(context.pages)
             except Exception:
                 old_pages = []
+            # Cookies BEFORE first nav — required when we skip post-LS reload on 1GB
+            try:
+                cookies = load_cookies_sync(session_id)
+                await asyncio.wait_for(context.add_cookies(cookies), timeout=10)
+                log(f"Loaded {len(cookies)} cookies (pre-nav)")
+            except Exception as e:
+                log(f"  Cookie load soft-fail: {e}")
+            # LS via init script (before SPA) — avoids page.evaluate Aw Snap on 1GB
+            # Arm once per context (fresh-tab cycles reuse context).
+            _sdir_early = _sess_dir(session_id)
+            _ls_early = _sdir_early / "localstorage.json"
+            if _ls_early.exists() and not getattr(context, "_chimera_ls_init", False):
+                try:
+                    with open(_ls_early) as f:
+                        _ls_data = json.load(f)
+                    _payload = json.dumps(_ls_data)
+                    await context.add_init_script(
+                        f"""(() => {{
+                          try {{
+                            const data = {_payload};
+                            for (const [k, v] of Object.entries(data)) {{
+                              try {{
+                                localStorage.setItem(
+                                  k, (typeof v === 'string') ? v : JSON.stringify(v));
+                              }} catch (e) {{}}
+                            }}
+                          }} catch (e) {{}}
+                        }})();"""
+                    )
+                    context._chimera_ls_init = True
+                    log(f"  LS init-script armed ({len(_ls_data)} keys) — applies on goto")
+                except Exception as e:
+                    log(f"  LS init-script soft-fail: {type(e).__name__}: {e}")
             chat_page = await context.new_page()
             for op in old_pages:
                 try:
@@ -2494,14 +2545,6 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 # Skip recover/focus after successful goto — those CDP calls
                 # freeze the asyncio loop on Railway 1GB after commit.
                 log("  open: goto ok — skip aw-snap recover/focus")
-
-            # Load cookies into context (no-op if profile already has them)
-            try:
-                cookies = load_cookies_sync(session_id)
-                await asyncio.wait_for(context.add_cookies(cookies), timeout=10)
-                log(f"Loaded {len(cookies)} cookies")
-            except Exception as e:
-                log(f"  Cookie load soft-fail: {e}")
 
             # Check if logged in (page.url is sync — safe)
             try:
@@ -2527,9 +2570,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
 
             # --- Step 2: Restore localStorage + IndexedDB ---
             sdir = _sess_dir(session_id)
+            low_mem_hydrate = bool(cgroup_mem_gb() and cgroup_mem_gb() <= 1.15)
             # Restore on chat page (lovable.dev domain)
             ls_file = sdir / "localstorage.json"
-            if ls_file.exists():
+            if low_mem_hydrate:
+                log("  Skip LS page.evaluate on 1GB — init-script already applied pre-nav")
+            elif ls_file.exists():
                 try:
                     with open(ls_file) as f:
                         ls_data = json.load(f)
@@ -2613,11 +2659,17 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             elif idb_file.exists():
                 log("Skipping IndexedDB restore (CHIMERA_SKIP_IDB=1)")
 
-            # Cookies + LS only stick after a reload of the project chat.
-            log("  Reloading chat so cookies/LS apply…")
-            if not await safe_goto(chat_page, chat_url, timeout_s=25):
-                log("  post-LS reload soft-fail — continuing")
-            await asyncio.sleep(5)
+            # Cookies + LS ideally stick after reload — but on ~1GB Railway the
+            # post-LS reload Aw-Snaps the renderer (Target crashed ×15). Prefer
+            # cookies-before-nav when possible; skip reload on low-mem.
+            if low_mem_hydrate:
+                log("  Skip post-LS reload on 1GB — init-script LS + cookies pre-nav")
+                await asyncio.sleep(8)  # let SPA hydrate before composer probe
+            else:
+                log("  Reloading chat so cookies/LS apply…")
+                if not await safe_goto(chat_page, chat_url, timeout_s=25):
+                    log("  post-LS reload soft-fail — continuing")
+                await asyncio.sleep(5)
             log("  hydrate: skip aw-snap recover (1GB path)")
 
             # Cookie/auth probes freeze the asyncio loop on 1GB — URL-only check.
@@ -2692,15 +2744,39 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         break
                     if cdp_hung:
                         cdp_hung_streak += 1
-                        log(f"CDP slow on composer (round {round_n}, "
-                            f"streak={cdp_hung_streak}/3) — retry not hard-kill yet")
-                        if cdp_hung_streak >= 3:
-                            log("CDP hung 3x on composer hunt — fresh tab (browser stays up)")
+                        # Target crashed / Aw Snap: one hit is enough — do not
+                        # burn COMPOSER_TRIES × 10s on a dead renderer.
+                        try:
+                            dead_tab = await page_is_aw_snap(chat_page)
+                        except Exception:
+                            dead_tab = True
+                        need = 1 if (dead_tab or low_mem) else 3
+                        log(f"CDP slow/dead on composer (round {round_n}, "
+                            f"streak={cdp_hung_streak}/{need}"
+                            f"{', tab-dead' if dead_tab else ''})")
+                        if cdp_hung_streak >= need:
+                            log("Composer hunt: dead tab — fresh tab (browser stays up)")
                             force_hard_kill = True
                             raise RuntimeError("cycle-restart")
                     else:
                         cdp_hung_streak = 0
                     log(f"Chat input missing (round {round_n}/{COMPOSER_TRIES}) — wait {COMPOSER_WAIT_S}s (no reload)")
+                    # After a few empty hunts on 1GB, force login — cookies/LS
+                    # may look "logged in" by URL while UI is access-walled.
+                    if low_mem and round_n in (3, 8):
+                        log(f"  Composer still missing r{round_n} — try do_login")
+                        try:
+                            logged = await do_login(
+                                chat_page,
+                                config.get("email", ""),
+                                config.get("password", ""),
+                                config.get("totp_secret"),
+                            )
+                            if logged:
+                                await safe_goto(chat_page, chat_url, timeout_s=25)
+                                await asyncio.sleep(5)
+                        except Exception as e:
+                            log(f"  mid-hunt login skip: {type(e).__name__}")
                     await asyncio.sleep(COMPOSER_WAIT_S)
                 finally:
                     _stop.set()

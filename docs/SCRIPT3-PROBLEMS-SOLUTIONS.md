@@ -4,7 +4,7 @@
 
 Proven setup: **cell-16** / session-2 / project `7d6f77a6` / `daemon.py --mode full --headed` / Chromium on Xvfb `:99` / `CHIMERA_SKIP_IDB=1`.  
 Runbook: `DAEMON-RAILWAY.md`. Fleet map: `FLEET-ARCHITECTURE.md`. Problems through **#30**.  
-Canonical md5s / launch: `docs/DAEMON-RAILWAY.md`. Problems through #31.
+Canonical md5s / launch: `docs/DAEMON-RAILWAY.md`. Problems through #36.
 
 Words in this log: **preview shell**, **worker process**, **revive**. Function names like `inject_miner` mean “start the worker command in the preview”.
 
@@ -183,13 +183,18 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 - **Cause:** Soft UI issues were treated as browser death; inject trusted start reply without checking `sysoptd`.
 - **Fix:** Keep one Chromium; handle popup/dead-worker in place (no reload); fresh tab only if tab wedges; browser relaunch only if process died or 4 tabs never reach health; inject verifies worker procs before returning True.
 
+## Problem 36: Railway 1GB Aw Snap (error code 5) — Target crashed forever
+- **Symptom:** After cookies/LS, every `page.evaluate` is `Target crashed`; Xvfb shows Aw Snap; cgroup memory ~950MB/1000MB; composer hunt burned 15×10s on a dead tab.
+- **Cause:** Lovable SPA + Chromium exceed the 1GB service limit; post-LS reload and JS probes make it worse.
+- **Fix:** Cookies + LS via `add_init_script` **before** goto (no page.evaluate restore on 1GB); skip post-LS reload; skip JS composer probe (locators only); treat `Target crashed` as immediate fresh-tab (streak 1); `CHIMERA_FORCE_HEADED=1` on Xvfb; lean flags + `--js-flags=--max-old-space-size=512` + `--renderer-process-limit=2`. **Still needs ≥1.5–2GB for reliable Shell** — 1GB is marginal.
+
 ## Working launch commands
 
 ### Daemon on Railway (production — recommended)
 ```bash
 cd /app/work/chimera-miner
 nohup bash -c 'while true; do
-  env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 \
+  env CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 CHIMERA_FORCE_HEADED=1 \
     CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions \
     CHIMERA_SHOT_DIR=/app/work/shots \
     DISPLAY=:99 PYTHONUNBUFFERED=1 \

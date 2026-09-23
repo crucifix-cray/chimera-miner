@@ -8,9 +8,10 @@
 
 - **cell-16 LIVE:** session-2 / project `7d6f77a6` — supervisor + headed daemon (`DAEMON-RAILWAY.md`)  
 - **Code:** headed Xvfb, chat-iframe inject, 40s presence+prompt, auth-wall, soft revive, no fake `window.doc`, ranked sandbox wait (problem 31)  
-- **Canonical md5:** `daemon.py`=`142eaa57…` · `miner_injector.py`=`9441b476…` (see runbook)  
-- **Runbook:** [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)  
+- **Canonical md5:** `daemon.py`=`228be8b0…` · `miner_injector.py`=`b5033cbd…` (see runbook)  
+- **Open blocker:** 1GB cgroup → Aw Snap error 5; need ≥1.5–2GB for reliable Shell  
 - Prefer chat Preview `lovableproject.com` Shell Sandbox; require real `doc('pwd')` before inject  
+- Launch with `CHIMERA_FORCE_HEADED=1` on Xvfb  
 - **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`  
 
 ## Architecture (daemon)
