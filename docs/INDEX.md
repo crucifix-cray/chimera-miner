@@ -2,11 +2,13 @@
 
 **Updated:** 2026-09-22  
 
-**Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
+- **Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
+- **Who is mining right now:** [`FLEET-LIVE.md`](FLEET-LIVE.md)
 
 ## Where we are
 
-- **cell-16 LIVE:** session-2 / project `7d6f77a6` — supervisor + headed daemon (`DAEMON-RAILWAY.md`)  
+- **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md) — cell-16 + planned cells by project  
+- **cell-16 LIVE:** Railway `sessions/session-2` / project `7d6f77a6` — supervisor + headed daemon (`DAEMON-RAILWAY.md`)  
 - **Code:** headed Xvfb, chat-iframe inject, 40s presence+prompt, auth-wall, soft revive, no fake `window.doc`, ranked sandbox wait (problem 31)  
 - **Canonical md5:** `daemon.py`=`228be8b0…` · `miner_injector.py`=`b5033cbd…` (see runbook)  
 - **Open blocker:** 1GB cgroup → Aw Snap error 5; need ≥1.5–2GB for reliable Shell  

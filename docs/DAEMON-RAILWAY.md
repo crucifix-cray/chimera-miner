@@ -6,7 +6,8 @@
 
 **Status:** cell-16 — **one Chromium kept up**; issues handled in place (no reload); fresh tab only if a tab wedges; browser relaunch last resort.
 
-Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
+Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)  
+**Who is mining:** [`FLEET-LIVE.md`](FLEET-LIVE.md) (cell-16 locked to Railway `sessions/session-2`)
 
 ---
 
