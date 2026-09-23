@@ -375,11 +375,12 @@ async def install_focus_spoof(context) -> None:
         log(f"  Focus spoof skip: {type(e).__name__}")
 
 
-async def safe_goto(page, url: str, timeout_s: float = 20.0) -> bool:
+async def safe_goto(page, url: str, timeout_s: float = 18.0) -> bool:
     """Navigate without hanging forever when Playwright's goto wedges.
 
-    On Railway 1GB, goto often never resolves even after the URL is live in
-    CDP — race URL readiness against goto, and hard-kill Chrome on timeout.
+    Railway: Playwright can block the *entire* asyncio loop inside goto so
+    asyncio.wait timeouts never fire. A daemon thread hard-kills Chrome after
+    timeout_s — that unblocks the driver and lets forever-mode continue.
     """
     if page is None:
         return False
@@ -389,76 +390,41 @@ async def safe_goto(page, url: str, timeout_s: float = 20.0) -> bool:
     except Exception:
         return False
 
+    import threading
+
     target = url.split("?")[0].rstrip("/")
+    stop = threading.Event()
 
-    async def _url_ready():
-        while True:
-            try:
-                if page.is_closed():
-                    return False
-                cur = (page.url or "").split("?")[0].rstrip("/")
-                if target and target in cur:
-                    return True
-            except Exception:
-                pass
-            await asyncio.sleep(0.4)
+    def _watchdog():
+        if stop.wait(timeout_s + 2):
+            return
+        log("  safe_goto: thread-watchdog HARD KILL chrome")
+        try:
+            hard_kill_chrome()
+        except Exception:
+            pass
 
-    goto_task = asyncio.create_task(
-        page.goto(
+    threading.Thread(target=_watchdog, name="goto-wd", daemon=True).start()
+    log(f"  safe_goto: navigating ({timeout_s:.0f}s watchdog)…")
+    try:
+        await page.goto(
             url,
             timeout=int(timeout_s * 1000),
             wait_until="commit",
         )
-    )
-    ready_task = asyncio.create_task(_url_ready())
-    try:
-        done, pending = await asyncio.wait(
-            {goto_task, ready_task},
-            timeout=timeout_s + 3,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        # URL already matches — treat as success even if goto is wedged
-        if ready_task in done:
-            try:
-                if ready_task.result():
-                    log("  safe_goto: URL live (goto may still be pending)")
-                    if not goto_task.done():
-                        goto_task.cancel()
-                        try:
-                            await asyncio.wait_for(goto_task, timeout=1.5)
-                        except Exception:
-                            pass
-                    return True
-            except Exception:
-                pass
-        if goto_task in done:
-            exc = goto_task.exception() if not goto_task.cancelled() else None
-            if exc is None and not goto_task.cancelled():
-                return True
-            log(f"  safe_goto: goto err {type(exc).__name__ if exc else 'cancel'}")
-        else:
-            log("  safe_goto: HARD TIMEOUT — killing chrome to unwedge")
-            try:
-                hard_kill_chrome()
-            except Exception:
-                pass
-        for t in (goto_task, ready_task):
-            if not t.done():
-                t.cancel()
-                try:
-                    await asyncio.wait_for(t, timeout=1)
-                except Exception:
-                    pass
-        # Last chance: URL already there
+        stop.set()
+        log("  safe_goto: commit ok")
+        return True
+    except Exception as e:
+        stop.set()
+        log(f"  safe_goto: {type(e).__name__}: {e}")
         try:
             cur = (page.url or "").split("?")[0].rstrip("/")
             if target and target in cur and not page.is_closed():
+                log("  safe_goto: URL already live after err — ok")
                 return True
         except Exception:
             pass
-        return False
-    except Exception as e:
-        log(f"  safe_goto: {type(e).__name__}")
         return False
 
 
