@@ -2535,12 +2535,30 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 try:
                     with open(ls_file) as f:
                         ls_data = json.load(f)
-                    await chat_page.evaluate(
-                        "(data) => { for (const [k, v] of Object.entries(data)) { try { localStorage.setItem(k, v); } catch(e) {} } }",
-                        ls_data)
-                    log(f"Restored {len(ls_data)} localStorage keys")
+                    # Thread watchdog — evaluate can freeze the asyncio loop.
+                    import threading as _th
+                    _stop = _th.Event()
+                    def _wd():
+                        if not _stop.wait(12):
+                            log("  LS restore watchdog — hard_kill")
+                            try:
+                                hard_kill_chrome()
+                            except Exception:
+                                pass
+                    _th.Thread(target=_wd, daemon=True).start()
+                    try:
+                        await asyncio.wait_for(
+                            chat_page.evaluate(
+                                "(data) => { for (const [k, v] of Object.entries(data)) "
+                                "{ try { localStorage.setItem(k, v); } catch(e) {} } }",
+                                ls_data),
+                            timeout=10,
+                        )
+                        log(f"Restored {len(ls_data)} localStorage keys")
+                    finally:
+                        _stop.set()
                 except Exception as e:
-                    log(f"localStorage restore failed: {e}")
+                    log(f"localStorage restore failed: {type(e).__name__}: {e}")
 
             idb_file = sdir / "indexeddb.json"
             if idb_file.exists() and os.environ.get("CHIMERA_SKIP_IDB", "") != "1":
@@ -2597,13 +2615,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             elif idb_file.exists():
                 log("Skipping IndexedDB restore (CHIMERA_SKIP_IDB=1)")
 
-            # After LS restore: wait for hydrate. Avoid reload here — it often
-            # wedges CDP on Railway while Lovable SPA is still compiling.
-            await asyncio.sleep(12)
-            ok, chat_page = await recover_aw_snap(
-                chat_page, chat_url, tag="hydrate", context=context)
-            if not ok:
-                raise RuntimeError("aw-snap-hydrate")
+            # After LS restore: short hydrate wait. Skip aw-snap recover on
+            # Railway — CDP probes freeze the loop after a good goto.
+            await asyncio.sleep(6)
+            log("  hydrate: skip aw-snap recover (1GB path)")
 
             # Cookie banner + auth wall (SKIP_IDB often leaves us logged-out)
             try:
