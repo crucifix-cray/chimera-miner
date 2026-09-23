@@ -375,6 +375,52 @@ async def install_focus_spoof(context) -> None:
         log(f"  Focus spoof skip: {type(e).__name__}")
 
 
+async def safe_goto(page, url: str, timeout_s: float = 25.0) -> bool:
+    """Navigate without hanging forever when the renderer dies mid-goto."""
+    if page is None:
+        return False
+    try:
+        if page.is_closed():
+            return False
+    except Exception:
+        return False
+    task = asyncio.create_task(
+        page.goto(
+            url,
+            timeout=int(timeout_s * 1000),
+            wait_until="commit",
+        )
+    )
+    try:
+        await asyncio.wait_for(task, timeout=timeout_s + 5)
+        return True
+    except Exception as e:
+        log(f"  safe_goto: {type(e).__name__}")
+        if not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2)
+            except Exception:
+                pass
+        return False
+
+
+def cgroup_mem_gb() -> float:
+    """Return cgroup memory.max in GB, or 0 if unknown."""
+    try:
+        with open("/sys/fs/cgroup/memory.max") as f:
+            raw = f.read().strip()
+        if raw == "max":
+            return 99.0
+        return int(raw) / 1_000_000_000
+    except Exception:
+        try:
+            with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
+                return int(f.read().strip()) / 1_000_000_000
+        except Exception:
+            return 0.0
+
+
 async def page_is_aw_snap(page) -> bool:
     """True when Chromium shows Aw, Snap / crashed renderer (OOM on 1GB cells)."""
     if page is None:
@@ -444,10 +490,7 @@ async def recover_aw_snap(page, url: str, tag: str = "", context=None):
                 log(f"{prefix}new_page fail: {type(e).__name__}")
                 return False, cur
         try:
-            await asyncio.wait_for(
-                cur.goto(url, timeout=30000, wait_until="commit"),
-                timeout=35,
-            )
+            await safe_goto(cur, url, timeout_s=25)
         except Exception as e:
             log(f"{prefix}recover goto fail: {type(e).__name__}")
             # If goto closed the page again, loop will new_page next attempt
@@ -456,7 +499,18 @@ async def recover_aw_snap(page, url: str, tag: str = "", context=None):
                     cur = await asyncio.wait_for(context.new_page(), timeout=15)
             except Exception:
                 pass
-        await asyncio.sleep(3)
+        # Aw Snap pages often respond to location.reload() via CDP even when
+        # Playwright's page object is half-dead.
+        try:
+            if cur is not None and not cur.is_closed() and await page_is_aw_snap(cur):
+                await asyncio.wait_for(
+                    cur.evaluate("() => { location.reload(); return true; }"),
+                    timeout=5,
+                )
+                await asyncio.sleep(3)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
         try:
             if cur is not None and not cur.is_closed() and not await page_is_aw_snap(cur):
                 log(f"{prefix}page recovered")
@@ -2386,11 +2440,19 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
 
                 pw = await async_playwright().start()
                 if browser_type == "chromium":
-                    # Xvfb anti-throttle + 1GB lean flags (Aw Snap #5 = cgroup OOM).
+                    # 1GB Railway: headed Xvfb OOMs (Aw Snap #5). Prefer headless
+                    # when cgroup ≤1.1GB unless CHIMERA_FORCE_HEADED=1.
+                    mem_gb = cgroup_mem_gb()
+                    use_headed = headed
+                    if mem_gb and mem_gb <= 1.15 and os.environ.get(
+                            "CHIMERA_FORCE_HEADED", "") != "1":
+                        use_headed = False
+                        log(f"  cgroup {mem_gb:.2f}GB ≤1.1 — forcing headless "
+                            f"(set CHIMERA_FORCE_HEADED=1 to override)")
                     browser = await pw.chromium.launch(
-                        headless=not headed, args=_chromium_lean_args())
+                        headless=not use_headed, args=_chromium_lean_args())
                     log("  Launched Chromium via Playwright "
-                        "(Xvfb focus + 1GB lean/anti-OOM flags)")
+                        f"(headless={not use_headed}, 1GB lean flags)")
                 else:
                     browser = await pw.firefox.launch(headless=not headed)
                     log("  Launched Firefox via Playwright")
@@ -2415,18 +2477,14 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             if old_pages:
                 log(f"  Opened fresh tab, closed {len(old_pages)} old tab(s) — browser stays up")
             log(f"Opening chat: {chat_url}")
-            try:
-                await asyncio.wait_for(
-                    chat_page.goto(chat_url, timeout=30000, wait_until="commit"),
-                    timeout=35,
-                )
-            except Exception as e:
-                log(f"  goto soft-fail: {type(e).__name__}")
-            # asyncio.sleep — wait_for_timeout throws TargetClosedError if page dies
-            await asyncio.sleep(3)
+            if not await safe_goto(chat_page, chat_url, timeout_s=25):
+                log("  goto soft-fail — will recover")
+            await asyncio.sleep(2)
             ok, chat_page = await recover_aw_snap(
                 chat_page, chat_url, tag="open", context=context)
             if not ok:
+                # Poisoned renderer — force browser relaunch next cycle
+                tab_fail_streak = TAB_FAILS_BEFORE_BROWSER
                 raise RuntimeError("aw-snap-on-open")
             await ensure_page_focused(chat_page)
 
