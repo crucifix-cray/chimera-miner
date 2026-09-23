@@ -636,7 +636,7 @@ def _chromium_lean_args() -> list:
         "--js-flags=--max-old-space-size=256",
         "--disable-gpu",
         "--disable-software-rasterizer",
-        "--remote-debugging-port=0",  # let Playwright own CDP; avoid dual listeners
+        "--remote-debugging-port=9222",
         "--window-size=1280,720",
         "--window-position=0,0",
         "--disable-backgrounding-occluded-windows",
@@ -2484,26 +2484,28 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             if old_pages:
                 log(f"  Opened fresh tab, closed {len(old_pages)} old tab(s) — browser stays up")
             log(f"Opening chat: {chat_url}")
-            if not await safe_goto(chat_page, chat_url, timeout_s=25):
+            goto_ok = await safe_goto(chat_page, chat_url, timeout_s=25)
+            if not goto_ok:
                 log("  goto soft-fail — will recover")
-            await asyncio.sleep(2)
-            ok, chat_page = await recover_aw_snap(
-                chat_page, chat_url, tag="open", context=context)
-            if not ok:
-                # Poisoned renderer — force browser relaunch next cycle
-                tab_fail_streak = TAB_FAILS_BEFORE_BROWSER
-                raise RuntimeError("aw-snap-on-open")
-            await ensure_page_focused(chat_page)
+                ok, chat_page = await recover_aw_snap(
+                    chat_page, chat_url, tag="open", context=context)
+                if not ok:
+                    tab_fail_streak = TAB_FAILS_BEFORE_BROWSER
+                    raise RuntimeError("aw-snap-on-open")
+            else:
+                # Skip recover/focus after successful goto — those CDP calls
+                # freeze the asyncio loop on Railway 1GB after commit.
+                log("  open: goto ok — skip aw-snap recover/focus")
 
             # Load cookies into context (no-op if profile already has them)
             try:
                 cookies = load_cookies_sync(session_id)
-                await asyncio.wait_for(context.add_cookies(cookies), timeout=15)
+                await asyncio.wait_for(context.add_cookies(cookies), timeout=10)
                 log(f"Loaded {len(cookies)} cookies")
             except Exception as e:
                 log(f"  Cookie load soft-fail: {e}")
 
-            # Check if logged in
+            # Check if logged in (page.url is sync — safe)
             try:
                 cur_url = chat_page.url or ""
             except Exception:
@@ -2523,12 +2525,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     await safe_goto(chat_page, chat_url, timeout_s=25)
                 except Exception:
                     pass
-                await asyncio.sleep(2)
-                ok, chat_page = await recover_aw_snap(
-                    chat_page, chat_url, tag="post-login", context=context)
-                if not ok:
-                    tab_fail_streak = TAB_FAILS_BEFORE_BROWSER
-                    raise RuntimeError("aw-snap-post-login")
+                log("  post-login: skip aw-snap recover")
 
             # --- Step 2: Restore localStorage + IndexedDB ---
             sdir = _sess_dir(session_id)
