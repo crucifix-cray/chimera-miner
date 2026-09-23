@@ -830,8 +830,11 @@ async def keep_pages_warm(chat_page, preview_page) -> None:
             log(f"  Presence poke soft-fail (preview): {type(e).__name__}")
 
 
-async def dismiss_blocking_popups(chat_page) -> bool:
-    """Close upgrade / credits / cookie / dialog overlays. True if something closed."""
+async def dismiss_blocking_popups(chat_page, *, max_passes: int = 5) -> bool:
+    """Keep closing upgrade / credits / cookie dialogs until none left.
+
+    Upgrade modal often reappears — loop Cancel/X/Escape each pass.
+    """
     if chat_page is None:
         return False
     try:
@@ -839,47 +842,93 @@ async def dismiss_blocking_popups(chat_page) -> bool:
             return False
     except Exception:
         return False
-    closed = False
+    any_closed = False
     try:
         await asyncio.wait_for(chat_page.bring_to_front(), timeout=5)
     except Exception:
         pass
-    for label in POPUP_DISMISS_LABELS:
+
+    for pass_n in range(1, max_passes + 1):
+        closed_this = False
+
+        # Prefer Cancel inside an open dialog (Upgrade your plan)
         try:
-            btn = chat_page.get_by_role("button", name=label, exact=False)
-            n = await asyncio.wait_for(btn.count(), timeout=1.5)
-            if n <= 0:
-                continue
-            if not await btn.first.is_visible(timeout=800):
-                continue
-            await btn.first.click(timeout=2000)
-            log(f"  Popup: closed '{label}'")
-            closed = True
-            await asyncio.sleep(0.6)
+            dlg = chat_page.locator('[role="dialog"]')
+            n_dlg = await asyncio.wait_for(dlg.count(), timeout=1.5)
+            if n_dlg > 0:
+                for name in ("Cancel", "Not now", "Close", "Maybe later"):
+                    try:
+                        btn = dlg.last.get_by_role(
+                            "button", name=name, exact=False)
+                        if await btn.count() and await btn.first.is_visible(
+                                timeout=600):
+                            await btn.first.click(timeout=2000)
+                            log(f"  Popup: closed dialog '{name}' (pass {pass_n})")
+                            closed_this = True
+                            break
+                    except Exception:
+                        continue
+                if not closed_this:
+                    # bare text Cancel inside dialog
+                    try:
+                        btn = dlg.last.locator(
+                            'button:has-text("Cancel")').first
+                        if await btn.is_visible(timeout=600):
+                            await btn.click(timeout=2000)
+                            log(f"  Popup: closed dialog Cancel text (pass {pass_n})")
+                            closed_this = True
+                    except Exception:
+                        pass
         except Exception:
-            continue
-    # dialog X / aria-label close
-    for sel in (
-        '[role="dialog"] button[aria-label*="Close" i]',
-        '[role="dialog"] button[aria-label*="Dismiss" i]',
-        '[data-state="open"] button[aria-label*="Close" i]',
-    ):
-        try:
-            loc = chat_page.locator(sel).first
-            if await loc.count() and await loc.is_visible(timeout=600):
-                await loc.click(timeout=1500)
-                log("  Popup: closed via X")
-                closed = True
-                await asyncio.sleep(0.5)
-                break
-        except Exception:
-            continue
-    if closed:
+            pass
+
+        if not closed_this:
+            for label in POPUP_DISMISS_LABELS:
+                try:
+                    btn = chat_page.get_by_role(
+                        "button", name=label, exact=False)
+                    n = await asyncio.wait_for(btn.count(), timeout=1.2)
+                    if n <= 0:
+                        continue
+                    if not await btn.first.is_visible(timeout=600):
+                        continue
+                    await btn.first.click(timeout=2000)
+                    log(f"  Popup: closed '{label}' (pass {pass_n})")
+                    closed_this = True
+                    break
+                except Exception:
+                    continue
+
+        if not closed_this:
+            for sel in (
+                '[role="dialog"] button[aria-label*="Close" i]',
+                '[role="dialog"] button[aria-label*="Dismiss" i]',
+                '[data-state="open"] button[aria-label*="Close" i]',
+            ):
+                try:
+                    loc = chat_page.locator(sel).first
+                    if await loc.count() and await loc.is_visible(timeout=500):
+                        await loc.click(timeout=1500)
+                        log(f"  Popup: closed via X (pass {pass_n})")
+                        closed_this = True
+                        break
+                except Exception:
+                    continue
+
+        # Always Escape once per pass — cheap, clears many overlays
         try:
             await chat_page.keyboard.press("Escape")
         except Exception:
             pass
-    return closed
+
+        if closed_this:
+            any_closed = True
+            await asyncio.sleep(0.5)
+            continue
+        # nothing left to close
+        break
+
+    return any_closed
 
 
 async def refresh_chat_for_presence(chat_page, chat_url: str | None = None) -> bool:
@@ -1199,6 +1248,12 @@ async def wait_for_chat_preview_sandbox(
                 + (f" ({last_note})" if last_note else ""))
             return False
 
+        # Squash upgrade/credits popup every pass — it reappears after prompts
+        try:
+            await dismiss_blocking_popups(chat_page, max_passes=3)
+        except Exception:
+            pass
+
         # Remount Preview/Shell periodically — iframe often appears only after remount
         if elapsed - last_remount >= 20:
             last_remount = elapsed
@@ -1207,6 +1262,10 @@ async def wait_for_chat_preview_sandbox(
                     ensure_preview_shell_panel(chat_page), timeout=20)
             except Exception as e:
                 last_note = f"remount:{type(e).__name__}"
+            try:
+                await dismiss_blocking_popups(chat_page, max_passes=2)
+            except Exception:
+                pass
 
         try:
             frames = list(chat_page.frames)
@@ -1290,13 +1349,17 @@ async def bring_up_lovableproject_doc(
         log(f"  Bring-up lovableproject iframe+doc "
             f"(round {round_n}{'' if not max_rounds else f'/{max_rounds}'})...")
         try:
-            await dismiss_blocking_popups(chat_page)
+            await dismiss_blocking_popups(chat_page, max_passes=5)
         except Exception:
             pass
         try:
             await ensure_preview_shell_panel(chat_page)
         except Exception as e:
             log(f"  Panel remount soft: {type(e).__name__}")
+        try:
+            await dismiss_blocking_popups(chat_page, max_passes=3)
+        except Exception:
+            pass
         try:
             await asyncio.wait_for(
                 steal_preview_url_from_chat(chat_page), timeout=25)
@@ -1311,11 +1374,19 @@ async def bring_up_lovableproject_doc(
         if ready:
             return True
 
-        log("  Still no lovableproject+doc — prompt + remount Preview, keep looking")
+        log("  Still no lovableproject+doc — close popups, prompt, remount, keep looking")
+        try:
+            await dismiss_blocking_popups(chat_page, max_passes=5)
+        except Exception:
+            pass
         try:
             await asyncio.wait_for(send_presence_prompt(chat_page), timeout=40)
         except Exception as e:
             log(f"  Bring-up prompt skip: {type(e).__name__}")
+        try:
+            await dismiss_blocking_popups(chat_page, max_passes=3)
+        except Exception:
+            pass
         try:
             await ensure_preview_shell_panel(chat_page)
         except Exception:
@@ -2399,11 +2470,14 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             log(f"  Page dead on presence poke — fresh tab")
                             return
 
-                    # Popup → close it (no reload), then tiny human-typed prompt
+                    # Keep closing popups every tick, then tiny human-typed prompt
                     if not page_lock.locked():
                         try:
-                            await dismiss_blocking_popups(chat_page)
+                            await dismiss_blocking_popups(
+                                chat_page, max_passes=5)
                             await send_presence_prompt(chat_page)
+                            await dismiss_blocking_popups(
+                                chat_page, max_passes=3)
                         except Exception as e_pp:
                             if _is_crash_error(e_pp) or not await _browser_alive(
                                     browser, chat_page, preview_page):
