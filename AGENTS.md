@@ -24,7 +24,7 @@ Control plane: **WSS bridges**. Sprint map + math: `docs/FLEET-ARCHITECTURE.md`.
 
 - **1 cell LIVE:** cell-16 / Lovable `session-2` / project `7d6f77a6…` / `daemon.py --mode full` / Chromium headed  
 - **Heal path:** soft presence → wait real `window.doc` → inject; crashes → **Browser cycle #N**; shell supervisor restarts dead Python  
-- **Canonical md5:** `daemon.py` = `a65c10bae394650e3d17d91a907cd31f` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
+- **Canonical md5:** `daemon.py` = `cc5d1c02e5b9b68d4881b4ed4c5cc95b` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
 - **Heal:** one Chromium kept up; popup close + soft reinject (no reload); fresh tab only if tab wedges; browser relaunch last resort  
 - **Bridge:** `wss://chimera-bridge-production-0703.up.railway.app`  
 - Preview shells still drop sometimes; daemon recovers. Short gaps expected.  

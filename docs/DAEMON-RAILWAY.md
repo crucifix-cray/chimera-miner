@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-23  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `a65c10bae394650e3d17d91a907cd31f` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
+**Canonical md5:** `daemon.py` = `cc5d1c02e5b9b68d4881b4ed4c5cc95b` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
 
 **Status:** cell-16 — **one Chromium kept up**; issues handled in place (no reload); fresh tab only if a tab wedges; browser relaunch last resort.
 
@@ -122,7 +122,7 @@ Note: `Documents/railways/session-16` CLI token may be 403 — cell SSH uses too
 | Flaky `nodoc` | Soft re-probe + confirm ×2 before revive |
 | Sandbox dead (confirmed) | Iframe soft revive (no reload) → wake only if soft fails |
 | No `window.doc` yet | Wait + presence + remount; **do not** blind-inject |
-| Stuck on `Waiting for sandbox/doc` forever | Ranked probes + ticks (problem 31); hard-kill + supervisor restart |
+| Stuck on `Waiting for sandbox/doc` forever | Ranked probes + ticks; supervisor restarts Python if process dies |
 | Fake `window.doc` object | Injector clears it; never re-installs stub |
 | Auth / private project wall | `detect_auth_wall` → `do_login` → goto project |
 | Inject picks cold `id-preview` | Prefer `lovableproject.com` + working `pwd` |
@@ -130,8 +130,8 @@ Note: `Documents/railways/session-16` CLI token may be 403 — cell SSH uses too
 | IDB restore/save wedges CDP | `CHIMERA_SKIP_IDB=1` |
 | Cold `shell_worker_status` before composer | Skipped — wedges CDP while SPA hydrates |
 | Composer miss | Wait (no reload); reload was skeleton death spiral |
-| CDP evaluate TimeoutError | HARD kill Chrome + new Browser cycle |
-| Token vs revive race | `page_lock` |
-| Trio wiped | Only save from chat page |
+| CDP evaluate TimeoutError / tab wedge | Fresh tab in **same** browser (not hard kill) |
+| Browser process actually dead | Relaunch Chromium (last resort) |
+| Inject hung / empty reply | Verify `sysoptd` procs before claiming success |
 
 Details: `SCRIPT3-PROBLEMS-SOLUTIONS.md` (problems 20+).
