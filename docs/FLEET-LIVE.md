@@ -4,6 +4,17 @@
 **Rule:** one Railway cell per **Lovable project**. Accounts with 2 projects → 2 cells (same cookies, different `--project`).
 **Railway order:** `session-1`, skip **`session-2`** (cell-16), then `session-3`…
 
+## Left for now — **4** projects (bridge not ready)
+
+| Cell | Project | Blocker |
+|---|---|---|
+| **cell-25** | `211af3cb…` | OnKernel `timeout_no_doc` |
+| **cell-26** | `0f318cab…` | OnKernel `timeout_no_doc` |
+| **cell-32** | `e8ee22a2…` | auth wall — refresh lov-s7 cookies |
+| **cell-36** | `9421eb8a…` | OnKernel `timeout_no_doc` |
+
+Everything else in the fleet map either mines (cell-16/13) or has bridge OK and a Railway daemon cycling `/term` (23/28/30/31/35). Next work = those **4** only.
+
 Canonical daemon recipe: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)
 
 ## Bridge (`window.doc`) gate
