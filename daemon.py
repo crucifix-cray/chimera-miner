@@ -1175,15 +1175,17 @@ async def _probe_frame_doc_pwd(fr, timeout: float = 6.0):
 
 
 async def wait_for_chat_preview_sandbox(
-    chat_page, timeout_seconds: int = 120
+    chat_page,
+    timeout_seconds: int = 120,
+    require_lovableproject: bool = True,
 ) -> bool:
-    """Wait until a chat Preview frame exposes window.doc (Shell Sandbox).
+    """Wait until chat Preview exposes window.doc — preferably in lovableproject iframe.
 
-    Prefers lovableproject.com; also accepts id-preview / nested shell frames.
     Probes only top-ranked frames with short timeouts so CDP wedges cannot
-    stall past timeout_seconds (seen as 'Waiting...' forever on Railway).
+    stall past timeout_seconds. Remounts Preview/Shell while waiting.
     """
-    log(f"Waiting for chat Preview sandbox/doc (max {timeout_seconds}s)...")
+    want = "lovableproject+doc" if require_lovableproject else "any-doc"
+    log(f"Waiting for chat Preview {want} (max {timeout_seconds}s)...")
     await ensure_preview_shell_panel(chat_page)
 
     start = asyncio.get_running_loop().time()
@@ -1197,8 +1199,8 @@ async def wait_for_chat_preview_sandbox(
                 + (f" ({last_note})" if last_note else ""))
             return False
 
-        # Remount Preview/Shell periodically — doc often appears only after remount
-        if elapsed - last_remount >= 28:
+        # Remount Preview/Shell periodically — iframe often appears only after remount
+        if elapsed - last_remount >= 20:
             last_remount = elapsed
             try:
                 await asyncio.wait_for(
@@ -1217,23 +1219,25 @@ async def wait_for_chat_preview_sandbox(
             if sc > 0:
                 ranked.append((sc, fr))
         ranked.sort(key=lambda x: -x[0])
-        # Cap probes per pass — many frames × long evaluate = apparent forever hang
         candidates = ranked[:5]
 
-        if elapsed - last_tick >= 15:
+        if elapsed - last_tick >= 12:
             last_tick = elapsed
             urls = []
+            has_lp = False
             for sc, fr in candidates:
                 try:
-                    urls.append(f"{sc}:{(fr.url or '')[:55]}")
+                    u = (fr.url or "")[:55]
+                    if "lovableproject.com" in u:
+                        has_lp = True
                 except Exception:
-                    urls.append(f"{sc}:?")
-            log(f"  Sandbox wait {int(elapsed)}s "
-                f"frames={len(frames)} probe={len(candidates)} "
-                f"[{', '.join(urls) or 'none'}] "
-                f"last={last_note or '-'}")
+                    u = "?"
+                urls.append(f"{sc}:{u}")
+            log(f"  Looking iframe {int(elapsed)}s "
+                f"frames={len(frames)} lovableproject={'yes' if has_lp else 'NO'} "
+                f"[{', '.join(urls) or 'none'}] last={last_note or '-'}")
 
-        soft = None  # non-lovableproject frame with working pwd
+        soft = None
         for sc, fr in candidates:
             try:
                 u = fr.url or ""
@@ -1252,9 +1256,70 @@ async def wait_for_chat_preview_sandbox(
                 log(f"  Chat Preview sandbox ready (lovableproject+pwd): {u[:120]}")
                 return True
             soft = soft or u
-        if soft:
+        if soft and not require_lovableproject:
             log(f"  Chat Preview sandbox ready (pwd): {soft[:120]}")
             return True
+        await asyncio.sleep(4)
+
+
+async def bring_up_lovableproject_doc(
+    chat_page,
+    *,
+    max_rounds: int = 0,
+    wait_per_round_s: int = 75,
+) -> bool:
+    """After prompting: keep remounting Preview + scanning for lovableproject iframe
+    with working window.doc('pwd') until it shows up.
+
+    max_rounds=0 means keep going until the page dies (startup / forever bring-up).
+    No full-page reload — remount Preview/Shell + tiny prompts only.
+    """
+    round_n = 0
+    while True:
+        round_n += 1
+        if max_rounds and round_n > max_rounds:
+            log(f"  lovableproject+doc not up after {max_rounds} rounds")
+            return False
+        try:
+            if chat_page is None or chat_page.is_closed():
+                log("  bring_up: page closed")
+                return False
+        except Exception:
+            return False
+
+        log(f"  Bring-up lovableproject iframe+doc "
+            f"(round {round_n}{'' if not max_rounds else f'/{max_rounds}'})...")
+        try:
+            await dismiss_blocking_popups(chat_page)
+        except Exception:
+            pass
+        try:
+            await ensure_preview_shell_panel(chat_page)
+        except Exception as e:
+            log(f"  Panel remount soft: {type(e).__name__}")
+        try:
+            await asyncio.wait_for(
+                steal_preview_url_from_chat(chat_page), timeout=25)
+        except Exception:
+            pass
+
+        ready = await wait_for_chat_preview_sandbox(
+            chat_page,
+            timeout_seconds=wait_per_round_s,
+            require_lovableproject=True,
+        )
+        if ready:
+            return True
+
+        log("  Still no lovableproject+doc — prompt + remount Preview, keep looking")
+        try:
+            await asyncio.wait_for(send_presence_prompt(chat_page), timeout=40)
+        except Exception as e:
+            log(f"  Bring-up prompt skip: {type(e).__name__}")
+        try:
+            await ensure_preview_shell_panel(chat_page)
+        except Exception:
+            pass
         await asyncio.sleep(4)
 
 
@@ -1396,14 +1461,14 @@ async def revive_sandbox(
 
     same_page = preview_page is chat_page
     if same_page:
-        log("  Revive: iframe soft path (no reload) — wait sandbox + reinject")
+        log("  Revive: iframe soft path — bring up lovableproject+doc + reinject")
         try:
             await asyncio.wait_for(
                 steal_preview_url_from_chat(chat_page), timeout=30)
         except Exception as e:
             log(f"  Revive steal fail: {type(e).__name__}")
-        ready = await wait_for_chat_preview_sandbox(
-            chat_page, timeout_seconds=90)
+        ready = await bring_up_lovableproject_doc(
+            chat_page, max_rounds=4, wait_per_round_s=60)
         if ready:
             log("  Revive: soft inject into chat Preview iframe")
             try:
@@ -1415,14 +1480,14 @@ async def revive_sandbox(
             if ok:
                 log("  Revive inject: OK (soft)")
                 return True
-        log("  Revive: soft path missed — presence prompt + panel remount (no reload)")
+        log("  Revive: soft path missed — more prompt + remount (no reload)")
         await dismiss_blocking_popups(chat_page)
         await send_presence_prompt(chat_page)
         await ensure_preview_shell_panel(chat_page)
-        ready = await wait_for_chat_preview_sandbox(
-            chat_page, timeout_seconds=min(REVIVE_LOVABLE_S, 120))
+        ready = await bring_up_lovableproject_doc(
+            chat_page, max_rounds=3, wait_per_round_s=60)
         if not ready:
-            log("  Revive: lovable/doc never ready (iframe)")
+            log("  Revive: lovableproject+doc never ready (iframe)")
             return False
         log("  Revive: injecting worker into chat Preview iframe")
         ok = await inject_miner(chat_page, bridge_url, threads)
@@ -2246,38 +2311,17 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
               log(f"  Post-wake spin {WAKE_AFTER_SEND_S}s for Shell Sandbox...")
               await asyncio.sleep(WAKE_AFTER_SEND_S)
 
-              # --- Step 4: Inject into chat Preview lovableproject iframe (1 tab)
+              # --- Step 4: keep prompting + remounting until lovableproject
+              # iframe has window.doc, then inject (never give up early)
               preview_page = chat_page
               injected = False
-              try:
-                  await ensure_preview_shell_panel(chat_page)
-                  stolen0 = await asyncio.wait_for(
-                      steal_preview_url_from_chat(chat_page), timeout=30)
-                  if stolen0 and "lovableproject.com" in stolen0:
-                      preview_url = stolen0
-              except Exception as e:
-                  log(f"  Preview tab click/steal soft-fail: {type(e).__name__}")
-
-              sandbox_in_chat = await wait_for_chat_preview_sandbox(
-                  chat_page, timeout_seconds=150)
-              if not sandbox_in_chat:
-                  for wake_i in range(1, 3):
-                      log(f"  Sandbox missing — presence prompt {wake_i}/2 "
-                          f"(no reload) + wait")
-                      try:
-                          await asyncio.wait_for(
-                              send_presence_prompt(chat_page), timeout=40)
-                      except Exception as e:
-                          log(f"  Soft presence skip: {type(e).__name__}")
-                      await ensure_preview_shell_panel(chat_page)
-                      sandbox_in_chat = await wait_for_chat_preview_sandbox(
-                          chat_page, timeout_seconds=90)
-                      if sandbox_in_chat:
-                          break
+              log("  After wake — keep looking for lovableproject iframe + window.doc...")
+              sandbox_in_chat = await bring_up_lovableproject_doc(
+                  chat_page, max_rounds=0, wait_per_round_s=75)
 
               if sandbox_in_chat:
-                  for inj_try in range(1, 3):
-                      log(f"Injecting worker via chat Preview iframe (try {inj_try}/2)...")
+                  for inj_try in range(1, 4):
+                      log(f"Injecting worker via lovableproject iframe (try {inj_try}/3)...")
                       await ensure_preview_shell_panel(chat_page)
                       try:
                           injected = bool(await asyncio.wait_for(
@@ -2288,69 +2332,19 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                           injected = False
                       if injected:
                           break
-                      if inj_try < 2:
-                          try:
-                              await asyncio.wait_for(
-                                  send_presence_prompt(chat_page), timeout=40)
-                          except Exception as e:
-                              log(f"  Retry presence skip: {type(e).__name__}")
-                          await wait_for_chat_preview_sandbox(
-                              chat_page, timeout_seconds=60)
+                      log("  Inject missed — re-prompt + look for lovableproject again")
+                      try:
+                          await asyncio.wait_for(
+                              send_presence_prompt(chat_page), timeout=40)
+                      except Exception as e:
+                          log(f"  Retry presence skip: {type(e).__name__}")
+                      await bring_up_lovableproject_doc(
+                          chat_page, max_rounds=2, wait_per_round_s=60)
               else:
-                  log("  No real window.doc — skip inject (avoid fake-doc / auth-bridge)")
+                  log("  Page died before lovableproject+doc — health/fresh tab will retry")
 
               if not injected:
-                  # Last-resort: stolen sessioned preview URL only (never bare host)
-                  stolen = None
-                  try:
-                      await ensure_preview_shell_panel(chat_page)
-                      stolen = await asyncio.wait_for(
-                          steal_preview_url_from_chat(chat_page), timeout=45)
-                  except Exception as e:
-                      log(f"  Steal preview failed: {type(e).__name__}: {e}")
-                  use_url = stolen
-                  if not use_url or "auth-bridge" in use_url:
-                      log("  No safe stolen preview URL — health loop will revive")
-                  else:
-                      preview_url = use_url
-                      preview_page = await context.new_page()
-                      log(f"Opening preview tab (fallback): {use_url[:140]}")
-                      try:
-                          await preview_page.goto(
-                              use_url, timeout=45000, wait_until="commit")
-                      except Exception as e:
-                          log(f"  Preview goto error: {type(e).__name__}")
-                      await preview_page.wait_for_timeout(2000)
-                      sandbox_ready = await wait_for_lovable_console(
-                          preview_page, timeout_seconds=120)
-                      if not sandbox_ready:
-                          log("Lovable console never ready — second wake + wait...")
-                          await send_wake_prompt(
-                              chat_page, chat_url=chat_url, session_config=config)
-                          try:
-                              stolen2 = await steal_preview_url_from_chat(chat_page)
-                              if stolen2 and "auth-bridge" not in stolen2:
-                                  use_url = stolen2
-                                  preview_url = stolen2
-                          except Exception:
-                              pass
-                          try:
-                              await preview_page.goto(
-                                  use_url, timeout=45000, wait_until="commit")
-                          except Exception:
-                              pass
-                          sandbox_ready = await wait_for_lovable_console(
-                              preview_page, timeout_seconds=120)
-                      if sandbox_ready:
-                          log("Injecting worker on preview tab...")
-                          try:
-                              injected = bool(await inject_miner(
-                                  preview_page, BRIDGE_URL, threads))
-                          except Exception as e:
-                              log(f"Inject crashed: {e}")
-                              injected = False
-                      else:
-                          log("Sandbox never ready on fallback tab — continue to health")
+                  log("  Worker not injected yet — health loop will keep looking")
 
             if injected:
                 log("Worker injected!" if not alive0 else "Worker already running (reconnect)")
