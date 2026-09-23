@@ -2513,16 +2513,14 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     raise RuntimeError("login-failed-retry")
                 # Reload chat after login
                 try:
-                    await asyncio.wait_for(
-                        chat_page.goto(chat_url, timeout=30000, wait_until="commit"),
-                        timeout=35,
-                    )
+                    await safe_goto(chat_page, chat_url, timeout_s=25)
                 except Exception:
                     pass
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
                 ok, chat_page = await recover_aw_snap(
                     chat_page, chat_url, tag="post-login", context=context)
                 if not ok:
+                    tab_fail_streak = TAB_FAILS_BEFORE_BROWSER
                     raise RuntimeError("aw-snap-post-login")
 
             # --- Step 2: Restore localStorage + IndexedDB ---
