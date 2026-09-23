@@ -2620,16 +2620,13 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             await asyncio.sleep(6)
             log("  hydrate: skip aw-snap recover (1GB path)")
 
-            # Cookie banner + auth wall (SKIP_IDB often leaves us logged-out)
+            # Cookie/auth probes freeze the asyncio loop on 1GB — URL-only check.
             try:
-                ok_btn = chat_page.get_by_role("button", name="OK", exact=True)
-                if await ok_btn.count():
-                    await ok_btn.first.click(timeout=2000)
-                    log("  Dismissed cookie OK")
+                cur_url = chat_page.url or ""
             except Exception:
-                pass
-            if await detect_auth_wall(chat_page):
-                log("  Auth wall after restore — re-login")
+                cur_url = ""
+            if "/login" in cur_url or "/auth" in cur_url:
+                log("  Auth wall (URL) after restore — re-login")
                 logged = await do_login(
                     chat_page,
                     config.get("email", ""),
@@ -2640,20 +2637,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     log("  Re-login failed — fresh tab")
                     force_hard_kill = True
                     raise RuntimeError("cycle-restart")
-                try:
-                    await chat_page.goto(
-                        chat_url, timeout=45000, wait_until="commit")
-                except Exception:
-                    pass
-                await asyncio.sleep(15)
-                if await detect_auth_wall(chat_page):
-                    log("  Still auth-walled after login — fresh tab")
-                    force_hard_kill = True
-                    raise RuntimeError("cycle-restart")
+                await safe_goto(chat_page, chat_url, timeout_s=25)
                 log("  Auth wall cleared — continuing")
+            else:
+                log("  post-hydrate: skip CDP auth/cookie probes")
 
-            # Extra settle after cookie/LS/auth before any CDP frame walks
-            await asyncio.sleep(8)
+            await asyncio.sleep(4)
             # Do NOT probe preview frames before composer — cold shell_worker_status
             # wedges CDP while the SPA is still hydrating (Xvfb looks fine, evaluate hangs).
             preview_page = chat_page
@@ -2661,55 +2650,60 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             alive0, det0 = False, "deferred"
 
             import random as _rand
+            import threading as _th
             chat_input = None
             cdp_hung_streak = 0
+            low_mem = bool(cgroup_mem_gb() and cgroup_mem_gb() <= 1.15)
             if not injected:
               for round_n in range(1, COMPOSER_TRIES + 1):
-                if await detect_auth_wall(chat_page):
-                    log(f"  Auth wall mid composer hunt (r{round_n}) — re-login")
-                    logged = await do_login(
-                        chat_page,
-                        config.get("email", ""),
-                        config.get("password", ""),
-                        config.get("totp_secret"),
-                    )
-                    if logged:
+                _stop = _th.Event()
+                def _cwd(_s=_stop, _r=round_n):
+                    if not _s.wait(40):
+                        log(f"  composer-r{_r} watchdog — hard_kill")
                         try:
-                            await chat_page.goto(
-                                chat_url, timeout=45000, wait_until="commit")
+                            hard_kill_chrome()
                         except Exception:
                             pass
-                        await asyncio.sleep(8)
-                    else:
-                        force_hard_kill = True
-                        raise RuntimeError("cycle-restart")
-                await light_focus(chat_page)
-                chat_input, cdp_hung = await find_chat_composer(
-                    chat_page, tag=f"start-r{round_n}")
-                if chat_input:
-                    log(f"Chat input found (round {round_n}/{COMPOSER_TRIES})")
-                    break
-                if cdp_hung:
-                    cdp_hung_streak += 1
-                    log(f"CDP slow on composer (round {round_n}, "
-                        f"streak={cdp_hung_streak}/3) — retry not hard-kill yet")
-                    if cdp_hung_streak >= 3:
-                        log("CDP hung 3x on composer hunt — fresh tab (browser stays up)")
-                        force_hard_kill = True
-                        raise RuntimeError("cycle-restart")
-                else:
-                    cdp_hung_streak = 0
-                log(f"Chat input missing (round {round_n}/{COMPOSER_TRIES}) — wait {COMPOSER_WAIT_S}s (no reload)")
-                if round_n in (1, 5, 10, COMPOSER_TRIES):
+                _th.Thread(target=_cwd, daemon=True).start()
+                try:
                     try:
-                        await asyncio.wait_for(
-                            capture_debug(chat_page, None, f"no-composer-r{round_n}"),
-                            timeout=15)
+                        cur = chat_page.url or ""
                     except Exception:
-                        log("  Shot skip (CDP slow)")
-                # Prefer waiting over reload — reload → skeleton / CDP wedge
-                await light_focus(chat_page)
-                await asyncio.sleep(COMPOSER_WAIT_S)
+                        cur = ""
+                    if "/login" in cur or "/auth" in cur:
+                        log(f"  Auth wall mid composer hunt (r{round_n}) — re-login")
+                        logged = await do_login(
+                            chat_page,
+                            config.get("email", ""),
+                            config.get("password", ""),
+                            config.get("totp_secret"),
+                        )
+                        if logged:
+                            await safe_goto(chat_page, chat_url, timeout_s=25)
+                        else:
+                            force_hard_kill = True
+                            raise RuntimeError("cycle-restart")
+                    if not low_mem:
+                        await light_focus(chat_page)
+                    chat_input, cdp_hung = await find_chat_composer(
+                        chat_page, tag=f"start-r{round_n}")
+                    if chat_input:
+                        log(f"Chat input found (round {round_n}/{COMPOSER_TRIES})")
+                        break
+                    if cdp_hung:
+                        cdp_hung_streak += 1
+                        log(f"CDP slow on composer (round {round_n}, "
+                            f"streak={cdp_hung_streak}/3) — retry not hard-kill yet")
+                        if cdp_hung_streak >= 3:
+                            log("CDP hung 3x on composer hunt — fresh tab (browser stays up)")
+                            force_hard_kill = True
+                            raise RuntimeError("cycle-restart")
+                    else:
+                        cdp_hung_streak = 0
+                    log(f"Chat input missing (round {round_n}/{COMPOSER_TRIES}) — wait {COMPOSER_WAIT_S}s (no reload)")
+                    await asyncio.sleep(COMPOSER_WAIT_S)
+                finally:
+                    _stop.set()
 
               if not chat_input:
                 log("Chat input not found — fresh tab (browser stays up)")
