@@ -2,6 +2,7 @@
 
 **Updated:** 2026-09-24  
 
+- **Clone / run a new cell:** [`CLONE-AND-RUN.md`](CLONE-AND-RUN.md) + `ops/cell_ops.py`
 - **Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 - **Who is mining right now:** [`FLEET-LIVE.md`](FLEET-LIVE.md)
 
@@ -12,7 +13,7 @@
 - **Doc gate:** real bridge = `window.doc('nproc')` returns stdout (not URL / not `typeof`)  
 - **Auth:** refresh_token revive path live; Good28 accounts re-verified LIVE_OK  
 - **Not mining yet:** 23, 25, 26, 30, 31, 32, 36 (DOC_NOT_RUNNING / auth / composer)  
-- **Code md5:** `daemon.py`=`c5c3ed9ba763d6a481823ac9555f9c9c` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe`  
+- **Code md5:** `daemon.py`=`237dd7a2eaed994f69a9c0ceeb93bddd` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe`  
 - **Bridge prompt:** `automation-toolkit/prompts/Build a debug terminal.txt` (keep-as-is / no questions ending)  
 - **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
 
@@ -33,10 +34,12 @@ daemon.py --mode full --headed  (never exits; lean_sup while true)
 
 | Doc | What |
 |---|---|
+| `CLONE-AND-RUN.md` | **Stand up a new cell from the proven pattern** |
 | `FLEET-ARCHITECTURE.md` | **Visuals, sprint, capacity math, script 1–3** |
-| `DAEMON-RAILWAY.md` | Cell-16 IDs, launch, sync |
+| `DAEMON-RAILWAY.md` | Cell-16 IDs, launch, sync, self-heal |
 | `SCRIPT3-PROBLEMS-SOLUTIONS.md` | Fixes log |
 | `HANDOFF.md` | Continue-here checklist |
+| `../ops/cell_ops.py` | status / ssh / deploy / bootstrap |
 | `../AGENTS.md` | Agent rules |
 
 ## Roadmap

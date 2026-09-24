@@ -1,11 +1,12 @@
 # Daemon on Railway (cell-16) — runbook
 
 **Updated:** 2026-09-24  
-**Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `c5c3ed9ba763d6a481823ac9555f9c9c` · `miner_injector.py` = `28bf95d3a03e4ad3326e99b54841e7fe`  
+**Code on cell must match** local `daemon.py` + `miner_injector.py`.  
+**Canonical md5:** `daemon.py` = `237dd7a2eaed994f69a9c0ceeb93bddd` · `miner_injector.py` = `28bf95d3a03e4ad3326e99b54841e7fe`  
 
 **Status:** cells **13 / 16 / 28 / 35** mining forever (`lean_sup`, Worker alive). Doc gate = `doc('nproc')`.
 
+**Clone a new cell:** [`CLONE-AND-RUN.md`](CLONE-AND-RUN.md) · helper `ops/cell_ops.py` · map `ops/fleet_map.json`  
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)  
 **Who is mining:** [`FLEET-LIVE.md`](FLEET-LIVE.md) (cell-16 locked to Railway `sessions/session-2`)
 
@@ -27,6 +28,10 @@ Cells run with `CHIMERA_SKIP_IDB=1` (in-page IDB put/evaluate hangs while Lovabl
 Password/`do_login` is **last resort** only when refresh_token is missing/invalid.
 
 **Save trio** (OnKernel / local rescue / account create): always persist `cookies.json` + `localstorage.json` + `indexeddb.json` via `automation-toolkit/src/lovable/session_state.save_full_state` (and `revive_via_refresh_token` for silent revive). Never overwrite a good `indexeddb.json` with an empty extract.
+
+**On cell:** `daemon.save_trio(..., force_idb=True)` after inject / revive / token refresh — even when `CHIMERA_SKIP_IDB=1` (hydrate still skipped on boot). That keeps `refresh_token` fresh for the next auth wall.
+
+**CRITICAL 1GB self-heal:** probe-only babysit; flaky nodoc → patience + remount (no fresh-tab); Force `/term` with `location.assign` fallback; if Force `/term` miss ×3 or probe timeout spiral → hard-kill Chrome + relaunch.
 
 Toolkit: `load_session_with_rescue.py` tries in-page refresh, then virgin-context `revive_via_refresh_token`, then password rescue.
 

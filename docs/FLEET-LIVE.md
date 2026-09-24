@@ -6,7 +6,8 @@
 
 ## Mining now (DOC_OK via `doc('nproc')` → Worker forever)
 
-**Gate:** real bridge = `window.doc('nproc')` returns stdout (not URL/`typeof`). Daemon md5 `c5c3ed9ba763d6a481823ac9555f9c9c`.
+**Gate:** real bridge = `window.doc('nproc')` returns stdout (not URL/`typeof`). Daemon md5 `237dd7a2eaed994f69a9c0ceeb93bddd`.  
+**Clone next cell:** [`CLONE-AND-RUN.md`](CLONE-AND-RUN.md) · `ops/cell_ops.py` · `ops/fleet_map.json`
 
 | Cell | Project | `nproc` | Status |
 |---|---|---|---|
@@ -25,11 +26,12 @@
 
 | Cell | Lov session | Email | Notes |
 |---|---|---|---|
-| 28 | 41 | jamesmanalodat.e@gmail.com | synced |
-| 30 | 44 | tra.nariumkill@gmail.com | synced |
-| 31 | 46 | lovbvxh2yu05l@souss.dev | synced |
-| 35 | 8 | hellolakanhernand.ez@gmail.com | synced; had `/term`+Worker earlier |
-| 32 | 7 | lovuu5qwethzg@souss.dev | rescued + local refresh PASS; synced + new daemon |
+| 28 | 41 | jamesmanalodat.e@gmail.com | rescued 2026-09-24; mining |
+| 35 | 50 | hellolakanhernand.ez@gmail.com | rescued 2026-09-24; mining (was lov-8 email match) |
+| 13/16 | 2 | altonlehman16@gmail.com | shared trio; two projects → two cells |
+| 30 | 44 | tra.nariumkill@gmail.com | synced earlier |
+| 31 | 46 | lovbvxh2yu05l@souss.dev | synced earlier |
+| 32 | 7 | lovuu5qwethzg@souss.dev | rescued earlier; not mining yet |
 
 **Toolkit:** `session_state.save_full_state` + `revive_via_refresh_token`; `load_session_with_rescue.py` uses refresh before password.
 

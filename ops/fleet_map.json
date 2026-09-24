@@ -1,0 +1,36 @@
+{
+  "updated": "2026-09-24",
+  "daemon_md5": "237dd7a2eaed994f69a9c0ceeb93bddd",
+  "injector_md5": "28bf95d3a03e4ad3326e99b54841e7fe",
+  "bridge": "wss://chimera-bridge-production-0703.up.railway.app",
+  "cells": {
+    "13": {
+      "railway_session": 1,
+      "lov_session": 2,
+      "project": "05da1af6-0626-4746-a339-92d7e6b2e3e1",
+      "log": "daemon_r13.log",
+      "service_name": "cell-13"
+    },
+    "16": {
+      "railway_session": 2,
+      "lov_session": 2,
+      "project": "7d6f77a6-69a1-4b06-a1d3-53094c4c8019",
+      "log": "daemon_s2.log",
+      "service_name": "cell-16"
+    },
+    "28": {
+      "railway_session": 6,
+      "lov_session": 41,
+      "project": "ce592dc0-eb0f-4500-81ae-2f848840aaac",
+      "log": "daemon_r28.log",
+      "service_name": "cell-28"
+    },
+    "35": {
+      "railway_session": 10,
+      "lov_session": 50,
+      "project": "c0bafd1e-33d8-4625-89a4-1250f4755d23",
+      "log": "daemon_r35.log",
+      "service_name": "cell-35"
+    }
+  }
+}

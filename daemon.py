@@ -1585,6 +1585,100 @@ async def steal_preview_url_from_chat(chat_page) -> str | None:
     return None
 
 
+async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bool:
+    """When stuck on id-preview / cold mirrors, push a frame to real Shell /term.
+
+    Fresh-tab recoveries often land on id-preview forever (no window.doc). The
+    known project id is enough to retarget: https://{id}.lovableproject.com/term
+    """
+    if not project_id or chat_page is None:
+        return False
+    dest = f"https://{project_id}.lovableproject.com/term"
+    try:
+        await ensure_preview_shell_panel(chat_page)
+    except Exception:
+        pass
+    frames = []
+    try:
+        frames = list(chat_page.frames)
+    except Exception:
+        return False
+
+    def _score(fr) -> int:
+        try:
+            u = (fr.url or "").lower()
+        except Exception:
+            return -1
+        if "lovable.dev" in u and "lovableproject" not in u:
+            return -1
+        if "lovableproject.com" in u:
+            return 100 if "/term" in u else 80
+        if "id-preview" in u or ("lovable.app" in u and "preview" in u):
+            return 50
+        if "webcontainer" in u or "stackblitz" in u:
+            return 40
+        try:
+            if fr != chat_page.main_frame and (not u or u.startswith("about:")):
+                return 20
+        except Exception:
+            pass
+        return -1
+
+    ranked = sorted((( _score(fr), fr) for fr in frames), key=lambda x: -x[0])
+    ranked = [(s, fr) for s, fr in ranked if s > 0]
+    if not ranked:
+        log(f"  Force /term: no preview-ish frame for {dest}")
+        return False
+    for sc, fr in ranked[:3]:
+        try:
+            cur = (fr.url or "")[:100]
+        except Exception:
+            cur = "?"
+        # Already on good /term with doc — leave it
+        if sc >= 100:
+            probe = await _probe_frame_doc_nproc(fr, timeout=6.0)
+            if isinstance(probe, dict) and probe.get("ok"):
+                log(f"  Force /term: already OK @ {cur}")
+                return True
+            if "lovableproject.com" in cur and "/term" not in cur.lower():
+                pass  # fall through to goto /term
+            elif "lovableproject.com" in cur and "/term" in cur.lower():
+                continue  # doc not ready yet; try another frame
+        navigated = False
+        try:
+            log(f"  Force /term: navigate score={sc} {cur[:80]} → {dest}")
+            await asyncio.wait_for(
+                fr.goto(dest, wait_until="domcontentloaded", timeout=25000),
+                timeout=30,
+            )
+            navigated = True
+        except Exception as e:
+            # Under 1GB CRITICAL, frame.goto often TimeoutError — JS assign
+            # still remounts Shell without waiting on full load events.
+            log(f"  Force /term soft: {type(e).__name__} — try location.assign")
+            try:
+                await asyncio.wait_for(
+                    fr.evaluate("(u) => { location.href = u; }", dest),
+                    timeout=8,
+                )
+                navigated = True
+            except Exception as e2:
+                log(f"  Force /term assign soft: {type(e2).__name__}")
+                continue
+        if not navigated:
+            continue
+        try:
+            await asyncio.sleep(3)
+            probe = await _probe_frame_doc_nproc(fr, timeout=12.0)
+            if isinstance(probe, dict) and probe.get("ok"):
+                log(f"  Force /term: DOC ok nproc={probe.get('r')!r}")
+                return True
+        except Exception as e:
+            log(f"  Force /term probe soft: {type(e).__name__}")
+            continue
+    return False
+
+
 async def ensure_preview_shell_panel(chat_page) -> None:
     """Click Preview + Shell so the lovableproject iframe remounts."""
     if chat_page is None:
@@ -1824,12 +1918,15 @@ async def bring_up_lovableproject_doc(
     *,
     max_rounds: int = 0,
     wait_per_round_s: int = 75,
+    project_id: str = "",
 ) -> bool:
     """After prompting: keep remounting Preview + scanning for lovableproject iframe
     with working window.doc('nproc') until it shows up.
 
     max_rounds=0 means keep going until the page dies (startup / forever bring-up).
     No full-page reload — remount Preview/Shell + tiny prompts only.
+    When project_id is set, every failed round force-navigates id-preview → /term
+    so recoveries do not wedge on cold mirrors forever.
     """
     round_n = 0
     while True:
@@ -1867,6 +1964,13 @@ async def bring_up_lovableproject_doc(
                 steal_preview_url_from_chat(chat_page), timeout=25)
         except Exception:
             pass
+        # Odd rounds: force id-preview → real lovableproject /term (known project).
+        if project_id and (round_n == 1 or round_n % 2 == 1):
+            try:
+                if await force_preview_to_lovableproject_term(chat_page, project_id):
+                    return True
+            except Exception as e:
+                log(f"  Force /term skip: {type(e).__name__}")
 
         ready = await wait_for_chat_preview_sandbox(
             chat_page,
@@ -1877,6 +1981,11 @@ async def bring_up_lovableproject_doc(
             return True
 
         log("  Still no lovableproject+doc — close popups, prompt, remount, keep looking")
+        if project_id:
+            try:
+                await force_preview_to_lovableproject_term(chat_page, project_id)
+            except Exception:
+                pass
         try:
             await dismiss_blocking_popups(chat_page, max_passes=5)
         except Exception:
@@ -2034,6 +2143,19 @@ async def revive_sandbox(
     from miner_injector import inject_miner
 
     same_page = preview_page is chat_page
+    proj = ""
+    try:
+        import re as _re_pid
+        for src in (preview_url or "", chat_url or ""):
+            m = _re_pid.search(
+                r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                src or "",
+            )
+            if m:
+                proj = m.group(1)
+                break
+    except Exception:
+        proj = ""
     if same_page:
         log("  Revive: iframe soft path — bring up lovableproject+doc + reinject")
         try:
@@ -2041,8 +2163,13 @@ async def revive_sandbox(
                 steal_preview_url_from_chat(chat_page), timeout=30)
         except Exception as e:
             log(f"  Revive steal fail: {type(e).__name__}")
+        if proj:
+            try:
+                await force_preview_to_lovableproject_term(chat_page, proj)
+            except Exception:
+                pass
         ready = await bring_up_lovableproject_doc(
-            chat_page, max_rounds=4, wait_per_round_s=60)
+            chat_page, max_rounds=4, wait_per_round_s=60, project_id=proj)
         if ready:
             log("  Revive: soft inject into chat Preview iframe")
             try:
@@ -2058,8 +2185,13 @@ async def revive_sandbox(
         await dismiss_blocking_popups(chat_page)
         await send_presence_prompt(chat_page)
         await ensure_preview_shell_panel(chat_page)
+        if proj:
+            try:
+                await force_preview_to_lovableproject_term(chat_page, proj)
+            except Exception:
+                pass
         ready = await bring_up_lovableproject_doc(
-            chat_page, max_rounds=3, wait_per_round_s=60)
+            chat_page, max_rounds=3, wait_per_round_s=60, project_id=proj)
         if not ready:
             log("  Revive: lovableproject+doc never ready (iframe)")
             return False
@@ -3384,7 +3516,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
               sandbox_in_chat = await bring_up_lovableproject_doc(
                   chat_page,
                   max_rounds=(mark_rounds if doc_mark else 0),
-                  wait_per_round_s=75)
+                  wait_per_round_s=75,
+                  project_id=project_id)
 
               if doc_mark:
                   mark_path = Path("/app/work/DOC_MARK.txt")
@@ -3431,7 +3564,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                       except Exception as e:
                           log(f"  Retry presence skip: {type(e).__name__}")
                       await bring_up_lovableproject_doc(
-                          chat_page, max_rounds=2, wait_per_round_s=60)
+                          chat_page, max_rounds=2, wait_per_round_s=60,
+                          project_id=project_id)
               else:
                   log("  Page died before lovableproject+doc — health/fresh tab will retry")
 
@@ -3445,8 +3579,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
 
             # Save state from chat origin (Firebase LS/IDB live on lovable.dev,
             # not the preview sandbox — saving from preview wipes the trio).
+            # force_idb=True so we always pull refresh_token for next revive,
+            # even when CHIMERA_SKIP_IDB=1 (hydrate still skipped on boot).
             try:
-                await save_trio(context, chat_page, session_id)
+                await save_trio(context, chat_page, session_id, force_idb=True)
             except Exception as e:
                 log(f"save_trio error (continuing): {e}")
 
@@ -3463,6 +3599,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             tab_fail_streak = 0
             last_refresh = time.time()
             page_lock = asyncio.Lock()  # serialize revive vs token refresh
+            # CRITICAL+nodoc Force-/term failures before hard-kill self-heal.
+            crit_term_miss = 0
 
             async def daemon_health_loop():
                 """Shell/worker dead → soft confirm → reinject in place (no reload).
@@ -3470,7 +3608,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 Babysit Chromium on 1GB: under mem pressure skip chat prompts /
                 CDP-heavy pokes and widen the gap so we don't Aw Snap ourselves.
                 """
-                nonlocal exit_mode, reconnect_streak
+                nonlocal exit_mode, reconnect_streak, crit_term_miss
                 iteration = 0
                 fail_streak = 0
                 soft_dead = 0
@@ -3572,6 +3710,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             fail_streak = 0
                             soft_dead = 0
                             reconnect_streak = 0
+                            crit_term_miss = 0
                             log(f"  Worker alive (probe: {detail}) — skip inject")
                             log("  Preview healthy")
                         else:
@@ -3580,41 +3719,77 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             # nodoc; revive then wedges (cell-16 health #8→id-preview
                             # timeout spiral). Demand more confirms + longer gap.
                             confirm_need = HEALTH_DEAD_CONFIRM
-                            if tier == "critical" and (
-                                    detail == "nodoc"
-                                    or detail.startswith("doc-eval-error")
-                                    or detail.startswith("probe-eval-error")
-                                    or detail.startswith("probe-error")):
+                            flake = (
+                                detail == "nodoc"
+                                or detail.startswith("doc-eval-error")
+                                or detail.startswith("probe-eval-error")
+                                or detail.startswith("probe-error")
+                                or detail.startswith("url-error")
+                            )
+                            if tier == "critical" and flake:
                                 confirm_need = max(HEALTH_DEAD_CONFIRM, 4)
                                 next_wait = max(HEALTH_DEAD_GAP_S, 35)
                             log(f"  Shell/worker soft-dead ({detail}) "
                                 f"confirm {soft_dead}/{confirm_need}")
-                            if tier == "critical" and confirm_need > HEALTH_DEAD_CONFIRM:
+                            if tier == "critical" and flake:
                                 log(f"  CRITICAL mem — soft-dead patience "
                                     f"{soft_dead}/{confirm_need} gap={next_wait}s")
                             if soft_dead < confirm_need:
                                 if next_wait == HEALTH_INTERVAL_S:
                                     next_wait = HEALTH_DEAD_GAP_S
+                                # Under CRITICAL+flake: remount Preview so CDP
+                                # can see doc again — do not escalate yet.
+                                if tier == "critical" and flake:
+                                    try:
+                                        await ensure_preview_shell_panel(chat_page)
+                                    except Exception:
+                                        pass
                                 await asyncio.sleep(next_wait)
                                 continue
                             soft_dead = 0
                             log(f"  Worker not running ({detail}) — inject/revive")
-                            # CRITICAL 1GB: soft revive burns REVIVE_WALL_S (~7m) and
-                            # almost always times out (cell-16/13 proof). Fresh tab
-                            # reinject recovers in ~2m instead of 25m of dead loops.
-                            if tier == "critical":
+                            # CRITICAL 1GB flake: stay on tab, Force /term. If DOC
+                            # returns → fall through to in-place inject. If Force
+                            # /term keeps missing → hard-kill + relaunch (self-heal
+                            # beats spinning forever on a dead id-preview tab).
+                            if tier == "critical" and flake:
+                                log("  CRITICAL mem — stay on tab (no fresh-tab); "
+                                    f"force /term + remount ({detail})")
                                 try:
-                                    await capture_debug(
-                                        chat_page, preview_page,
-                                        f"dead-{detail.replace('/', '-')[:40]}",
-                                        xvfb_only=True)
+                                    await ensure_preview_shell_panel(chat_page)
                                 except Exception:
                                     pass
-                                exit_mode = (
-                                    "reconnect" if cdp_http_alive() else "kill")
-                                log("  CRITICAL mem — skip soft-revive, "
-                                    "fresh tab reinject")
-                                return
+                                term_ok = False
+                                try:
+                                    term_ok = await force_preview_to_lovableproject_term(
+                                        chat_page, project_id)
+                                except Exception as e:
+                                    log(f"  Force /term soft: {type(e).__name__}")
+                                if term_ok:
+                                    crit_term_miss = 0
+                                    log("  CRITICAL mem — /term DOC back, "
+                                        "in-place inject next")
+                                    # fall through to revive_sandbox below
+                                else:
+                                    crit_term_miss += 1
+                                    log(f"  CRITICAL mem — Force /term miss "
+                                        f"{crit_term_miss}/3")
+                                    if crit_term_miss >= 3:
+                                        try:
+                                            hard_kill_chrome()
+                                        except Exception:
+                                            pass
+                                        exit_mode = "kill"
+                                        log("  CRITICAL mem — Force /term stuck "
+                                            "3x — hard-kill + relaunch (self-heal)")
+                                        return
+                                    next_wait = max(next_wait, 45)
+                                    await asyncio.sleep(next_wait)
+                                    continue
+                            if tier == "critical":
+                                # doc ok / worker-missing: in-place revive only
+                                log("  CRITICAL mem — in-place revive "
+                                    "(no fresh tab)")
                             await capture_debug(
                                 chat_page, preview_page,
                                 f"dead-{detail.replace('/', '-')[:40]}",
@@ -3634,12 +3809,18 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                             session_config=config,
                                             session_id=session_id,
                                         ),
-                                        timeout=REVIVE_WALL_S,
+                                        timeout=(
+                                            180 if tier == "critical"
+                                            else REVIVE_WALL_S),
                                     )
                                 if ok:
                                     fail_streak = 0
+                                    crit_term_miss = 0
                                     try:
-                                        await save_trio(context, chat_page, session_id)
+                                        # Always re-download refresh_token after revive
+                                        await save_trio(
+                                            context, chat_page, session_id,
+                                            force_idb=True)
                                     except Exception:
                                         pass
                                     log("  Revive OK — worker running again")
@@ -3647,16 +3828,34 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     fail_streak += 1
                                     log(f"  Revive missed (streak={fail_streak}) — retry next tick")
                                     next_wait = 30
-                                    if fail_streak >= FAIL_STREAK_RESTART:
+                                    # Under CRITICAL never open a fresh tab —
+                                    # keep trying in place (force /term next).
+                                    if tier == "critical":
+                                        try:
+                                            await force_preview_to_lovableproject_term(
+                                                chat_page, project_id)
+                                        except Exception:
+                                            pass
+                                        fail_streak = min(fail_streak, FAIL_STREAK_RESTART - 1)
+                                    elif fail_streak >= FAIL_STREAK_RESTART:
                                         exit_mode = (
                                             "reconnect" if cdp_http_alive() else "kill")
                                         log(f"  Revive missed {FAIL_STREAK_RESTART}x — fresh tab (browser stays up)")
                                         return
                             except asyncio.TimeoutError:
                                 fail_streak += 1
-                                log(f"  Revive timed out {REVIVE_WALL_S}s (streak={fail_streak})")
+                                log(f"  Revive timed out "
+                                    f"{180 if tier == 'critical' else REVIVE_WALL_S}s "
+                                    f"(streak={fail_streak})")
                                 next_wait = 30
-                                if fail_streak >= FAIL_STREAK_RESTART:
+                                if tier == "critical":
+                                    try:
+                                        await force_preview_to_lovableproject_term(
+                                            chat_page, project_id)
+                                    except Exception:
+                                        pass
+                                    fail_streak = min(fail_streak, FAIL_STREAK_RESTART - 1)
+                                elif fail_streak >= FAIL_STREAK_RESTART:
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
                                     log(f"  Revive timeout x{FAIL_STREAK_RESTART} — fresh tab (browser stays up)")
@@ -3674,7 +3873,9 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     log("  Page crashed during revive — hard-kill + relaunch")
                                     return
                                 next_wait = 30
-                                if fail_streak >= FAIL_STREAK_RESTART:
+                                if tier == "critical":
+                                    fail_streak = min(fail_streak, FAIL_STREAK_RESTART - 1)
+                                elif fail_streak >= FAIL_STREAK_RESTART:
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
                                     return
@@ -3683,7 +3884,28 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         fail_streak += 1
                         log(f"  Health probe timed out 45s (streak={fail_streak})")
                         next_wait = 30
-                        if fail_streak >= FAIL_STREAK_RESTART:
+                        if tier == "critical":
+                            # Don't fresh-tab under CRITICAL (id-preview wedge).
+                            # Remount /term; if probe spiral continues → relaunch.
+                            try:
+                                await ensure_preview_shell_panel(chat_page)
+                            except Exception:
+                                pass
+                            try:
+                                await force_preview_to_lovableproject_term(
+                                    chat_page, project_id)
+                            except Exception:
+                                pass
+                            if fail_streak >= FAIL_STREAK_RESTART:
+                                try:
+                                    hard_kill_chrome()
+                                except Exception:
+                                    pass
+                                exit_mode = "kill"
+                                log(f"  CRITICAL probe timeout x{FAIL_STREAK_RESTART} "
+                                    "— hard-kill + relaunch (self-heal)")
+                                return
+                        elif fail_streak >= FAIL_STREAK_RESTART:
                             log(f"  Probe timed out {FAIL_STREAK_RESTART}x — tab wedged, "
                                 f"fresh tab (browser stays up)")
                             return

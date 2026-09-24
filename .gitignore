@@ -8,20 +8,19 @@ __pycache__/
 # Logs
 *.log
 runtime/
-
 # Build artifacts
 *.so
 *.egg
 *.egg-info/
 dist/
 build/
-
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
 # OS
 .DS_Store
 Thumbs.db
+# ops cache
+ops/__pycache__/
