@@ -1,23 +1,33 @@
 # FLEET-LIVE — who is mining
 
-**Updated:** 2026-09-23 (stop point)
+**Updated:** 2026-09-24 (morning check)
 **Rule:** one Railway cell per **Lovable project**. Accounts with 2 projects → 2 cells (same cookies, different `--project`).
 **Railway order:** `session-1`, skip **`session-2`** (cell-16), then `session-3`…
 
-## Stopped here
+## Stopped here / truth check 2026-09-24
 
-Fleet push **paused**. OnKernel inject jobs killed. Docs reflect truth as of this stop — not hopes.
+Fleet push **paused**. Xvfb screenshots of cell-16 + cell-13 were **blank black** (Chrome procs exist but **0 windows on `:99`**). Do not trust “Worker alive” logs alone — confirm headed UI / Worker on Preview.
 
-### Actually mining (Worker confirmed)
+Xvfb shots: `shots-from-cell/cell-16-xvfb-now.png`, `shots-from-cell/cell-13-xvfb-now.png`
+
+### Group B follow-up (cells 30/31/35) — [Bridge+mine group B](60523053-7c98-4dfc-862b-0a9fb0ba5566)
+
+OnKernel re-inject **blocked** (org payment method). Cookie sync + daemon md5 `c05b8a9e…` applied. Results in `/tmp/fleet_fix_B.json`:
+
+| Cell | Status | Reason |
+|---|---|---|
+| cell-30 | SEEKING | preview `id-preview` Error / no lovableproject+doc |
+| cell-31 | FAIL | `daemon_r31.log` frozen ~5h on panel TimeoutError |
+| cell-35 | SEEKING | old Worker injected line; log stale; no miner procs now |
+
+### Actually mining?
 
 | Cell | Project | Notes |
 |---|---|---|
-| **cell-16** | `7d6f77a6…` | **locked** — do not touch |
-| **cell-13** | `05da1af6…` | Worker injected / reclaim loops OK |
+| **cell-16** | `7d6f77a6…` | **locked** — logs say Worker alive; **Xvfb blank** (no Chrome window on display) |
+| **cell-13** | `05da1af6…` | logs flaky inject/cycle; **Xvfb blank** |
 
-### Bridge seen on OnKernel earlier, but Railway cell still **not** mining
-
-Daemons are up (`daemon.py` md5 `c05b8a9e…`) and cycling `/term`, but cell Chromium still hits **`no-doc`** (Worker never confirmed). OnKernel `window.doc` ≠ cell Preview doc.
+### Bridge seen on OnKernel earlier, Railway still **not** mining
 
 | Cell | Project |
 |---|---|
@@ -38,7 +48,7 @@ Daemons are up (`daemon.py` md5 `c05b8a9e…`) and cycling `/term`, but cell Chr
 
 ### OnKernel note
 
-Default org API key hit **billing / payment-method** block for browser create. Unlocked farm keys can still create. Org concurrent cap ≈ **5**. Resume inject with a working unlocked `KERNEL_API_KEY`, then sync cookies to cells and wait for Worker confirmed — do not claim mining from OnKernel alone.
+Default org API key hit **billing / payment-method** block for browser create. Unlocked farm keys can still create. Org concurrent cap ≈ **5**. Resume inject with a working unlocked `KERNEL_API_KEY`, then sync cookies to cells and wait for **visible** `/term`+Worker — do not claim mining from OnKernel or log lines alone.
 
 Canonical daemon recipe: [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md)
 
