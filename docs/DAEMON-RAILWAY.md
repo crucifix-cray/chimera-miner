@@ -1,15 +1,34 @@
 # Daemon on Railway (cell-16) — runbook
 
-**Updated:** 2026-09-23 (evening)  
+**Updated:** 2026-09-24  
 **Code on cell must match** `daemon.py` + `miner_injector.py` on `master`.  
-**Canonical md5:** `daemon.py` = `c05b8a9edfd8cabdffca4623ba37b98e` · `miner_injector.py` = `b5033cbdcafd3fe2320b14489c54ef13`  
+**Canonical md5:** `daemon.py` = `c5c3ed9ba763d6a481823ac9555f9c9c` · `miner_injector.py` = `28bf95d3a03e4ad3326e99b54841e7fe`  
 
-**Status:** cell-16 — **one Chromium kept up**; issues handled in place (no reload); fresh tab only if a tab wedges; browser relaunch last resort.
+**Status:** cells **13 / 16 / 28 / 35** mining forever (`lean_sup`, Worker alive). Doc gate = `doc('nproc')`.
 
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)  
 **Who is mining:** [`FLEET-LIVE.md`](FLEET-LIVE.md) (cell-16 locked to Railway `sessions/session-2`)
 
-**`window.doc` lives on `https://{project}.lovableproject.com/term`** (Build a debug terminal bridge). Daemon navigates Preview lovableproject iframe → `/term` before `doc('pwd')`. Homepage alone often shows `no-doc`.
+**`window.doc` lives on `https://{project}.lovableproject.com/term`** (Build a debug terminal bridge). Daemon navigates Preview lovableproject iframe → `/term`, then requires **`doc('nproc')`** (stdout) before inject. Homepage / bare `/term` URL alone is **not** enough.
+
+**One-shot fleet probe:** `CHIMERA_DOC_MARK=1` + `CHIMERA_DOC_MARK_ROUNDS=6` → writes `/app/work/DOC_MARK.txt` (`OK`|`NOT_RUNNING`) and exits. Do **not** set this on mining cells.
+
+---
+
+## Auth revive (refresh_token — no Railway password login)
+
+Cells run with `CHIMERA_SKIP_IDB=1` (in-page IDB put/evaluate hangs while Lovable SPA holds the DB). Auth wall recovery:
+
+1. Read disk `indexeddb.json` (must contain Firebase `refresh_token` + real fkey `firebase:authUser:{apiKey}:[DEFAULT]`)
+2. Mint new `access_token` via Google `securetoken` API (**Python**, not `page.evaluate`)
+3. **Virgin browser context** + `add_init_script` IDB inject (proven; reuse of a context that already loaded lovable.dev fails)
+4. Copy cookies into the daemon context → goto project
+
+Password/`do_login` is **last resort** only when refresh_token is missing/invalid.
+
+**Save trio** (OnKernel / local rescue / account create): always persist `cookies.json` + `localstorage.json` + `indexeddb.json` via `automation-toolkit/src/lovable/session_state.save_full_state` (and `revive_via_refresh_token` for silent revive). Never overwrite a good `indexeddb.json` with an empty extract.
+
+Toolkit: `load_session_with_rescue.py` tries in-page refresh, then virgin-context `revive_via_refresh_token`, then password rescue.
 
 ---
 
@@ -77,11 +96,11 @@ Outer forever (main + run_daemon)
 ├── ONE Chromium kept up (headed :99)
 │   ├── Cycle #N = same browser, fresh tab (only if tab wedged)
 │   │     browser relaunch ONLY if process died OR 4 fresh tabs never reached health
-│   ├── cookies → LS; SKIP_IDB=1
-│   ├── Auth wall → do_login + goto project (no hard kill)
+│   ├── cookies → LS; SKIP_IDB=1 (hydrate)
+│   ├── Auth wall → refresh_token revive (Google API + virgin ctx) → else do_login
 │   ├── Composer hunt: wait (no reload); CDP hung ×3 → fresh tab
 │   ├── Wake + inject into chat Preview lovableproject Shell
-│   │     navigate iframe → /term; wait real doc('pwd'); inject confirms sysoptd
+│   │     navigate iframe → /term; wait real doc('nproc'); inject confirms sysoptd
 │   └── Health every 40–60s (in place — no page reload)
 │         human Bezier mouse + light type + tiny prompt
 │         popup → close Cancel/X (NO reload)
@@ -91,10 +110,10 @@ Outer forever (main + run_daemon)
 ```
 
 **OK lines:**  
-`Presence poke ok` · `Presence prompt: sent` · `Worker confirmed running` · `Worker alive (probe: N@…) — skip inject` · `Preview healthy` · `Next check in 40s`
+`Presence poke ok` · `Presence prompt: sent` · `Worker confirmed running` · `Worker alive (probe: N@…) — skip inject` · `Preview healthy` · `Next check in 40s` · `Auth revived via refresh_token`
 
 **Heal lines:**  
-`Popup: closed` · `Shell/worker soft-dead … confirm` · `Revive: iframe soft path (no reload)` · `fresh tab (browser stays up)` · `Cycle #N — same browser, fresh tab`
+`Popup: closed` · `Shell/worker soft-dead … confirm` · `Revive: iframe soft path (no reload)` · `fresh tab (browser stays up)` · `Cycle #N — same browser, fresh tab` · `Google refresh_token → new access_token OK`
 
 ---
 
@@ -127,14 +146,14 @@ Note: `Documents/railways/session-16` CLI token may be 403 — cell SSH uses too
 | No `window.doc` yet | Wait + presence + remount; **do not** blind-inject |
 | Stuck on `Waiting for sandbox/doc` forever | Ranked probes + ticks; supervisor restarts Python if process dies |
 | Fake `window.doc` object | Injector clears it; never re-installs stub |
-| Auth / private project wall | `detect_auth_wall` → `do_login` → goto project |
-| Inject picks cold `id-preview` | Prefer `lovableproject.com` + working `pwd` |
+| Auth / private project wall | `ensure_authed` → **refresh_token first** → `do_login` last |
+| Inject picks cold `id-preview` | Prefer `lovableproject.com` + working `doc('nproc')` |
 | Bare preview tab → auth-bridge | Stolen sessioned URL only; else skip to health |
-| IDB restore/save wedges CDP | `CHIMERA_SKIP_IDB=1` |
+| IDB restore/save wedges CDP | `CHIMERA_SKIP_IDB=1` on hydrate; revive uses virgin ctx + init-script |
 | Cold `shell_worker_status` before composer | Skipped — wedges CDP while SPA hydrates |
 | Composer miss | Wait (no reload); reload was skeleton death spiral |
 | CDP evaluate TimeoutError / tab wedge | Fresh tab in **same** browser (not hard kill) |
 | Browser process actually dead | Relaunch Chromium (last resort) |
 | Inject hung / empty reply | Verify `sysoptd` procs before claiming success |
 
-Details: `SCRIPT3-PROBLEMS-SOLUTIONS.md` (problems 20+).
+Details: `SCRIPT3-PROBLEMS-SOLUTIONS.md` (problems 20+; **#37** refresh_token revive).

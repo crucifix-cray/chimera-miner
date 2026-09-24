@@ -1,36 +1,32 @@
 # INDEX — roadmap & fleet status
 
-**Updated:** 2026-09-23 (stop point)  
+**Updated:** 2026-09-24  
 
 - **Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 - **Who is mining right now:** [`FLEET-LIVE.md`](FLEET-LIVE.md)
 
 ## Where we are
 
-- **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md) — **STOPPED** fleet push; honest status only  
-- **Mining now:** cell-16 (locked) + cell-13 only  
-- **5 daemons up, not mining:** cells 23/28/30/31/35 — OnKernel had bridge earlier; cell `/term` still **no-doc**  
-- **4 left for bridge:** cells **25 / 26 / 32 / 36**  
-- **OnKernel:** default key billing-blocked for create; use unlocked farm `KERNEL_API_KEY`; org ≤5 concurrent  
-- **Code:** headed Xvfb, **`lovableproject → /term`** before `doc('pwd')`, md5 `daemon.py`=`c05b8a9e…` · `miner_injector.py`=`b5033cbd…`  
-- **Bridge prompt:** `automation-toolkit/prompts/Build a debug terminal.txt` via `inject_fleet_projects.py`  
+- **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md)  
+- **Mining now (4):** cells **13, 16, 28, 35** — `doc('nproc')` OK → Worker forever (`lean_sup`, no `CHIMERA_DOC_MARK`)  
+- **Doc gate:** real bridge = `window.doc('nproc')` returns stdout (not URL / not `typeof`)  
+- **Auth:** refresh_token revive path live; Good28 accounts re-verified LIVE_OK  
+- **Not mining yet:** 23, 25, 26, 30, 31, 32, 36 (DOC_NOT_RUNNING / auth / composer)  
+- **Code md5:** `daemon.py`=`c5c3ed9ba763d6a481823ac9555f9c9c` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe`  
+- **Bridge prompt:** `automation-toolkit/prompts/Build a debug terminal.txt` (keep-as-is / no questions ending)  
 - **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
 
 ## Architecture (daemon)
 
 ```text
-daemon.py --mode full --headed  (never exits)
-├── Browser cycle #N  (Playwright launch; soft CDP reattach only if attached)
-│   ├── Chromium :99 → cookies → LS (SKIP_IDB) → auth-wall? login
-│   ├── Composer wait (no reload) → wake (prefer no-reload)
-│   ├── lovableproject → /term → wait real window.doc → inject (no fake stub)
-│   ├── save_trio(chat)
-│   └── Health (~40s):
-│         presence scroll/hover/wheel + trivial chat prompt
-│         soft-confirm nodoc ×2 → iframe soft revive
-│         CDP hung → HARD kill → next Browser cycle
-│         fail×3 → next Browser cycle
-└── main() while True + shell supervisor while true
+daemon.py --mode full --headed  (never exits; lean_sup while true)
+├── Browser cycle #N
+│   ├── Chromium :99 → cookies → LS (SKIP_IDB) → auth-wall? refresh_token → else login
+│   ├── Composer wait → wake
+│   ├── lovableproject → /term → doc('nproc') must work → inject (no fake stub)
+│   ├── CHIMERA_DOC_MARK=1 → write DOC_MARK.txt OK|NOT_RUNNING → exit (probe-only)
+│   └── Health (~40s): Worker alive probe + presence; soft revive; hard kill if CDP hung
+└── supervisor while true (no DOC_MARK on mining cells)
 ```
 
 ## Docs map

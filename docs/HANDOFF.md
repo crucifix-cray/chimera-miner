@@ -1,39 +1,42 @@
 # HANDOFF — continue the fleet
 
-**Updated:** 2026-09-22  
+**Updated:** 2026-09-24  
 
 You are continuing **Lovable + Railway cell** automation. Scale is the job. Cell-16: sync md5s from runbook, relaunch with supervisor if daemon not in `ps`.
 
 **Read first:**
 1. [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md) — map, sprint, math  
-2. [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md) — cell IDs, launch, md5  
+2. [`DAEMON-RAILWAY.md`](DAEMON-RAILWAY.md) — cell IDs, launch, md5, **refresh_token auth revive**  
 
 ## Already done
 
-- `daemon.py` / `miner_injector.py` — headed Xvfb, chat-iframe inject, 40s presence+prompt, soft revive, auth-wall re-login, no fake `window.doc`, never-exit cycles  
-- Sandbox wait hardened (ranked probes, ticks, remount, post-wake spin, outer BaseException + shell supervisor) — problem 31  
-- Session-2 / project `7d6f77a6-69a1-4b06-a1d3-53094c4c8019`  
-- Canonical md5 `daemon.py`=`228be8b060b77341a6d87b8ffe06e31a` · `miner_injector.py`=`b5033cbdcafd3fe2320b14489c54ef13`  
-- Problems log through #36 in `SCRIPT3-PROBLEMS-SOLUTIONS.md`  
-- **1GB Railway Aw Snap is the open blocker** — bump cell to ≥1.5–2GB when possible  
+- `daemon.py` / `miner_injector.py` — headed Xvfb, chat-iframe inject, 40s presence+prompt, soft revive, **auth wall → refresh_token first**, **doc gate = `doc('nproc')`**, no fake `window.doc`, never-exit cycles  
+- **Mining forever:** cells **13, 16, 28, 35** (`lean_sup`, no `CHIMERA_DOC_MARK`)  
+- Auth revive proven: Google API + virgin context init-script — problem **#37**  
+- Full trios with `refresh_token` for cells 28/30/31/32/35  
+- Toolkit: `session_state.save_full_state` + `revive_via_refresh_token`; rescue script uses them  
+- Canonical md5 `daemon.py`=`c5c3ed9ba763d6a481823ac9555f9c9c` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe`  
+- Problems log through **#38** in `SCRIPT3-PROBLEMS-SOLUTIONS.md`  
 - Bridge `wss://chimera-bridge-production-0703.up.railway.app`  
 
 ## Rules (do not violate)
 
 - `CHIMERA_NO_PROXY=1` + `CHIMERA_SKIP_IDB=1` + `CHIMERA_FORCE_HEADED=1` + `DISPLAY=:99` + `--headed` on cells  
+- Auth wall: **refresh_token revive before password login**  
+- Always save trio with real IndexedDB fkey; never clobber good `indexeddb.json` with empty extract  
 - Chromium + `--mode full` on cells  
 - Daemons live on Railway **services**, not sandboxes  
 - Prefer inject into chat Preview `lovableproject.com` iframe (not a 2nd tab)  
-- **Require** real `window.doc` (function + `pwd`) before inject — never fake doc stub  
+- **Require** real `window.doc('nproc')` (stdout) before inject — never fake doc stub; URL `/term` alone is not enough  
+- `CHIMERA_DOC_MARK=1` only for one-shot fleet probe (writes `/app/work/DOC_MARK.txt`, then exits) — **never** on mining cells  
 - Prefer no-reload wake when already on project; soft presence prompts for sandbox wait  
 - Do not cold-probe `shell_worker_status` before composer (CDP wedge)  
-- `save_trio` from chat page only (cookies+LS when SKIP_IDB)  
 - Kill by exact PID — never `pkill -f` on SSH  
 - Wake = trivial prompts only  
 - Soft revive = wait sandbox + reinject (no chat reload first); hard kill if CDP evaluate hung  
 - Crash → Browser cycle relaunch; full mode never exits; launch under shell `while true` supervisor  
-- After push: curl `daemon.py` + `miner_injector.py` to cell, restart, verify md5  
-- Railway CLI: `HOME=…/automation-toolkit/sessions/session-2` (do not copy into `~/.railway`)  
+- After push: curl/stdin-deploy `daemon.py` + `miner_injector.py` to cell, restart, verify md5  
+- Railway CLI: per-cell `HOME=…/automation-toolkit/sessions/session-N` (do not copy into `~/.railway`)  
 - No secrets in commits; see automation-toolkit credentials doc  
 
 ## Credentials (pointers only)

@@ -141,7 +141,7 @@ Words in this log: **preview shell**, **worker process**, **revive**. Function n
 ## Problem 27: Auth wall / private project after SKIP_IDB restore
 - **Symptom:** Shot shows "You don't have access" / Log In; composer count=0.
 - **Cause:** Cookies+LS without full Firebase hydrate can leave chat logged-out of the project.
-- **Fix:** `detect_auth_wall` after restore → `do_login` + goto project; re-check mid composer hunt.
+- **Fix (2026-09-24):** `ensure_authed` → **refresh_token revive first** (Google API + virgin context init-script IDB inject + cookie copy). Password `do_login` only if no/invalid refresh_token. See problem **#37**.
 
 ## Problem 28: Fake `window.doc` object poisons Shell Sandbox
 - **Symptom:** Inject `Setup result: True` then probe `no doc bridge` forever.
@@ -225,8 +225,29 @@ python3 -u script3_launch_miner.py \
 
 ### Session rescue
 ```bash
-CHIMERA_NO_PROXY=1 python3 load_session_with_rescue.py 2 --kernel
+# From automation-toolkit — tries refresh_token first, then password/TOTP
+cd /home/alae/Documents/repos/automation-toolkit
+KERNEL_API_KEY=sk_... python3 -u src/lovable/load_session_with_rescue.py 7 --kernel
 ```
+
+## Problem 37: Auth wall — refresh_token revive (no Railway password login)
+- **Symptom:** Cell hits `Auth wall mid composer hunt` / `Login failed`; full `do_login` on Railway is flaky (TOTP/IP) and unnecessary if we saved Firebase refresh_token.
+- **Cause:** Cookies expire (~1h). `CHIMERA_SKIP_IDB=1` means Chromium never got IndexedDB on hydrate. In-page IDB put/`evaluate` **hangs** while Lovable SPA holds `firebaseLocalStorageDb`. Extract often saved `key: null` so restore put nothing useful.
+- **Fix (proven 2026-09-24, cell-32 / session-7):**
+  1. Always save full trio with real fkey: `firebase:authUser:{apiKey}:[DEFAULT]` (`session_state.synthesize_idb_keys` / `save_full_state`).
+  2. On auth wall: mint access token via Google `securetoken` API in **Python**.
+  3. Inject IDB via **virgin** `browser.new_context()` + `add_init_script` (not the polluted context).
+  4. Copy cookies into the working context → goto project.
+  5. Password `do_login` only if refresh_token missing/invalid.
+- **Code:** `daemon.py` → `ensure_authed` / `revive_via_refresh_token`; toolkit `session_state.revive_via_refresh_token` + `load_session_with_rescue.py`.
+- **Do not** overwrite a good `indexeddb.json` with an empty extract after SPA lock.
+
+## Problem 38: `/term` URL ≠ bridge — gate on `doc('nproc')`
+- **Symptom:** Logs show Stolen preview `…/term` or Navigate → `/term`, but Worker never injects; local headed probe shows `window.doc` undefined.
+- **Cause:** Lovable change / cold preview — path can exist without Shell Sandbox. Treating URL as “has doc” was wrong.
+- **Fix:** Require `await window.doc('nproc')` with non-empty stdout (script3-style). Log `DOC_MARK=OK doc('nproc')→…` or fail.
+- **Fleet probe:** `CHIMERA_DOC_MARK=1` + limited rounds → write `/app/work/DOC_MARK.txt` (`OK`|`NOT_RUNNING`) and exit. Mining cells must **not** set this env; use forever `lean_sup`.
+- **Proven 2026-09-24:** cells 13/16/28/35 → `nproc=16` → Worker forever; 30/31/32 → `NOT_RUNNING`.
 
 ## Key scripts
 | Script | Purpose |
@@ -236,4 +257,5 @@ CHIMERA_NO_PROXY=1 python3 load_session_with_rescue.py 2 --kernel
 | `script3_launch_miner.py` | Manual / legacy launcher |
 | `github_db.py` | GitHub-backed state helpers |
 | `stable_browser.py` | Chromium launcher + trio save/restore |
-| `load_session_with_rescue.py` | Session rescue (automation-toolkit) |
+| `load_session_with_rescue.py` | Session rescue (automation-toolkit) — refresh_token then login |
+| `session_state.py` | Trio save + `revive_via_refresh_token` (automation-toolkit) |

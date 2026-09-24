@@ -492,17 +492,30 @@ def mem_pressure_tier() -> str:
     return "ok"
 
 
-def reclaim_if_pressure(tag: str = "") -> bool:
+def reclaim_if_pressure(tag: str = "", *, allow_hard_kill: bool = True) -> bool:
     """Reap zombies. Hard-kill only at absolute cgroup ceiling (≥99.5%).
 
     Healthy Lovable+Chrome on 1GB sits at 90–97%. Killing there caused
     needless relaunch loops. Prefer mem_pressure_tier babysitting instead.
+
+    Headed Xvfb + Worker on 1GB steady-state sits at ~100% (cell-16/13 proof:
+    health-1 hard-kill right after "Worker injected!" → inject→kill loop).
+    Never hard-kill for ceiling alone when FORCE_HEADED/DISPLAY is set —
+    Aw Snap / page-dead paths still relaunch.
     """
     reap_zombies_only()
     frac = cgroup_mem_used_frac()
     if frac < 0.995:
         return False
     prefix = f"  {tag}: " if tag else "  "
+    headed = (
+        os.environ.get("CHIMERA_FORCE_HEADED", "") == "1"
+        or bool((os.environ.get("DISPLAY") or "").strip())
+    )
+    if not allow_hard_kill or headed:
+        why = "deferred" if not allow_hard_kill else "headed/DISPLAY"
+        log(f"{prefix}Cgroup ceiling {frac:.0%} — skip hard-kill ({why}; babysit)")
+        return False
     log(f"{prefix}Cgroup ceiling {frac:.0%} — hard-kill Chrome + reap zombies")
     hard_kill_chrome()
     return True
@@ -875,6 +888,7 @@ async def send_wake_prompt(
     chat_page,
     chat_url: str | None = None,
     session_config: dict | None = None,
+    session_id: str | None = None,
 ) -> bool:
     """Find composer → send trivial wake cmd → wait.
 
@@ -984,16 +998,17 @@ async def send_wake_prompt(
                     on_login = True
             except Exception:
                 pass
-        if on_login and session_config:
-            log("  Wake: login wall — re-login")
-            ok = await do_login(
+        if on_login and (session_config or session_id):
+            log("  Wake: login wall — refresh_token first")
+            sid = session_id or (session_config or {}).get("session_id")
+            ok = await ensure_authed(
                 chat_page,
-                session_config.get("email", ""),
-                session_config.get("password", ""),
-                session_config.get("totp_secret"),
+                sid,
+                session_config,
+                target_url=chat_url,
             )
             if not ok:
-                log("  Wake: re-login failed")
+                log("  Wake: auth revive failed")
                 continue
             if chat_url:
                 try:
@@ -1637,8 +1652,11 @@ def _sandbox_frame_score(frame) -> int:
     return score
 
 
-async def _probe_frame_doc_pwd(fr, timeout: float = 6.0):
-    """Hard-bounded doc+pwd probe. Never let one frame wedge the wait loop."""
+async def _probe_frame_doc_nproc(fr, timeout: float = 8.0):
+    """Hard-bounded doc gate: real bridge = window.doc('nproc') returns stdout.
+
+    Script3-style — typeof alone is not enough; cmd must run on lovableproject.
+    """
     try:
         return await asyncio.wait_for(
             fr.evaluate(
@@ -1655,8 +1673,13 @@ async def _probe_frame_doc_pwd(fr, timeout: float = 6.0):
                     if (window.doc.connect) {
                         try { await window.doc.connect(); } catch (e) {}
                     }
-                    const r = await window.doc('pwd');
-                    return { ok: true, r: r };
+                    const r = await window.doc('nproc');
+                    const out = (r && (r.stdout !== undefined ? r.stdout : r)) + '';
+                    const code = (r && r.code !== undefined) ? r.code : null;
+                    // nproc prints a number — require non-empty stdout and no shell fail
+                    const ok = !!(out.trim()) && (code === null || code === 0);
+                    return { ok: ok, r: out.trim().slice(0, 80), code: code,
+                             err: ok ? null : ('nproc-empty-or-fail code=' + code) };
                 } catch (e) {
                     return { ok: false, err: String(e && e.message || e).slice(0, 120) };
                 }
@@ -1666,6 +1689,10 @@ async def _probe_frame_doc_pwd(fr, timeout: float = 6.0):
         )
     except Exception as e:
         return {"ok": False, "err": type(e).__name__}
+
+
+# Back-compat alias (call sites / older patches)
+_probe_frame_doc_pwd = _probe_frame_doc_nproc
 
 
 async def wait_for_chat_preview_sandbox(
@@ -1770,7 +1797,7 @@ async def wait_for_chat_preview_sandbox(
                             u, ul = dest, dest.lower()
                 except Exception as e:
                     last_note = f"term-nav:{type(e).__name__}"
-            probe = await _probe_frame_doc_pwd(fr, timeout=6.0)
+            probe = await _probe_frame_doc_nproc(fr, timeout=8.0)
             if not isinstance(probe, dict):
                 continue
             if not probe.get("ok"):
@@ -1778,12 +1805,16 @@ async def wait_for_chat_preview_sandbox(
                 if sc >= 20:
                     last_note = f"{u[:70]}:{err}"
                 continue
+            nproc_out = str(probe.get("r", "")).strip()
             if "lovableproject.com" in ul:
-                log(f"  Chat Preview sandbox ready (lovableproject+pwd): {u[:120]}")
+                log(f"  DOC_MARK=OK doc('nproc')→{nproc_out!r} @ {u[:100]}")
+                log(f"  Chat Preview sandbox ready (lovableproject+nproc): {u[:120]}")
                 return True
-            soft = soft or u
+            soft = soft or (u, nproc_out)
         if soft and not require_lovableproject:
-            log(f"  Chat Preview sandbox ready (pwd): {soft[:120]}")
+            u_soft, n_soft = soft if isinstance(soft, tuple) else (soft, "")
+            log(f"  DOC_MARK=OK doc('nproc')→{n_soft!r} @ {str(u_soft)[:100]}")
+            log(f"  Chat Preview sandbox ready (nproc): {str(u_soft)[:120]}")
             return True
         await asyncio.sleep(4)
 
@@ -1795,7 +1826,7 @@ async def bring_up_lovableproject_doc(
     wait_per_round_s: int = 75,
 ) -> bool:
     """After prompting: keep remounting Preview + scanning for lovableproject iframe
-    with working window.doc('pwd') until it shows up.
+    with working window.doc('nproc') until it shows up.
 
     max_rounds=0 means keep going until the page dies (startup / forever bring-up).
     No full-page reload — remount Preview/Shell + tiny prompts only.
@@ -1993,6 +2024,7 @@ async def revive_sandbox(
     chat_url: str | None = None,
     preview_url: str | None = None,
     session_config: dict | None = None,
+    session_id: str | None = None,
 ) -> bool:
     """
     Recover shell/worker.
@@ -2038,7 +2070,11 @@ async def revive_sandbox(
 
     log("  Revive: refresh chat → wake → wait → preview → inject")
     woke = await send_wake_prompt(
-        chat_page, chat_url=chat_url, session_config=session_config)
+        chat_page,
+        chat_url=chat_url,
+        session_config=session_config,
+        session_id=session_id,
+    )
     if not woke:
         log("  Revive: wake failed — retry next cycle")
         return False
@@ -2069,7 +2105,11 @@ async def revive_sandbox(
     if not ready:
         log("  Revive: no doc yet — wake again + wait")
         await send_wake_prompt(
-            chat_page, chat_url=chat_url, session_config=session_config)
+            chat_page,
+            chat_url=chat_url,
+            session_config=session_config,
+            session_id=session_id,
+        )
         if preview_url:
             try:
                 await preview_page.goto(preview_url, timeout=30000, wait_until="commit")
@@ -2221,8 +2261,11 @@ def load_config_sync(session_id):
         return json.load(f)
 
 
-async def save_trio(context, page, session_id):
-    """Save cookies + localStorage + IndexedDB to disk."""
+async def save_trio(context, page, session_id, *, force_idb: bool = False):
+    """Save cookies + localStorage + IndexedDB to disk.
+
+    force_idb=True writes IndexedDB even when CHIMERA_SKIP_IDB=1 (post-refresh).
+    """
     sdir = _sess_dir(session_id)
     try:
         cookies = await context.cookies()
@@ -2245,7 +2288,7 @@ async def save_trio(context, page, session_id):
         log(f"  Saved {len(ls)} localStorage keys")
     except Exception as e:
         log(f"  localStorage save failed: {e}")
-    if os.environ.get("CHIMERA_SKIP_IDB", "") == "1":
+    if os.environ.get("CHIMERA_SKIP_IDB", "") == "1" and not force_idb:
         log("  Skipping IndexedDB save (CHIMERA_SKIP_IDB=1)")
         return
     try:
@@ -2279,16 +2322,368 @@ async def save_trio(context, page, session_id):
                 } catch(e) { resolve([]); }
             });
         }"""), timeout=15)
-        with open(sdir / "indexeddb.json", "w") as f:
-            json.dump(idb, f, indent=2)
         has_ref = any(
             r.get("value", {}).get("stsTokenManager", {}).get("refreshToken")
             for r in idb if isinstance(r.get("value"), dict))
+        # Don't clobber a good on-disk refresh_token with empty extract
+        # (SPA often holds the DB open → evaluate returns []).
+        if (not idb or not has_ref) and (sdir / "indexeddb.json").exists():
+            try:
+                prev = json.loads((sdir / "indexeddb.json").read_text())
+                prev_ref = any(
+                    r.get("value", {}).get("stsTokenManager", {}).get("refreshToken")
+                    for r in prev if isinstance(r.get("value"), dict))
+                if prev_ref and not has_ref:
+                    log("  IndexedDB extract empty/missing RT — keeping existing indexeddb.json")
+                    return
+            except Exception:
+                pass
+        with open(sdir / "indexeddb.json", "w") as f:
+            json.dump(idb, f, indent=2)
         log(f"  Saved {len(idb)} IndexedDB records, refresh_token={'YES' if has_ref else 'MISSING'}")
     except asyncio.TimeoutError:
         log("  IndexedDB save timed out — continuing with cookies+localStorage")
     except Exception as e:
         log(f"  IndexedDB save failed: {e}")
+
+
+async def restore_firebase_idb(page, session_id) -> bool:
+    """Inject disk indexeddb.json into the page. Ignores CHIMERA_SKIP_IDB.
+
+    Needed on auth-wall revive: lean_sup sets SKIP_IDB so hydrate never loads
+    the Firebase refresh_token into Chromium.
+    """
+    idb_file = _sess_dir(session_id) / "indexeddb.json"
+    if not idb_file.exists():
+        log("  No indexeddb.json on disk — cannot restore Firebase IDB")
+        return False
+    try:
+        idb_data = json.loads(idb_file.read_text())
+    except Exception as e:
+        log(f"  indexeddb.json read failed: {e}")
+        return False
+    if not idb_data:
+        log("  indexeddb.json empty")
+        return False
+    has_ref = any(
+        isinstance(r.get("value"), dict)
+        and (r["value"].get("stsTokenManager") or {}).get("refreshToken")
+        for r in idb_data if isinstance(r, dict)
+    )
+    if not has_ref:
+        log("  indexeddb.json has no refresh_token")
+        return False
+    # Synthesize Firebase fkey when extract saved key=null
+    for r in idb_data:
+        if not isinstance(r, dict):
+            continue
+        if r.get("key") or r.get("fkey"):
+            continue
+        v = r.get("value") if isinstance(r.get("value"), dict) else None
+        if v and v.get("apiKey"):
+            app = v.get("appName") or "[DEFAULT]"
+            r["key"] = f"firebase:authUser:{v['apiKey']}:{app}"
+            log("  synthesized IDB fkey from apiKey/appName")
+    try:
+        if "lovable.dev" not in ((page.url or "").lower()):
+            try:
+                await page.goto(
+                    "https://lovable.dev/dashboard",
+                    timeout=25000,
+                    wait_until="commit",
+                )
+                await asyncio.sleep(2)
+            except Exception as e:
+                log(f"  IDB restore nav soft-fail: {type(e).__name__}")
+        # Put-only (no deleteDatabase — hangs onblocked). Wait for tx.oncomplete.
+        n = await asyncio.wait_for(
+            page.evaluate(
+                """(records) => new Promise((resolve) => {
+                    const done = (v) => { try { resolve(v); } catch (e) {} };
+                    const t = setTimeout(() => done(-2), 10000);
+                    try {
+                        const openReq = indexedDB.open('firebaseLocalStorageDb');
+                        openReq.onupgradeneeded = () => {
+                            try {
+                                const db = openReq.result;
+                                if (!db.objectStoreNames.contains('firebaseLocalStorage')) {
+                                    db.createObjectStore('firebaseLocalStorage', {keyPath: 'fkey'});
+                                }
+                            } catch (e) {}
+                        };
+                        openReq.onerror = () => { clearTimeout(t); done(-1); };
+                        openReq.onsuccess = () => {
+                            try {
+                                let db = openReq.result;
+                                const write = (adb) => {
+                                    try {
+                                        if (!adb.objectStoreNames.contains('firebaseLocalStorage')) {
+                                            clearTimeout(t); done(-1); return;
+                                        }
+                                        const tx = adb.transaction('firebaseLocalStorage', 'readwrite');
+                                        const store = tx.objectStore('firebaseLocalStorage');
+                                        let finished = 0;
+                                        let putErr = false;
+                                        if (!records.length) { clearTimeout(t); done(0); return; }
+                                        tx.oncomplete = () => { clearTimeout(t); done(putErr ? -1 : finished); };
+                                        tx.onerror = () => { clearTimeout(t); done(-1); };
+                                        tx.onabort = () => { clearTimeout(t); done(-1); };
+                                        records.forEach(r => {
+                                            try {
+                                                const putReq = store.put({
+                                                    fkey: r.key || r.fkey,
+                                                    value: r.value
+                                                });
+                                                putReq.onsuccess = () => { finished++; };
+                                                putReq.onerror = () => { putErr = true; finished++; };
+                                            } catch (e) { putErr = true; finished++; }
+                                        });
+                                    } catch (e) { clearTimeout(t); done(-1); }
+                                };
+                                if (!db.objectStoreNames.contains('firebaseLocalStorage')) {
+                                    const v = db.version + 1;
+                                    db.close();
+                                    const open2 = indexedDB.open('firebaseLocalStorageDb', v);
+                                    open2.onupgradeneeded = () => {
+                                        try {
+                                            open2.result.createObjectStore(
+                                                'firebaseLocalStorage', {keyPath: 'fkey'});
+                                        } catch (e) {}
+                                    };
+                                    open2.onerror = () => { clearTimeout(t); done(-1); };
+                                    open2.onsuccess = () => write(open2.result);
+                                    return;
+                                }
+                                write(db);
+                            } catch (e) { clearTimeout(t); done(-1); }
+                        };
+                    } catch (e) { clearTimeout(t); done(-1); }
+                })""",
+                idb_data,
+            ),
+            timeout=12,
+        )
+        log(f"  Restored Firebase IDB for refresh (n={n}, refresh_token=YES)")
+        return isinstance(n, int) and n > 0
+    except asyncio.TimeoutError:
+        log("  Firebase IDB restore timed out")
+        return False
+    except Exception as e:
+        log(f"  Firebase IDB restore failed: {e}")
+        return False
+
+
+async def revive_via_refresh_token(page, session_id, *, target_url: str | None = None) -> bool:
+    """Auth revive without password: disk refresh_token → new access token → cookies.
+
+    Lovable's SPA keeps firebaseLocalStorageDb open, so page.evaluate IDB puts hang.
+    Working path: mint token via Google API in Python, inject via add_init_script
+    (runs before SPA), then navigate.
+    """
+    import time as _time
+    import urllib.parse
+    import urllib.request
+
+    log("  Auth revive: refresh_token path (no password login)")
+    idb_file = _sess_dir(session_id) / "indexeddb.json"
+    if not idb_file.exists():
+        log("  No indexeddb.json — cannot refresh")
+        return False
+    try:
+        idb_data = json.loads(idb_file.read_text())
+    except Exception as e:
+        log(f"  indexeddb.json read failed: {e}")
+        return False
+    # synthesize null keys
+    for r in idb_data:
+        if not isinstance(r, dict):
+            continue
+        if r.get("key") or r.get("fkey"):
+            continue
+        v = r.get("value") if isinstance(r.get("value"), dict) else None
+        if v and v.get("apiKey"):
+            r["key"] = f"firebase:authUser:{v['apiKey']}:{v.get('appName') or '[DEFAULT]'}"
+    user = None
+    for r in idb_data:
+        v = r.get("value") if isinstance(r, dict) else None
+        if isinstance(v, dict) and (v.get("stsTokenManager") or {}).get("refreshToken"):
+            user = v
+            break
+    if not user:
+        log("  indexeddb.json has no refresh_token")
+        return False
+    stm = user["stsTokenManager"]
+    api_key = user.get("apiKey") or ""
+    # Mint new access token outside the page (avoids IDB lock + CDP hangs)
+    try:
+        body = urllib.parse.urlencode(
+            {"grant_type": "refresh_token", "refresh_token": stm["refreshToken"]}
+        ).encode()
+        req = urllib.request.Request(
+            f"https://securetoken.googleapis.com/v1/token?key={api_key}",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            tok = json.loads(resp.read().decode())
+        if not tok.get("access_token"):
+            log(f"  Google refresh failed: {str(tok)[:180]}")
+            return False
+        stm["accessToken"] = tok["access_token"]
+        stm["expirationTime"] = int(_time.time() * 1000) + int(
+            tok.get("expires_in", 3600)
+        ) * 1000
+        if tok.get("refresh_token"):
+            stm["refreshToken"] = tok["refresh_token"]
+        log("  Google refresh_token → new access_token OK")
+    except Exception as e:
+        log(f"  Google refresh error: {e}")
+        return False
+    # Persist updated tokens to disk before inject
+    try:
+        idb_file.write_text(json.dumps(idb_data, indent=2))
+    except Exception:
+        pass
+    # Init-script inject BEFORE Lovable SPA opens the DB
+    init_js = (
+        "(() => {\n"
+        f"  const records = {json.dumps(idb_data)};\n"
+        "  window.__chimeraIdbReady = new Promise((resolve) => {\n"
+        "    try {\n"
+        "      const openReq = indexedDB.open('firebaseLocalStorageDb');\n"
+        "      openReq.onupgradeneeded = () => {\n"
+        "        try {\n"
+        "          const db = openReq.result;\n"
+        "          if (!db.objectStoreNames.contains('firebaseLocalStorage'))\n"
+        "            db.createObjectStore('firebaseLocalStorage', {keyPath: 'fkey'});\n"
+        "        } catch (e) {}\n"
+        "      };\n"
+        "      openReq.onerror = () => resolve(false);\n"
+        "      openReq.onsuccess = () => {\n"
+        "        try {\n"
+        "          const db = openReq.result;\n"
+        "          if (!db.objectStoreNames.contains('firebaseLocalStorage')) {\n"
+        "            resolve(false); return;\n"
+        "          }\n"
+        "          const tx = db.transaction('firebaseLocalStorage', 'readwrite');\n"
+        "          const store = tx.objectStore('firebaseLocalStorage');\n"
+        "          records.forEach(r => {\n"
+        "            try { store.put({fkey: r.key || r.fkey, value: r.value}); } catch (e) {}\n"
+        "          });\n"
+        "          tx.oncomplete = () => resolve(true);\n"
+        "          tx.onerror = () => resolve(false);\n"
+        "        } catch (e) { resolve(false); }\n"
+        "      };\n"
+        "    } catch (e) { resolve(false); }\n"
+        "  });\n"
+        "})();"
+    )
+    dest = target_url or "https://lovable.dev/dashboard"
+    # CRITICAL: reuse of a context that already loaded lovable.dev leaves a
+    # half-init Firebase IDB; virgin context + init_script is the proven path.
+    browser = page.context.browser
+    if browser is None:
+        log("  No browser handle for virgin context")
+        return False
+    fresh_ctx = None
+    try:
+        fresh_ctx = await browser.new_context()
+        await fresh_ctx.add_init_script(init_js)
+        fresh = await fresh_ctx.new_page()
+        await fresh.goto(dest, timeout=40000, wait_until="domcontentloaded")
+        try:
+            ready = await asyncio.wait_for(
+                fresh.evaluate("() => window.__chimeraIdbReady"),
+                timeout=8,
+            )
+            log(f"  IDB init inject ready={ready}")
+        except Exception as e:
+            log(f"  IDB init wait soft-fail: {type(e).__name__}")
+        await asyncio.sleep(4)
+        if await detect_auth_wall(fresh):
+            try:
+                await fresh.reload(timeout=40000, wait_until="domcontentloaded")
+                await asyncio.sleep(4)
+            except Exception:
+                pass
+        if await detect_auth_wall(fresh):
+            log("  Refresh ran but still on auth wall")
+            return False
+        cookies = await fresh_ctx.cookies()
+        sdir = _sess_dir(session_id)
+        with open(sdir / "cookies.json", "w") as f:
+            json.dump(cookies, f, indent=2)
+        log(f"  Auth revived via refresh_token — saved {len(cookies)} cookies")
+        # Apply into the caller's context and navigate
+        try:
+            await page.context.clear_cookies()
+        except Exception:
+            pass
+        try:
+            await page.context.add_cookies(cookies)
+        except Exception as e:
+            log(f"  cookie copy soft-fail: {e}")
+        try:
+            await page.goto(dest, timeout=40000, wait_until="domcontentloaded")
+            await asyncio.sleep(3)
+        except Exception as e:
+            log(f"  caller goto soft-fail: {type(e).__name__}")
+        return True
+    except Exception as e:
+        log(f"  virgin-context revive failed: {type(e).__name__}: {e}")
+        return False
+    finally:
+        if fresh_ctx is not None:
+            try:
+                await fresh_ctx.close()
+            except Exception:
+                pass
+
+
+async def ensure_authed(
+    page,
+    session_id,
+    config: dict | None,
+    *,
+    target_url: str | None = None,
+    allow_password_login: bool = True,
+) -> bool:
+    """Clear auth wall: refresh_token first, password login only as last resort."""
+    try:
+        walled = await detect_auth_wall(page)
+    except Exception:
+        walled = True
+    if not walled:
+        return True
+    if session_id and await revive_via_refresh_token(
+        page, session_id, target_url=target_url
+    ):
+        return True
+    if not allow_password_login:
+        log("  Refresh failed — password login disabled")
+        return False
+    if not config:
+        log("  Refresh failed — no config for password login")
+        return False
+    log("  Refresh failed/unavailable — falling back to do_login")
+    ok = await do_login(
+        page,
+        config.get("email", ""),
+        config.get("password", ""),
+        config.get("totp_secret"),
+    )
+    if ok and session_id:
+        try:
+            await save_trio(page.context, page, session_id, force_idb=True)
+        except Exception:
+            pass
+        if target_url:
+            try:
+                await page.goto(target_url, timeout=25000, wait_until="commit")
+                await asyncio.sleep(3)
+            except Exception:
+                pass
+    return bool(ok)
 
 
 async def refresh_firebase_token(page):
@@ -2618,15 +3013,31 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     # when cgroup ≤1.1GB unless CHIMERA_FORCE_HEADED=1.
                     mem_gb = cgroup_mem_gb()
                     use_headed = headed
-                    if mem_gb and mem_gb <= 1.15 and os.environ.get(
-                            "CHIMERA_FORCE_HEADED", "") != "1":
-                        use_headed = False
-                        log(f"  cgroup {mem_gb:.2f}GB ≤1.1 — forcing headless "
-                            f"(set CHIMERA_FORCE_HEADED=1 to override)")
+                    force_headed = os.environ.get("CHIMERA_FORCE_HEADED", "") == "1"
+                    disp = (os.environ.get("DISPLAY") or "").strip()
+                    # Empty Xvfb was caused by auto-headless on 1GB while DISPLAY=:99
+                    # was set but CHIMERA_FORCE_HEADED missing (cell-16 lean_sup).
+                    if mem_gb and mem_gb <= 1.15 and not force_headed:
+                        if disp:
+                            log(f"  cgroup {mem_gb:.2f}GB ≤1.1 but DISPLAY={disp} "
+                                f"— keeping headed (set CHIMERA_FORCE_HEADED=0 + "
+                                f"unset DISPLAY to allow headless)")
+                        else:
+                            use_headed = False
+                            log(f"  cgroup {mem_gb:.2f}GB ≤1.1 — forcing headless "
+                                f"(set CHIMERA_FORCE_HEADED=1 to override)")
+                    chrome_args = _chromium_lean_args()
+                    if use_headed:
+                        # Force real X11 windows on Xvfb (else ozone can stay blank)
+                        chrome_args = list(chrome_args) + [
+                            "--ozone-platform=x11",
+                            "--ozone-platform-hint=x11",
+                        ]
                     browser = await pw.chromium.launch(
-                        headless=not use_headed, args=_chromium_lean_args())
+                        headless=not use_headed, args=chrome_args)
                     log("  Launched Chromium via Playwright "
-                        f"(headless={not use_headed}, 1GB max-strip flags)")
+                        f"(headless={not use_headed}, DISPLAY={disp or '-'}, "
+                        f"1GB max-strip flags)")
                 else:
                     browser = await pw.firefox.launch(headless=not headed)
                     log("  Launched Firefox via Playwright")
@@ -2707,21 +3118,21 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             except Exception:
                 cur_url = ""
             if "/login" in cur_url:
-                log("Not logged in — doing login...")
-                ok = await do_login(
+                log("Not logged in — refresh_token first (then login if needed)")
+                ok = await ensure_authed(
                     chat_page,
-                    config["email"],
-                    config["password"],
-                    config.get("totp_secret"))
+                    session_id,
+                    config,
+                    target_url=chat_url,
+                )
                 if not ok:
-                    log("Login failed — retrying in 5 min...")
+                    log("Auth revive failed — retrying in 5 min...")
                     raise RuntimeError("login-failed-retry")
-                # Reload chat after login
                 try:
                     await safe_goto(chat_page, chat_url, timeout_s=25)
                 except Exception:
                     pass
-                log("  post-login: skip aw-snap recover")
+                log("  post-auth-revive: skip aw-snap recover")
 
             # --- Step 2: Restore localStorage + IndexedDB ---
             sdir = _sess_dir(session_id)
@@ -2833,15 +3244,15 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
             except Exception:
                 cur_url = ""
             if "/login" in cur_url or "/auth" in cur_url:
-                log("  Auth wall (URL) after restore — re-login")
-                logged = await do_login(
+                log("  Auth wall (URL) after restore — refresh_token first")
+                logged = await ensure_authed(
                     chat_page,
-                    config.get("email", ""),
-                    config.get("password", ""),
-                    config.get("totp_secret"),
+                    session_id,
+                    config,
+                    target_url=chat_url,
                 )
                 if not logged:
-                    log("  Re-login failed — fresh tab")
+                    log("  Auth revive failed — fresh tab")
                     force_hard_kill = True
                     raise RuntimeError("cycle-restart")
                 await safe_goto(chat_page, chat_url, timeout_s=25)
@@ -2878,12 +3289,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     except Exception:
                         cur = ""
                     if "/login" in cur or "/auth" in cur:
-                        log(f"  Auth wall mid composer hunt (r{round_n}) — re-login")
-                        logged = await do_login(
+                        log(f"  Auth wall mid composer hunt (r{round_n}) — refresh_token first")
+                        logged = await ensure_authed(
                             chat_page,
-                            config.get("email", ""),
-                            config.get("password", ""),
-                            config.get("totp_secret"),
+                            session_id,
+                            config,
+                            target_url=chat_url,
                         )
                         if logged:
                             await safe_goto(chat_page, chat_url, timeout_s=25)
@@ -2923,19 +3334,19 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     # After a few empty hunts on 1GB, force login — cookies/LS
                     # may look "logged in" by URL while UI is access-walled.
                     if low_mem and round_n in (3, 8):
-                        log(f"  Composer still missing r{round_n} — try do_login")
+                        log(f"  Composer still missing r{round_n} — try refresh_token")
                         try:
-                            logged = await do_login(
+                            logged = await ensure_authed(
                                 chat_page,
-                                config.get("email", ""),
-                                config.get("password", ""),
-                                config.get("totp_secret"),
+                                session_id,
+                                config,
+                                target_url=chat_url,
                             )
                             if logged:
                                 await safe_goto(chat_page, chat_url, timeout_s=25)
                                 await asyncio.sleep(5)
                         except Exception as e:
-                            log(f"  mid-hunt login skip: {type(e).__name__}")
+                            log(f"  mid-hunt auth revive skip: {type(e).__name__}")
                     await asyncio.sleep(COMPOSER_WAIT_S)
                 finally:
                     _stop.set()
@@ -2962,12 +3373,43 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
               await asyncio.sleep(WAKE_AFTER_SEND_S)
 
               # --- Step 4: keep prompting + remounting until lovableproject
-              # iframe has window.doc, then inject (never give up early)
+              # iframe has window.doc('nproc'), then inject (or DOC_MARK exit)
               preview_page = chat_page
               injected = False
-              log("  After wake — keep looking for lovableproject iframe + window.doc...")
+              doc_mark = os.environ.get("CHIMERA_DOC_MARK", "") == "1"
+              mark_rounds = int(os.environ.get("CHIMERA_DOC_MARK_ROUNDS", "6"))
+              log("  After wake — looking for lovableproject iframe + doc('nproc')...")
+              if doc_mark:
+                  log(f"  CHIMERA_DOC_MARK=1 — max_rounds={mark_rounds}, stop after verdict")
               sandbox_in_chat = await bring_up_lovableproject_doc(
-                  chat_page, max_rounds=0, wait_per_round_s=75)
+                  chat_page,
+                  max_rounds=(mark_rounds if doc_mark else 0),
+                  wait_per_round_s=75)
+
+              if doc_mark:
+                  mark_path = Path("/app/work/DOC_MARK.txt")
+                  if sandbox_in_chat:
+                      log("DOC_MARK=OK — doc('nproc') works on lovableproject")
+                      try:
+                          mark_path.write_text("OK\n")
+                      except Exception:
+                          pass
+                  else:
+                      log("DOC_MARK=NOT_RUNNING — doc('nproc') failed / no bridge")
+                      try:
+                          mark_path.write_text("NOT_RUNNING\n")
+                      except Exception:
+                          pass
+                  log("DOC_MARK done — exiting (no inject / no health loop)")
+                  try:
+                      await browser.close()
+                  except Exception:
+                      pass
+                  try:
+                      await pw.stop()
+                  except Exception:
+                      pass
+                  return
 
               if sandbox_in_chat:
                   for inj_try in range(1, 4):
@@ -3049,8 +3491,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         log("  Browser/page closed — hard-kill + relaunch")
                         return
 
-                    # Zombie reap; hard-kill only at absolute cgroup ceiling
-                    if iteration == 1 or iteration % 5 == 0:
+                    # Zombie reap; hard-kill only at absolute cgroup ceiling.
+                    # Never hard-kill on health-1 (post-inject mem spike ≈100%).
+                    if iteration == 1:
+                        reclaim_if_pressure(
+                            f"health-{iteration}", allow_hard_kill=False)
+                    elif iteration % 5 == 0:
                         if reclaim_if_pressure(f"health-{iteration}"):
                             exit_mode = "kill"
                             log("  Cgroup ceiling reclaim — relaunch browser")
@@ -3130,14 +3576,45 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                             log("  Preview healthy")
                         else:
                             soft_dead += 1
+                            # On 1GB headed, CRITICAL mem makes CDP falsely report
+                            # nodoc; revive then wedges (cell-16 health #8→id-preview
+                            # timeout spiral). Demand more confirms + longer gap.
+                            confirm_need = HEALTH_DEAD_CONFIRM
+                            if tier == "critical" and (
+                                    detail == "nodoc"
+                                    or detail.startswith("doc-eval-error")
+                                    or detail.startswith("probe-eval-error")
+                                    or detail.startswith("probe-error")):
+                                confirm_need = max(HEALTH_DEAD_CONFIRM, 4)
+                                next_wait = max(HEALTH_DEAD_GAP_S, 35)
                             log(f"  Shell/worker soft-dead ({detail}) "
-                                f"confirm {soft_dead}/{HEALTH_DEAD_CONFIRM}")
-                            if soft_dead < HEALTH_DEAD_CONFIRM:
-                                next_wait = HEALTH_DEAD_GAP_S
+                                f"confirm {soft_dead}/{confirm_need}")
+                            if tier == "critical" and confirm_need > HEALTH_DEAD_CONFIRM:
+                                log(f"  CRITICAL mem — soft-dead patience "
+                                    f"{soft_dead}/{confirm_need} gap={next_wait}s")
+                            if soft_dead < confirm_need:
+                                if next_wait == HEALTH_INTERVAL_S:
+                                    next_wait = HEALTH_DEAD_GAP_S
                                 await asyncio.sleep(next_wait)
                                 continue
                             soft_dead = 0
                             log(f"  Worker not running ({detail}) — inject/revive")
+                            # CRITICAL 1GB: soft revive burns REVIVE_WALL_S (~7m) and
+                            # almost always times out (cell-16/13 proof). Fresh tab
+                            # reinject recovers in ~2m instead of 25m of dead loops.
+                            if tier == "critical":
+                                try:
+                                    await capture_debug(
+                                        chat_page, preview_page,
+                                        f"dead-{detail.replace('/', '-')[:40]}",
+                                        xvfb_only=True)
+                                except Exception:
+                                    pass
+                                exit_mode = (
+                                    "reconnect" if cdp_http_alive() else "kill")
+                                log("  CRITICAL mem — skip soft-revive, "
+                                    "fresh tab reinject")
+                                return
                             await capture_debug(
                                 chat_page, preview_page,
                                 f"dead-{detail.replace('/', '-')[:40]}",
@@ -3155,6 +3632,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                             chat_url=chat_url,
                                             preview_url=preview_url,
                                             session_config=config,
+                                            session_id=session_id,
                                         ),
                                         timeout=REVIVE_WALL_S,
                                     )
@@ -3256,9 +3734,16 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     log("--- TOKEN REFRESH ---")
                     try:
                         async with page_lock:
+                            # SKIP_IDB hydrate means Chromium may lack refresh_token —
+                            # reinject from disk before minting a new access token.
                             tok_ok = await refresh_firebase_token(chat_page)
+                            if not tok_ok:
+                                log("  no live token — restore IDB from disk + retry")
+                                if await restore_firebase_idb(chat_page, session_id):
+                                    tok_ok = await refresh_firebase_token(chat_page)
                             if tok_ok:
-                                await save_trio(context, chat_page, session_id)
+                                await save_trio(
+                                    context, chat_page, session_id, force_idb=True)
                     except Exception as e:
                         log(f"Token refresh error: {e}")
                         if _is_crash_error(e):
@@ -3348,7 +3833,8 @@ def main():
     parser.add_argument("--session", required=True, help="Session (e.g. session-2 or 2)")
     parser.add_argument("--project", required=True, help="Lovable project ID")
     parser.add_argument("--browser", default="chromium", choices=["chromium", "firefox"])
-    parser.add_argument("--threads", type=int, default=64)
+    parser.add_argument("--threads", type=int, default=16,
+                        help="Worker threads (16 fits 1GB Lovable shells; 64 thrashs)")
     parser.add_argument("--mode", default="full", choices=["full", "oneshot", "gh"])
     parser.add_argument("--headed", action="store_true",
                         help="Show browser window (local diagnose)")
