@@ -6,7 +6,7 @@
 **Canonical code (local repo = truth):**
 | File | md5 |
 |---|---|
-| `daemon.py` | `237dd7a2eaed994f69a9c0ceeb93bddd` |
+| `daemon.py` | `ce5d77634abe101f8f48a7876ea6e7ba` |
 | `miner_injector.py` | `28bf95d3a03e4ad3326e99b54841e7fe` |
 
 **Ops helper:** `ops/cell_ops.py` (SSH / deploy / upload trio / status).  
@@ -72,8 +72,8 @@ lean_sup (while true)
               ├── Flaky nodoc under CRITICAL → patience ×4 + remount Preview
               ├── Confirmed dead + DOC back → in-place revive/inject
               ├── Force /term soft timeout → location.assign fallback
-              ├── Force /term miss ×3 OR probe timeout ×6 under CRITICAL
-              │     → hard-kill Chrome + relaunch (self-heal, no stuck forever)
+              ├── Force /term miss ×3 OR revive miss/timeout ×3 under CRITICAL
+              │     (incl. proxy-404 flake) → hard-kill Chrome + relaunch (auto-bounce)
               └── NEVER fresh-tab under CRITICAL nodoc (that wedges on id-preview)
 ```
 
@@ -203,8 +203,9 @@ Stack (Playwright/Chromium/venv) lives in the **image**, not the 500MB volume. V
 |---|---|
 | Auth wall / login | `refresh_token` revive → else OnK `session_refresh` + re-upload trio |
 | Stuck `id-preview` / no doc | Force `/term` (+ `location.assign` fallback) |
-| CRITICAL nodoc flake | Patience ×4; remount Preview; no fresh-tab |
+| CRITICAL nodoc / **proxy-404** flake | Patience ×4; remount Preview; no fresh-tab |
 | Force `/term` miss ×3 | hard-kill Chrome → lean_sup/daemon relaunch |
+| CRITICAL revive miss/timeout ×3 | hard-kill + relaunch (`CRIT_REVIVE_BOUNCE`) |
 | Probe timeout spiral ×6 under CRITICAL | hard-kill + relaunch |
 | Daemon Python dies | `lean_sup` restarts in 8s |
 | Host wiped to sshd only | Redeploy `cell_service` image, then bootstrap again |

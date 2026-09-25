@@ -1,6 +1,6 @@
 # HANDOFF — continue the fleet
 
-**Updated:** 2026-09-24 (self-heal + clone-and-run playbook)
+**Updated:** 2026-09-25 (CRITICAL auto-bounce: proxy-404 + revive miss ×3)
 
 **Start here next time:** [`CLONE-AND-RUN.md`](CLONE-AND-RUN.md) + `ops/cell_ops.py`  
 You are continuing **Lovable + Railway cell** automation. Scale = clone the proven cell pattern.
@@ -9,11 +9,11 @@ Also read: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md) · [`DAEMON-RAILWAY.
 
 ## Already done
 
-- `daemon.py` / `miner_injector.py` — headed Xvfb, chat-iframe inject, presence, soft revive, **auth → refresh_token first**, **doc gate = `doc('nproc')`**, CRITICAL self-heal (Force `/term` + assign fallback + hard-relaunch if stuck)
+- `daemon.py` / `miner_injector.py` — headed Xvfb, chat-iframe inject, presence, soft revive, **auth → refresh_token first**, **doc gate = `doc('nproc')`**, CRITICAL **auto-bounce** (proxy-404/nodoc flake → Force `/term` miss ×3 **or** revive miss ×3 → hard-kill + relaunch; no forever fail_streak cap)
 - **Mining forever:** cells **13, 16, 28, 35** (`lean_sup`, no `CHIMERA_DOC_MARK`)
 - Full trios with `refresh_token` for 28 (lov-41) + 35 (lov-50); 13/16 share lov-2
 - Toolkit: `session_state.save_full_state` + `session_refresh.py` (OnK) + `revive_via_refresh_token`
-- **Canonical md5:** `daemon.py`=`237dd7a2eaed994f69a9c0ceeb93bddd` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe`
+- **Canonical md5:** `daemon.py`=`ce5d77634abe101f8f48a7876ea6e7ba` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe`
 - Fleet map: `ops/fleet_map.json` · clone helper: `ops/cell_ops.py`
 - Bridge `wss://chimera-bridge-production-0703.up.railway.app`
 

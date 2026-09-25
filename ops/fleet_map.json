@@ -1,6 +1,6 @@
 {
   "updated": "2026-09-24",
-  "daemon_md5": "237dd7a2eaed994f69a9c0ceeb93bddd",
+  "daemon_md5": "ce5d77634abe101f8f48a7876ea6e7ba",
   "injector_md5": "28bf95d3a03e4ad3326e99b54841e7fe",
   "bridge": "wss://chimera-bridge-production-0703.up.railway.app",
   "cells": {

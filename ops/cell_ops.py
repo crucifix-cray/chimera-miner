@@ -255,12 +255,18 @@ def _deploy_files(cell: int, fmap: dict, paths: list[Path], bounce: bool) -> str
     service = info.get("service_name", f"cell-{cell}")
     payload = {
         "files": {p.name: z64(p) for p in paths},
-        "bounce": bounce,
     }
-    apply_py = textwrap.dedent(
-        """\
-        import sys, json, base64, zlib, pathlib, hashlib, os, time
-        payload = json.loads(sys.stdin.read())
+    # railway ssh stdin is unreliable (feeds JSON into python as code).
+    # Embed zlib(json) in a heredoc — one SSH, no stdin pipe.
+    blob = base64.b64encode(
+        zlib.compress(json.dumps(payload).encode("utf-8"), 9)
+    ).decode("ascii")
+    remote = textwrap.dedent(
+        f"""\
+        python3 - <<'PY'
+        import base64, zlib, json, pathlib, hashlib
+        blob = "{blob}"
+        payload = json.loads(zlib.decompress(base64.b64decode(blob)))
         for name, z in payload["files"].items():
             data = zlib.decompress(base64.b64decode(z))
             md5 = hashlib.md5(data).hexdigest()
@@ -269,32 +275,23 @@ def _deploy_files(cell: int, fmap: dict, paths: list[Path], bounce: bool) -> str
                 try:
                     d.mkdir(parents=True, exist_ok=True)
                 except Exception as e:
-                    print("skip dir", base, e); continue
+                    print("skip dir", base, e)
+                    continue
                 p = d / name
                 p.write_bytes(data)
-                print("wrote", p, len(data), hashlib.md5(p.read_bytes()).hexdigest())
+                print("wrote", str(p), len(data), hashlib.md5(p.read_bytes()).hexdigest())
             print("MD5", name, md5)
         print("DEPLOY_OK")
+        PY
         """
     )
-    b64 = base64.b64encode(apply_py.encode()).decode()
-    rc, out, err = ssh(
-        home, service,
-        f"echo '{b64}' | base64 -d > /tmp/cell_ops_apply.py && echo APPLY_OK",
-        timeout=60,
-    )
-    if "APPLY_OK" not in out:
-        return f"cell-{cell} apply_script fail: {out[-300:]} {err[-200:]}"
-
-    rc, out, err = ssh(
-        home, service,
-        "python3 /tmp/cell_ops_apply.py",
-        timeout=180,
-        stdin=json.dumps(payload).encode(),
-    )
-    lines = [f"cell-{cell} deploy rc={rc}", out[-1200:]]
+    rc, out, err = ssh(home, service, remote, timeout=180)
+    lines = [f"cell-{cell} deploy rc={rc}", out[-2000:], (err or "")[-400:]]
+    if "DEPLOY_OK" not in out:
+        return "\n".join(lines) + "\nDEPLOY_FAIL"
     if bounce:
-        # Separate SSH so stdin EOF does not skip bounce
+        # Daemon-only kill (do NOT pkill chrome — that SIGKILLs railway ssh, rc=137).
+        # lean_sup respawns daemon; daemon relaunches Chromium.
         bounce_cmd = textwrap.dedent(
             """\
             python3 - <<'P'
@@ -309,11 +306,8 @@ def _deploy_files(cell: int, fmap: dict, paths: list[Path], bounce: bool) -> str
                     continue
                 if cmd.startswith("/opt/venv/bin/python3 -u daemon.py"):
                     os.kill(int(pid), signal.SIGKILL); killed.append(pid)
-                if "chrom" in cmd.lower() and ("chrome" in cmd or "chromium" in cmd):
-                    try: os.kill(int(pid), signal.SIGKILL)
-                    except Exception: pass
             print("killed_daemons", killed)
-            time.sleep(4)
+            time.sleep(8)
             left=[]
             for pid in os.listdir("/proc"):
                 if not pid.isdigit(): continue

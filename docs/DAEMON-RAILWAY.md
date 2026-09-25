@@ -31,7 +31,7 @@ Password/`do_login` is **last resort** only when refresh_token is missing/invali
 
 **On cell:** `daemon.save_trio(..., force_idb=True)` after inject / revive / token refresh — even when `CHIMERA_SKIP_IDB=1` (hydrate still skipped on boot). That keeps `refresh_token` fresh for the next auth wall.
 
-**CRITICAL 1GB self-heal:** probe-only babysit; flaky nodoc → patience + remount (no fresh-tab); Force `/term` with `location.assign` fallback; if Force `/term` miss ×3 or probe timeout spiral → hard-kill Chrome + relaunch.
+**CRITICAL 1GB self-heal:** probe-only babysit; flaky **nodoc / proxy-404 / doc-eval** → patience + remount (no fresh-tab); Force `/term` with `location.assign` fallback; if Force `/term` miss ×3 **or** in-place revive miss/timeout ×3 (`CRIT_REVIVE_BOUNCE`) → **hard-kill Chrome + relaunch (auto-bounce)** — never cap fail_streak forever under CRITICAL.
 
 Toolkit: `load_session_with_rescue.py` tries in-page refresh, then virgin-context `revive_via_refresh_token`, then password rescue.
 

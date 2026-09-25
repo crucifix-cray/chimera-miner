@@ -52,6 +52,9 @@ RECONNECT_STREAK_HARD = 3    # legacy, unused for launched browsers
 # Browser relaunch is last resort: only if the process died, or this many fresh
 # tabs in a row never got past startup (renderer shared + wedged).
 TAB_FAILS_BEFORE_BROWSER = 4
+# Under CRITICAL mem: in-place revive miss/timeout this many times → hard-kill
+# + relaunch (do NOT cap fail_streak forever — that left cells 13/35 worker-dead).
+CRIT_REVIVE_BOUNCE = 3
 # Preview cools to proxy-404 without human-like presence — poke both tabs often.
 HEALTH_INTERVAL_S = 40
 HEALTH_INTERVAL_MAX_S = 60  # randomize next tick in [40, 60]
@@ -66,7 +69,8 @@ _HUMAN_MOUSE = {"x": 640.0, "y": 400.0}
 HEALTH_DEAD_CONFIRM = 2
 HEALTH_DEAD_GAP_S = 12
 SOFT_DEAD_DETAILS = ("nodoc", "worker-missing", "no-probe", "probe-error",
-                     "doc-eval-error", "body-error", "probe-eval-error")
+                     "doc-eval-error", "body-error", "probe-eval-error",
+                     "proxy-404")
 POPUP_DISMISS_LABELS = (
     "Cancel", "Not now", "Close", "Maybe later", "No thanks",
     "Dismiss", "Got it", "Continue", "Skip", "Later",
@@ -3716,11 +3720,14 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         else:
                             soft_dead += 1
                             # On 1GB headed, CRITICAL mem makes CDP falsely report
-                            # nodoc; revive then wedges (cell-16 health #8→id-preview
-                            # timeout spiral). Demand more confirms + longer gap.
+                            # nodoc/proxy-404; revive then wedges (cell-16/13).
+                            # Demand more confirms + longer gap, then Force /term;
+                            # miss×3 OR revive miss×CRIT_REVIVE_BOUNCE → auto bounce.
                             confirm_need = HEALTH_DEAD_CONFIRM
                             flake = (
                                 detail == "nodoc"
+                                or detail == "proxy-404"
+                                or detail.startswith("proxy-404")
                                 or detail.startswith("doc-eval-error")
                                 or detail.startswith("probe-eval-error")
                                 or detail.startswith("probe-error")
@@ -3828,15 +3835,24 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     fail_streak += 1
                                     log(f"  Revive missed (streak={fail_streak}) — retry next tick")
                                     next_wait = 30
-                                    # Under CRITICAL never open a fresh tab —
-                                    # keep trying in place (force /term next).
+                                    # Under CRITICAL: force /term, then auto-bounce
+                                    # after CRIT_REVIVE_BOUNCE misses (no forever cap).
                                     if tier == "critical":
                                         try:
                                             await force_preview_to_lovableproject_term(
                                                 chat_page, project_id)
                                         except Exception:
                                             pass
-                                        fail_streak = min(fail_streak, FAIL_STREAK_RESTART - 1)
+                                        if fail_streak >= CRIT_REVIVE_BOUNCE:
+                                            try:
+                                                hard_kill_chrome()
+                                            except Exception:
+                                                pass
+                                            exit_mode = "kill"
+                                            log(f"  CRITICAL revive miss "
+                                                f"x{CRIT_REVIVE_BOUNCE} — "
+                                                "hard-kill + relaunch (self-heal)")
+                                            return
                                     elif fail_streak >= FAIL_STREAK_RESTART:
                                         exit_mode = (
                                             "reconnect" if cdp_http_alive() else "kill")
@@ -3854,7 +3870,16 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                             chat_page, project_id)
                                     except Exception:
                                         pass
-                                    fail_streak = min(fail_streak, FAIL_STREAK_RESTART - 1)
+                                    if fail_streak >= CRIT_REVIVE_BOUNCE:
+                                        try:
+                                            hard_kill_chrome()
+                                        except Exception:
+                                            pass
+                                        exit_mode = "kill"
+                                        log(f"  CRITICAL revive timeout "
+                                            f"x{CRIT_REVIVE_BOUNCE} — "
+                                            "hard-kill + relaunch (self-heal)")
+                                        return
                                 elif fail_streak >= FAIL_STREAK_RESTART:
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
@@ -3874,7 +3899,16 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     return
                                 next_wait = 30
                                 if tier == "critical":
-                                    fail_streak = min(fail_streak, FAIL_STREAK_RESTART - 1)
+                                    if fail_streak >= CRIT_REVIVE_BOUNCE:
+                                        try:
+                                            hard_kill_chrome()
+                                        except Exception:
+                                            pass
+                                        exit_mode = "kill"
+                                        log(f"  CRITICAL revive error "
+                                            f"x{CRIT_REVIVE_BOUNCE} — "
+                                            "hard-kill + relaunch (self-heal)")
+                                        return
                                 elif fail_streak >= FAIL_STREAK_RESTART:
                                     exit_mode = (
                                         "reconnect" if cdp_http_alive() else "kill")
