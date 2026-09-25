@@ -1,7 +1,7 @@
 # CLONE-AND-RUN — stand up a new mining cell
 
 **Updated:** 2026-09-24  
-**Goal:** copy what works on cells **13 / 16 / 28 / 35** onto a new Railway cell without rediscovering the stack.
+**Goal:** copy what works on cells **13 / 16 / 28 / 35 / 43** onto a new Railway cell without rediscovering the stack.
 
 **Canonical code (local repo = truth):**
 | File | md5 |
@@ -171,16 +171,25 @@ Healthy under CRITICAL mem (~100% cgroup) is **normal** on 1GB headed+Worker —
 
 | Task | Command |
 |---|---|
-| Status 4 live | `python3 ops/cell_ops.py status 13 16 28 35` |
-| Deploy new daemon | `python3 ops/cell_ops.py deploy-daemon 13 16 28 35` then `bounce` |
+| Status 5 live | `python3 ops/cell_ops.py status 13 16 28 35 43` |
+| Deploy new daemon | `python3 ops/cell_ops.py deploy-daemon 13 16 28 35 43` then `--bounce` |
 | Bounce daemon only | `python3 ops/cell_ops.py bounce N` (lean_sup respawns) |
+| Fixed rig (threads/bridge) | `python3 ops/cell_ops.py set-rig N --threads 8` (restarts supervisor) |
 | Re-upload trio | `python3 ops/cell_ops.py upload-trio N --lov L` |
 | Tail log | `python3 ops/cell_ops.py ssh N -- 'tail -c 8000 /data/work/daemon_rN.log'` |
+| Rebuild registry | `python3 ops/build_fleet.py` (+ `ops/build_vault.py` for secrets) |
+
+**Fixed rig:** `fleet.json` cell `rig: {threads, bridge}` is baked into the cell's `lean_sup.sh` as
+`CHIMERA_THREADS_RIG` / `CHIMERA_BRIDGE_RIG`. The daemon reads them at startup and logs
+`Rig: threads=… bridge=… minercmd=…`. `set-rig` restarts the supervisor because env is only
+re-read at supervisor start. `MINER_CMD` still overrides the worker command (never commit it).
 
 **Hard rules:**
 - Kill daemon by **exact PID** from `/proc` cmdline — never `pkill -f` patterns that match your SSH command line.
 - Do not fresh-tab under CRITICAL nodoc (daemon already prevents this).
 - After auth rescue, always confirm `refresh_token=YES` in IndexedDB before upload.
+- A missing chat composer is **not** proof of auth. The daemon forces `revive_via_refresh_token`
+  at composer rounds 3/8 (wall check bypassed) — do not "optimize" that back into `ensure_authed`.
 
 ---
 

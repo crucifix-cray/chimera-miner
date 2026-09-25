@@ -1,19 +1,22 @@
 # INDEX — roadmap & fleet status
 
-**Updated:** 2026-09-24  
+**Updated:** 2026-09-25 17:10 UTC
 
 - **Clone / run a new cell:** [`CLONE-AND-RUN.md`](CLONE-AND-RUN.md) + `ops/cell_ops.py`
 - **Start here for the whole game:** [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)
 - **Who is mining right now:** [`FLEET-LIVE.md`](FLEET-LIVE.md)
+- **Registry / secrets:** `ops/fleet.json` (build `build_fleet.py`) · `ops/vault.json` (build `build_vault.py`, SECRET)
 
 ## Where we are
 
 - **Live map:** [`FLEET-LIVE.md`](FLEET-LIVE.md)  
-- **Mining now (4):** cells **13, 16, 28, 35** — `doc('nproc')` OK → Worker forever (`lean_sup`, no `CHIMERA_DOC_MARK`)  
+- **Mining now (5):** cells **13, 16, 28, 35, 43** — `doc('nproc')` OK → Worker forever (`lean_sup`, no `CHIMERA_DOC_MARK`)  
 - **Doc gate:** real bridge = `window.doc('nproc')` returns stdout (not URL / not `typeof`)  
-- **Auth:** refresh_token revive path live; Good28 accounts re-verified LIVE_OK  
-- **Not mining yet:** 23, 25, 26, 30, 31, 32, 36 (DOC_NOT_RUNNING / auth / composer)  
-- **Code md5:** `daemon.py`=`237dd7a2eaed994f69a9c0ceeb93bddd` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe`  
+- **Auth:** refresh_token revive path live; composer-miss **forces** revive (wall detector can't be trusted)  
+- **Presence:** idle-typing (type, don't submit) on odd ticks + popup dismissal every tick  
+- **Rig:** per-cell `threads`/`bridge` in `fleet.json`, baked into `lean_sup.sh`, applied via `set-rig`  
+- **Not mining yet:** 23, 25, 26, 30, 31, 32, 36 (bare image; 7/8 trios poisoned)  
+- **Code md5:** `daemon.py`=`c7734bfeb61228afe0af2dc1fd1d9c3b` · `miner_injector.py`=`28bf95d3a03e4ad3326e99b54841e7fe` · `ops/cell_ops.py`=`417d6ba7464a22ad2e48b41f1f89d3da`  
 - **Bridge prompt:** `automation-toolkit/prompts/Build a debug terminal.txt` (keep-as-is / no questions ending)  
 - **Bridge WSS:** `wss://chimera-bridge-production-0703.up.railway.app`  
 

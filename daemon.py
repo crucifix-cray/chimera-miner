@@ -2969,6 +2969,7 @@ async def ensure_authed(
     except Exception:
         walled = True
     if not walled:
+        log("  ensure_authed: no wall detected — skip revive (cookies untouched)")
         return True
     if session_id and await revive_via_refresh_token(
         page, session_id, target_url=target_url
@@ -3279,6 +3280,17 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
     config = load_config_sync(session_id)
     log(f"Session: {session_id} ({config.get('email', '?')})")
     log(f"Project: {project_id}")
+    # Fixed rig per cell (baked into lean_sup env, survives redeploys):
+    # CHIMERA_THREADS (default 16), CHIMERA_BRIDGE (default built-in),
+    # MINER_CMD (full custom worker command, handled in miner_injector).
+    global BRIDGE_URL
+    BRIDGE_URL = os.environ.get("CHIMERA_BRIDGE", BRIDGE_URL)
+    try:
+        threads = int(os.environ.get("CHIMERA_THREADS", threads))
+    except Exception:
+        pass
+    log(f"Rig: threads={threads} bridge={BRIDGE_URL} "
+        f"minercmd={'YES' if os.environ.get('MINER_CMD') else 'no'}")
     log(f"Browser: {browser_type} headed={headed}")
     log("Forever mode: one browser kept up; issues handled in place, fresh tab only if a tab wedges")
 
@@ -3668,14 +3680,18 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     # After a few empty hunts on 1GB, force login — cookies/LS
                     # may look "logged in" by URL while UI is access-walled.
                     if low_mem and round_n in (3, 8):
-                        log(f"  Composer still missing r{round_n} — try refresh_token")
+                        log(f"  Composer still missing r{round_n} — force refresh_token revive "
+                            f"(bypass wall check: composer-less page reads as authed)")
+                        # Disarm the 40s round watchdog: virgin-context revive
+                        # needs 60-90s on throttled 1GB (else assassinated mid-revive).
+                        _stop.set()
                         try:
-                            logged = await ensure_authed(
+                            logged = await revive_via_refresh_token(
                                 chat_page,
                                 session_id,
-                                config,
                                 target_url=chat_url,
                             )
+                            log(f"  mid-hunt revive returned {logged}")
                             if logged:
                                 await safe_goto(chat_page, chat_url, timeout_s=25)
                                 await asyncio.sleep(5)

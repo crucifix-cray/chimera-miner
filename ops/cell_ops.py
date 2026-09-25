@@ -72,6 +72,14 @@ LEAN_SUP = textwrap.dedent(
     export CHIMERA_VIEW_W=1600 CHIMERA_VIEW_H=900
     export CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions
     export CHIMERA_SHOT_DIR=/app/work/shots
+    # Fixed rig per cell (baked at bootstrap; CHIMERA_THREADS_RIG=0 =
+    # unset → daemon default). Never export MINER_CMD here (secret).
+    if [ -n "${CHIMERA_THREADS_RIG:-}" ] && [ "${CHIMERA_THREADS_RIG}" != "0" ]; then
+      export CHIMERA_THREADS="$CHIMERA_THREADS_RIG"
+    fi
+    if [ -n "${CHIMERA_BRIDGE_RIG:-}" ]; then
+      export CHIMERA_BRIDGE="$CHIMERA_BRIDGE_RIG"
+    fi
     export PYTHONUNBUFFERED=1
     (
       while true; do
@@ -144,12 +152,14 @@ def rw_env(home: Path) -> dict:
         if line.startswith("SSH") and "=" in line:
             k, v = line.split(";", 1)[0].split("=", 1)
             env[k] = v
-    subprocess.run(
+    r = subprocess.run(
         ["ssh-add", str(home / ".ssh" / "cellkey")],
         env=env,
-        check=True,
         capture_output=True,
     )
+    if r.returncode != 0:
+        # key already in agent / agent inherited from a previous call — not fatal
+        pass
     return env
 
 
@@ -497,13 +507,21 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     service = info["service_name"]
     log = info["log"]
     lean = LEAN_SUP
+    # fixed rig: explicit flags win, else fleet.json cell rig, else default 16
+    rig = info.get("rig") or {}
+    threads = args.threads or rig.get("threads") or 16
+    bridge = args.bridge or rig.get("bridge") or ""
+    info["rig"] = {"threads": int(threads), "bridge": bridge}
+    MAP_PATH.write_text(json.dumps(fmap, indent=2) + "\n")
     # write lean_sup with env baked at top
     header = (
         f"#!/bin/bash\n"
         f"LOG=/app/work/{log}\n"
         f"SESS=session-{int(lov)}\n"
         f"PROJ={proj}\n"
-        f"export LOG SESS PROJ\n"
+        f"CHIMERA_THREADS_RIG={int(threads)}\n"
+        f"CHIMERA_BRIDGE_RIG={bridge}\n"
+        f"export LOG SESS PROJ CHIMERA_THREADS_RIG CHIMERA_BRIDGE_RIG\n"
     )
     body = "\n".join(lean.splitlines()[1:])  # drop shebang
     lean_full = header + body + "\n"
@@ -566,6 +584,74 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_rig(args: argparse.Namespace) -> int:
+    """Patch fixed rig into live cell lean_sup.sh, restart supervisor + daemon."""
+    fmap = load_map()
+    cell = args.cell
+    info = cell_info(fmap, cell)
+    rig = info.get("rig") or {"threads": 16, "bridge": ""}
+    if args.threads is not None:
+        rig["threads"] = int(args.threads)
+    if args.bridge is not None:
+        rig["bridge"] = args.bridge
+    info["rig"] = rig
+    MAP_PATH.write_text(json.dumps(fmap, indent=2) + "\n")
+    home = rw_home(int(info["railway_session"]))
+    service = info.get("service_name", f"cell-{cell}")
+    log = info.get("log", f"daemon_r{cell}.log")
+    remote = textwrap.dedent(
+        f"""\
+        python3 - <<'P'
+        import os, pathlib, signal, subprocess, time
+        sup = pathlib.Path("/app/work/lean_sup.sh")
+        txt = sup.read_text()
+        lines = []
+        for ln in txt.splitlines():
+            if ln.startswith("CHIMERA_THREADS_RIG=") or ln.startswith("CHIMERA_BRIDGE_RIG="):
+                continue
+            if ln.startswith("export ") and "CHIMERA_THREADS_RIG" not in ln:
+                ln = ln.rstrip() + " CHIMERA_THREADS_RIG CHIMERA_BRIDGE_RIG"
+            lines.append(ln)
+        out = []
+        for ln in lines:
+            out.append(ln)
+            if ln.startswith("PROJ="):
+                out.append("CHIMERA_THREADS_RIG={rig['threads']}")
+                out.append("CHIMERA_BRIDGE_RIG={rig['bridge']}")
+        sup.write_text("\\n".join(out) + "\\n")
+        print("lean_sup rig:", {rig['threads']}, repr("{rig['bridge']}")[:40])
+        me = str(os.getpid())
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or pid == me:
+                continue
+            try:
+                cmd = open(f"/proc/{{pid}}/cmdline", "rb").read().replace(b"\\0", b" ").decode()
+            except Exception:
+                continue
+            if "lean_sup.sh" in cmd or cmd.startswith("/opt/venv/bin/python3 -u daemon.py"):
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except Exception:
+                    pass
+        print("killed sup+daemon")
+        time.sleep(3)
+        logp = pathlib.Path("/app/work/{log}")
+        logp.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(
+            ["bash", "/app/work/lean_sup.sh"],
+            stdout=open(logp, "a"), stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        print("lean_sup restarted")
+        print("SETRIG_OK")
+        P
+        """
+    )
+    rc, out, err = ssh(home, service, remote, timeout=120)
+    print(out[-1200:])
+    return 0 if "SETRIG_OK" in out else 1
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     fmap = load_map()
     print(json.dumps(fmap, indent=2))
@@ -610,7 +696,15 @@ def main() -> int:
     p.add_argument("--project", type=str, default=None)
     p.add_argument("--railway-session", type=int, default=None)
     p.add_argument("--log", type=str, default=None)
+    p.add_argument("--threads", type=int, default=None, help="Fixed worker threads for this cell (default 16)")
+    p.add_argument("--bridge", type=str, default=None, help="Fixed bridge WSS for this cell (default built-in)")
     p.set_defaults(func=cmd_bootstrap)
+
+    p = sp.add_parser("set-rig", help="Set fixed rig (threads/bridge) on live cell lean_sup + bounce")
+    p.add_argument("cell", type=int)
+    p.add_argument("--threads", type=int, default=None)
+    p.add_argument("--bridge", type=str, default=None)
+    p.set_defaults(func=cmd_set_rig)
 
     args = ap.parse_args()
     # strip leading -- from ssh remainder

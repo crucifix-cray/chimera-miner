@@ -1,7 +1,7 @@
 {
   "meta": {
-    "updated": "2026-09-25T16:04:39Z",
-    "daemon_md5": "fee24757f2c12cbf8a52accdf2404270",
+    "updated": "2026-09-25T17:08:13Z",
+    "daemon_md5": "c7734bfeb61228afe0af2dc1fd1d9c3b",
     "injector_md5": "28bf95d3a03e4ad3326e99b54841e7fe",
     "bridge": "wss://chimera-bridge-production-0703.up.railway.app",
     "known_invites": [
@@ -24,7 +24,7 @@
     "counts": {
       "cells": 51,
       "sessions": 50,
-      "mining_cells": 4,
+      "mining_cells": 5,
       "bench": 42
     }
   },
@@ -39,7 +39,11 @@
       "lov_session": 2,
       "lovable_project": "05da1af6-0626-4746-a339-92d7e6b2e3e1",
       "log": "daemon_r13.log",
-      "miner": "mining"
+      "miner": "mining",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "16": {
       "railway_session": 2,
@@ -51,7 +55,11 @@
       "lov_session": 2,
       "lovable_project": "7d6f77a6-69a1-4b06-a1d3-53094c4c8019",
       "log": "daemon_s2.log",
-      "miner": "mining"
+      "miner": "mining",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "23": {
       "railway_session": 3,
@@ -64,7 +72,11 @@
       "lovable_project": "b06e4a07-95fb-4dc3-89a8-72ca84f2f25d",
       "log": null,
       "miner": "bare",
-      "note": "bare image, trio ready"
+      "note": "bare image, trio ready",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "25": {
       "railway_session": 4,
@@ -77,7 +89,11 @@
       "lovable_project": "211af3cb-5c3a-40b6-9a59-9bc0fe7b27de",
       "log": null,
       "miner": "bare",
-      "note": "bare image, trio ready"
+      "note": "bare image, trio ready",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "26": {
       "railway_session": 5,
@@ -90,7 +106,11 @@
       "lovable_project": "0f318cab-b3a4-49a1-a168-7e9fe36304ca",
       "log": null,
       "miner": "bare",
-      "note": "bare image, trio ready (shared sess-8)"
+      "note": "bare image, trio ready (shared sess-8)",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "28": {
       "railway_session": 6,
@@ -102,7 +122,11 @@
       "lov_session": 41,
       "lovable_project": "ce592dc0-eb0f-4500-81ae-2f848840aaac",
       "log": "daemon_r28.log",
-      "miner": "mining"
+      "miner": "mining",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "30": {
       "railway_session": 7,
@@ -115,7 +139,11 @@
       "lovable_project": "b3ded203-a845-4037-a648-5fbad0cba931",
       "log": null,
       "miner": "bare",
-      "note": "bare image, trio ready -- NEXT CANDIDATE"
+      "note": "bare image, trio ready -- NEXT CANDIDATE",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "31": {
       "railway_session": 8,
@@ -128,7 +156,11 @@
       "lovable_project": "8ca51fa8-2c22-44d3-9510-a069084f791f",
       "log": null,
       "miner": "bare",
-      "note": "bare image, trio ready"
+      "note": "bare image, trio ready",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "32": {
       "railway_session": 9,
@@ -141,7 +173,11 @@
       "lovable_project": "e8ee22a2-7ea3-4f0c-8650-bd6b933288b0",
       "log": null,
       "miner": "bare",
-      "note": "bare image, trio INCOMPLETE needs rescue"
+      "note": "bare image, trio INCOMPLETE needs rescue",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "35": {
       "railway_session": 10,
@@ -153,7 +189,11 @@
       "lov_session": 50,
       "lovable_project": "c0bafd1e-33d8-4625-89a4-1250f4755d23",
       "log": "daemon_r35.log",
-      "miner": "mining"
+      "miner": "mining",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "36": {
       "railway_session": 11,
@@ -166,7 +206,11 @@
       "lovable_project": "9421eb8a-e853-49b2-a0dd-657c80246c5d",
       "log": null,
       "miner": "bare",
-      "note": "bare image, trio ready (shared sess-50)"
+      "note": "bare image, trio ready (shared sess-50)",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "43": {
       "railway_session": 12,
@@ -175,10 +219,14 @@
       "env": "07a098b4-8985-4982-988b-31030fbc9668",
       "volume": "d2b0877e-84b5-4da2-bb9b-05e9e9b8bae1",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown"
+      "lov_session": 25,
+      "lovable_project": "84fa81b7-6c8d-45ab-95a8-7e89bbf92864",
+      "log": "daemon_r43.log",
+      "miner": "mining",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "53": {
       "railway_session": 13,
@@ -190,7 +238,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "75": {
       "railway_session": 14,
@@ -202,7 +254,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "76": {
       "railway_session": 15,
@@ -214,7 +270,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "77": {
       "railway_session": 16,
@@ -226,7 +286,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "80": {
       "railway_session": 17,
@@ -238,7 +302,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "81": {
       "railway_session": 18,
@@ -250,7 +318,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "82": {
       "railway_session": 19,
@@ -262,7 +334,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "83": {
       "railway_session": 20,
@@ -274,7 +350,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "84": {
       "railway_session": 21,
@@ -286,7 +366,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "86": {
       "railway_session": 22,
@@ -298,7 +382,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "87": {
       "railway_session": 23,
@@ -310,7 +398,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "88": {
       "railway_session": 24,
@@ -322,7 +414,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "89": {
       "railway_session": 25,
@@ -334,7 +430,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "90": {
       "railway_session": 26,
@@ -346,7 +446,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "91": {
       "railway_session": 27,
@@ -358,7 +462,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "92": {
       "railway_session": 28,
@@ -370,7 +478,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "93": {
       "railway_session": 29,
@@ -382,7 +494,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "94": {
       "railway_session": 30,
@@ -394,7 +510,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "95": {
       "railway_session": 31,
@@ -406,7 +526,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "96": {
       "railway_session": 32,
@@ -418,7 +542,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "106": {
       "railway_session": 33,
@@ -430,7 +558,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "107": {
       "railway_session": 34,
@@ -442,7 +574,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "108": {
       "railway_session": 35,
@@ -454,7 +590,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "109": {
       "railway_session": 36,
@@ -466,7 +606,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "110": {
       "railway_session": 37,
@@ -478,7 +622,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "111": {
       "railway_session": 38,
@@ -490,7 +638,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "112": {
       "railway_session": 39,
@@ -502,7 +654,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "113": {
       "railway_session": 40,
@@ -514,7 +670,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "115": {
       "railway_session": 41,
@@ -526,7 +686,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "116": {
       "railway_session": 42,
@@ -538,7 +702,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "117": {
       "railway_session": 43,
@@ -550,7 +718,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "118": {
       "railway_session": 44,
@@ -562,7 +734,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "120": {
       "railway_session": 45,
@@ -574,7 +750,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "121": {
       "railway_session": 46,
@@ -586,7 +766,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "122": {
       "railway_session": 47,
@@ -598,7 +782,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "125": {
       "railway_session": 48,
@@ -610,7 +798,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "126": {
       "railway_session": 49,
@@ -622,7 +814,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "129": {
       "railway_session": 50,
@@ -634,7 +830,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     },
     "130": {
       "railway_session": 51,
@@ -646,7 +846,11 @@
       "lov_session": null,
       "lovable_project": null,
       "log": null,
-      "miner": "unknown"
+      "miner": "unknown",
+      "rig": {
+        "threads": 16,
+        "bridge": ""
+      }
     }
   },
   "sessions": {
@@ -920,7 +1124,9 @@
       },
       "full": true,
       "status": "ready-to-mine",
-      "cells": [],
+      "cells": [
+        43
+      ],
       "project_id": "84fa81b7-6c8d-45ab-95a8-7e89bbf92864",
       "project_link": "https://lovable.dev/projects/84fa81b7-6c8d-45ab-95a8-7e89bbf92864",
       "invite_link": null,
@@ -939,8 +1145,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "e474f21d-256c-4de6-95c9-06a53eec87dc",
+      "project_link": "https://lovable.dev/projects/e474f21d-256c-4de6-95c9-06a53eec87dc",
       "invite_link": null
     },
     "session-27": {
@@ -956,8 +1162,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "cdcc177a-5e4c-42ac-8256-c4acf1040034",
+      "project_link": "https://lovable.dev/projects/cdcc177a-5e4c-42ac-8256-c4acf1040034",
       "invite_link": null
     },
     "session-28": {
@@ -973,8 +1179,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "ef264ce7-72cd-4352-a1a5-913ab64fed03",
+      "project_link": "https://lovable.dev/projects/ef264ce7-72cd-4352-a1a5-913ab64fed03",
       "invite_link": null
     },
     "session-29": {
@@ -1024,8 +1230,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "9f42ef89-ed41-4b5f-af7f-f8e1554378c4",
+      "project_link": "https://lovable.dev/projects/9f42ef89-ed41-4b5f-af7f-f8e1554378c4",
       "invite_link": null
     },
     "session-31": {
@@ -1075,8 +1281,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "b27e2af0-3eb2-42b9-a964-88efc4b3caac",
+      "project_link": "https://lovable.dev/projects/b27e2af0-3eb2-42b9-a964-88efc4b3caac",
       "invite_link": null
     },
     "session-34": {
@@ -1126,8 +1332,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "1f5b8636-b2b4-45f0-9375-e81389f79d21",
+      "project_link": "https://lovable.dev/projects/1f5b8636-b2b4-45f0-9375-e81389f79d21",
       "invite_link": null
     },
     "session-38": {
@@ -1143,8 +1349,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "7703551a-af60-4a26-a32c-44e5fbcf205e",
+      "project_link": "https://lovable.dev/projects/7703551a-af60-4a26-a32c-44e5fbcf205e",
       "invite_link": null
     },
     "session-39": {
@@ -1160,8 +1366,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "432a10dd-f4a7-4032-b6b1-62a5dd4172ea",
+      "project_link": "https://lovable.dev/projects/432a10dd-f4a7-4032-b6b1-62a5dd4172ea",
       "invite_link": null
     },
     "session-4": {
@@ -1194,8 +1400,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "ac03f128-3500-4ecf-9d9b-8efb352b530e",
+      "project_link": "https://lovable.dev/projects/ac03f128-3500-4ecf-9d9b-8efb352b530e",
       "invite_link": null
     },
     "session-41": {
@@ -1230,8 +1436,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "388ebccb-c73d-48b3-880d-a99517afd855",
+      "project_link": "https://lovable.dev/projects/388ebccb-c73d-48b3-880d-a99517afd855",
       "invite_link": null
     },
     "session-43": {
@@ -1247,8 +1453,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "f16469dc-1747-4cb7-bb79-d676b904e4be",
+      "project_link": "https://lovable.dev/projects/f16469dc-1747-4cb7-bb79-d676b904e4be",
       "invite_link": null
     },
     "session-44": {
@@ -1283,8 +1489,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "ea9614b2-c52b-4caa-b7e4-91c94a8b7d6c",
+      "project_link": "https://lovable.dev/projects/ea9614b2-c52b-4caa-b7e4-91c94a8b7d6c",
       "invite_link": null
     },
     "session-46": {
@@ -1319,8 +1525,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "9508a15e-a1ec-4d9b-bbd1-c33781441aea",
+      "project_link": "https://lovable.dev/projects/9508a15e-a1ec-4d9b-bbd1-c33781441aea",
       "invite_link": null
     },
     "session-48": {
@@ -1353,8 +1559,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "ab8e78fe-5ac1-4409-b709-e5e8f6c62068",
+      "project_link": "https://lovable.dev/projects/ab8e78fe-5ac1-4409-b709-e5e8f6c62068",
       "invite_link": null
     },
     "session-5": {
@@ -1406,8 +1612,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "9c8b880c-1192-4fa8-928c-d78673a8d286",
+      "project_link": "https://lovable.dev/projects/9c8b880c-1192-4fa8-928c-d78673a8d286",
       "invite_link": null
     },
     "session-52": {
@@ -1423,8 +1629,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "fa7ad090-c93d-4be6-8bed-920b1f1c71cf",
+      "project_link": "https://lovable.dev/projects/fa7ad090-c93d-4be6-8bed-920b1f1c71cf",
       "invite_link": null
     },
     "session-53": {
@@ -1440,8 +1646,8 @@
       "full": true,
       "status": "bench",
       "cells": [],
-      "project_id": null,
-      "project_link": null,
+      "project_id": "06189278-64dc-4176-b814-b832f8d66bb7",
+      "project_link": "https://lovable.dev/projects/06189278-64dc-4176-b814-b832f8d66bb7",
       "invite_link": null
     },
     "session-6": {
@@ -1519,6 +1725,7 @@
   },
   "mining_lov_sessions": [
     "session-2",
+    "session-25",
     "session-41",
     "session-50"
   ],

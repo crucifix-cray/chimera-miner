@@ -34,6 +34,11 @@ PENDING = {
     36: (50, "9421eb8a-e853-49b2-a0dd-657c80246c5d", "bare image, trio ready (shared sess-50)"),
 }
 
+# Live mining cells not in legacy fleet_map (verified via cell_ops status)
+MINING_EXTRA = {
+    43: (25, "84fa81b7-6c8d-45ab-95a8-7e89bbf92864", "daemon_r43.log"),
+}
+
 
 def md5(p: Path) -> str:
     return hashlib.md5(p.read_bytes()).hexdigest()
@@ -124,6 +129,12 @@ def main() -> int:
         c["miner"] = "mining"
         c.setdefault("railway_session", info.get("railway_session"))
         c.setdefault("service", info.get("service_name", f"cell-{n}"))
+    for n, (lov, proj, log) in MINING_EXTRA.items():
+        c = cells.setdefault(str(n), {})
+        c["lov_session"] = lov
+        c["lovable_project"] = proj
+        c["log"] = log
+        c["miner"] = "mining"
     for n, (lov, proj, note) in PENDING.items():
         c = cells.setdefault(str(n), {})
         c["lov_session"] = lov
@@ -180,6 +191,17 @@ def main() -> int:
 
     mining = sorted({c["lov_session"] for c in cells.values() if c.get("miner") == "mining"})
     bench = sorted([k for k, v in sessions.items() if v["status"] == "bench"])
+    # fixed rig per cell (threads/bridge baked into lean_sup; preserved across rebuilds)
+    prev_rigs = {}
+    if (OPS / "fleet.json").exists():
+        try:
+            prev_rigs = {n: c.get("rig") for n, c in
+                         json.loads((OPS / "fleet.json").read_text()).get("cells", {}).items()
+                         if c.get("rig")}
+        except Exception:
+            pass
+    for n, c in cells.items():
+        c["rig"] = prev_rigs.get(n) or {"threads": 16, "bridge": ""}
 
     fleet = {
         "meta": {

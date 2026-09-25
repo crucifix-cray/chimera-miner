@@ -1,12 +1,12 @@
 # Daemon on Railway (cell-16) — runbook
 
-**Updated:** 2026-09-24  
+**Updated:** 2026-09-25 17:10 UTC  
 **Code on cell must match** local `daemon.py` + `miner_injector.py`.  
-**Canonical md5:** `daemon.py` = `237dd7a2eaed994f69a9c0ceeb93bddd` · `miner_injector.py` = `28bf95d3a03e4ad3326e99b54841e7fe`  
+**Canonical md5:** `daemon.py` = `c7734bfeb61228afe0af2dc1fd1d9c3b` · `miner_injector.py` = `28bf95d3a03e4ad3326e99b54841e7fe`  
 
-**Status:** cells **13 / 16 / 28 / 35** mining forever (`lean_sup`, Worker alive). Doc gate = `doc('nproc')`.
+**Status:** cells **13 / 16 / 28 / 35 / 43** mining forever (`lean_sup`, Worker alive). Doc gate = `doc('nproc')`.
 
-**Clone a new cell:** [`CLONE-AND-RUN.md`](CLONE-AND-RUN.md) · helper `ops/cell_ops.py` · map `ops/fleet_map.json`  
+**Clone a new cell:** [`CLONE-AND-RUN.md`](CLONE-AND-RUN.md) · helper `ops/cell_ops.py` · registry `ops/fleet.json`  
 Fleet map / sprint: [`FLEET-ARCHITECTURE.md`](FLEET-ARCHITECTURE.md)  
 **Who is mining:** [`FLEET-LIVE.md`](FLEET-LIVE.md) (cell-16 locked to Railway `sessions/session-2`)
 
