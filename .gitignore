@@ -24,3 +24,6 @@ build/
 Thumbs.db
 # ops cache
 ops/__pycache__/
+
+# SECRET - credentials vault, never commit
+ops/vault.json

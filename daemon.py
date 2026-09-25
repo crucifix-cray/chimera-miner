@@ -29,6 +29,19 @@ TOKEN_REFRESH_INTERVAL = 2400  # 40 min
 # Script3 wake prompts only — NOT Build a debug terminal (that's script2).
 WAKE_PROMPTS = ["say 'a'", "1+1?", "say 'x'", "2+2?", "echo ok"]
 
+# Idle-typing phrases: typed into the composer but NEVER submitted.
+# Unfinished dev thoughts — keydown/input activity with zero credit burn.
+IDLE_TYPE_PHRASES = [
+    "hmm the header…",
+    "let me check the mobile view",
+    "what if we ",
+    "actually maybe ",
+    "need to fix the spacing on ",
+    "does this work on ",
+    "wait, why is that ",
+    "let me think… ",
+]
+
 
 def ts():
     return time.strftime("%H:%M:%S", time.localtime())
@@ -55,6 +68,14 @@ TAB_FAILS_BEFORE_BROWSER = 4
 # Under CRITICAL mem: in-place revive miss/timeout this many times → hard-kill
 # + relaunch (do NOT cap fail_streak forever — that left cells 13/35 worker-dead).
 CRIT_REVIVE_BOUNCE = 3
+# Headed Xvfb geometry — must match lean_sup Xvfb -screen and Chrome --window-size.
+# 1024x576 collapsed Lovable Preview (blank canvas); 1600x900 fits chat+preview.
+VIEW_W = int(os.environ.get("CHIMERA_VIEW_W", "1600"))
+VIEW_H = int(os.environ.get("CHIMERA_VIEW_H", "900"))
+# Blank white Preview (/term:no-doc): soft-reload chat every N forever-rounds,
+# then hard-kill + relaunch browser so we do not sit forever on a dead shell.
+BLANK_PREVIEW_RELOAD_ROUNDS = int(os.environ.get("CHIMERA_BLANK_RELOAD_ROUNDS", "6"))
+BLANK_PREVIEW_HARD_ROUNDS = int(os.environ.get("CHIMERA_BLANK_HARD_ROUNDS", "12"))
 # Preview cools to proxy-404 without human-like presence — poke both tabs often.
 HEALTH_INTERVAL_S = 40
 HEALTH_INTERVAL_MAX_S = 60  # randomize next tick in [40, 60]
@@ -64,7 +85,7 @@ PRESENCE_POKE_TIMEOUT_S = 22
 PRESENCE_PROMPT_AFTER_S = 3
 PRESENCE_PROMPT_TIMEOUT_S = 28
 # Track last cursor so moves are continuous (humans don't teleport).
-_HUMAN_MOUSE = {"x": 640.0, "y": 400.0}
+_HUMAN_MOUSE = {"x": VIEW_W * 0.45, "y": VIEW_H * 0.45}
 # Don't full-revive on a single flaky nodoc — confirm dead first.
 HEALTH_DEAD_CONFIRM = 2
 HEALTH_DEAD_GAP_S = 12
@@ -74,6 +95,8 @@ SOFT_DEAD_DETAILS = ("nodoc", "worker-missing", "no-probe", "probe-error",
 POPUP_DISMISS_LABELS = (
     "Cancel", "Not now", "Close", "Maybe later", "No thanks",
     "Dismiss", "Got it", "Continue", "Skip", "Later",
+    # Cookie consent (blocks Preview iframe mount on some projects)
+    "OK", "Accept", "Accept all", "I agree",
 )
 # Startup composer hunt: look → miss → wait → repeat; then kill+rerun (no 5min nap).
 COMPOSER_TRIES = 15
@@ -295,7 +318,7 @@ async def connect_cdp_browser(pw):
 async def find_or_open_chat(browser, chat_url: str, project_id: str):
     """Reuse existing lovable.dev project tab if present; else open one."""
     context = browser.contexts[0] if browser.contexts else await browser.new_context(
-        viewport={"width": 1280, "height": 720},
+        viewport={"width": VIEW_W, "height": VIEW_H},
         user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
     )
@@ -701,9 +724,9 @@ async def ensure_page_focused(page) -> None:
         pass
     # Physical click into content area so Chromium marks window active on Xvfb
     try:
-        vp = page.viewport_size or {"width": 1280, "height": 720}
-        x = int(vp.get("width", 1280) * 0.45)
-        y = int(vp.get("height", 720) * 0.45)
+        vp = page.viewport_size or {"width": VIEW_W, "height": VIEW_H}
+        x = int(vp.get("width", VIEW_W) * 0.45)
+        y = int(vp.get("height", VIEW_H) * 0.45)
         await asyncio.wait_for(page.mouse.move(x, y, steps=3), timeout=3)
         await asyncio.wait_for(page.mouse.click(x, y), timeout=3)
     except Exception:
@@ -727,8 +750,8 @@ def _chromium_lean_args() -> list:
         "--disable-gpu-compositing",
         "--in-process-gpu",
         "--remote-debugging-port=9222",
-        # Tiny window — less raster RAM
-        "--window-size=1024,576",
+        # Match Xvfb + Playwright viewport (tiny 1024x576 blanked Lovable Preview)
+        f"--window-size={VIEW_W},{VIEW_H}",
         "--window-position=0,0",
         "--force-device-scale-factor=1",
         # Low-end / single-site process model
@@ -988,22 +1011,15 @@ async def send_wake_prompt(
             cur = ""
         log(f"  Wake: url={cur[:100]}")
 
-        # Login wall → re-login then back
+        # Login / private-project access wall → refresh_token then back
         on_login = "/login" in cur or "/auth" in cur
         if not on_login:
             try:
-                body0 = await _page_eval(
-                    chat_page,
-                    "() => (document.body && document.body.innerText || '').slice(0, 300)",
-                    timeout=5,
-                )
-                bl0 = (body0 or "").lower()
-                if ("log in" in bl0 or "sign in" in bl0) and "password" in bl0:
-                    on_login = True
+                on_login = await detect_auth_wall(chat_page)
             except Exception:
-                pass
+                on_login = False
         if on_login and (session_config or session_id):
-            log("  Wake: login wall — refresh_token first")
+            log("  Wake: access/login wall — refresh_token first")
             sid = session_id or (session_config or {}).get("session_id")
             ok = await ensure_authed(
                 chat_page,
@@ -1200,8 +1216,8 @@ async def keep_pages_warm(chat_page, preview_page, light: bool = False) -> None:
 
             await asyncio.sleep(_r.uniform(0.15, 0.5 if light else 0.9))
 
-            vp = page.viewport_size or {"width": 1024, "height": 576}
-            w, h = int(vp.get("width", 1024)), int(vp.get("height", 576))
+            vp = page.viewport_size or {"width": VIEW_W, "height": VIEW_H}
+            w, h = int(vp.get("width", VIEW_W)), int(vp.get("height", VIEW_H))
             cx = _r.uniform(w * 0.12, w * 0.38)
             cy = _r.uniform(h * 0.32, h * 0.78)
             px = _r.uniform(w * 0.52, w * 0.90)
@@ -1274,8 +1290,8 @@ async def keep_pages_warm(chat_page, preview_page, light: bool = False) -> None:
                 await preview_page.bring_to_front()
             except Exception:
                 pass
-            vp = preview_page.viewport_size or {"width": 1280, "height": 720}
-            w, h = int(vp.get("width", 1280)), int(vp.get("height", 720))
+            vp = preview_page.viewport_size or {"width": VIEW_W, "height": VIEW_H}
+            w, h = int(vp.get("width", VIEW_W)), int(vp.get("height", VIEW_H))
             x = _r2.uniform(80, max(100, w - 80))
             y = _r2.uniform(80, max(100, h - 80))
             await human_mouse_to(preview_page, x, y)
@@ -1320,7 +1336,8 @@ async def dismiss_blocking_popups(chat_page, *, max_passes: int = 5) -> bool:
             dlg = chat_page.locator('[role="dialog"]')
             n_dlg = await asyncio.wait_for(dlg.count(), timeout=1.5)
             if n_dlg > 0:
-                for name in ("Cancel", "Not now", "Close", "Maybe later"):
+                for name in ("Cancel", "Not now", "Close", "Maybe later",
+                             "OK", "Accept", "Accept all"):
                     try:
                         btn = dlg.last.get_by_role(
                             "button", name=name, exact=False)
@@ -1525,6 +1542,82 @@ async def send_presence_prompt(chat_page) -> bool:
         return False
 
 
+async def type_idle_text(chat_page) -> bool:
+    """Type into the composer WITHOUT submitting (zero credits).
+
+    Keydown/input/focus activity that reads as an active user thinking.
+    Clears the text afterwards (80%) or leaves it mid-thought (20%).
+    Soft-fail unless crash — same contract as send_presence_prompt.
+    """
+    import random as _rand
+
+    if chat_page is None:
+        return False
+    try:
+        if chat_page.is_closed():
+            return False
+    except Exception:
+        return False
+
+    async def _do() -> bool:
+        chat_input, cdp_hung = await find_chat_composer(
+            chat_page, tag="idle-type")
+        if cdp_hung:
+            raise asyncio.TimeoutError("cdp hung on idle-type composer")
+        if not chat_input:
+            return False
+        phrase = _rand.choice(IDLE_TYPE_PHRASES)
+        try:
+            box = await chat_input.bounding_box()
+        except Exception:
+            box = None
+        if box:
+            tx = box["x"] + box["width"] * _rand.uniform(0.25, 0.75)
+            ty = box["y"] + box["height"] * _rand.uniform(0.3, 0.7)
+            await human_mouse_to(chat_page, tx, ty)
+            await asyncio.sleep(_rand.uniform(0.08, 0.25))
+            await chat_page.mouse.click(tx, ty)
+        else:
+            try:
+                await chat_input.click(timeout=3000)
+            except Exception:
+                pass
+        await asyncio.sleep(_rand.uniform(0.2, 0.7))  # think before typing
+        try:
+            # clear leftovers first so text never accumulates
+            await chat_page.keyboard.press("Control+a")
+            await asyncio.sleep(0.05)
+            await chat_page.keyboard.press("Backspace")
+            await asyncio.sleep(_rand.uniform(0.1, 0.25))
+            await human_type_text(chat_page, phrase)
+        except Exception as e:
+            log(f"  Idle-type fail: {type(e).__name__}")
+            return False
+        await asyncio.sleep(_rand.uniform(1.0, 3.0))  # stare at it, thinking
+        if _rand.random() < 0.8:
+            try:
+                await chat_page.keyboard.press("Control+a")
+                await asyncio.sleep(0.05)
+                await chat_page.keyboard.press("Backspace")
+            except Exception:
+                pass
+            log("  Idle-type: typed + cleared (no submit)")
+        else:
+            log("  Idle-type: left mid-thought (no submit)")
+        return True
+
+    try:
+        return await asyncio.wait_for(_do(), timeout=PRESENCE_PROMPT_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        log("  Idle-type timeout (CDP?)")
+        return False
+    except Exception as e:
+        if _is_crash_error(e):
+            raise
+        log(f"  Idle-type soft-fail: {type(e).__name__}")
+        return False
+
+
 async def steal_preview_url_from_chat(chat_page) -> str | None:
     """Pull the live preview iframe URL from the Lovable chat UI.
 
@@ -1631,8 +1724,18 @@ async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bo
     ranked = sorted((( _score(fr), fr) for fr in frames), key=lambda x: -x[0])
     ranked = [(s, fr) for s, fr in ranked if s > 0]
     if not ranked:
-        log(f"  Force /term: no preview-ish frame for {dest}")
-        return False
+        # Preview panel missing entirely — remount once, rescan (cell-35 wedge).
+        try:
+            await ensure_preview_shell_panel(chat_page)
+            await asyncio.sleep(2)
+            frames = list(chat_page.frames)
+            ranked = sorted(((_score(fr), fr) for fr in frames), key=lambda x: -x[0])
+            ranked = [(s, fr) for s, fr in ranked if s > 0]
+        except Exception:
+            ranked = []
+        if not ranked:
+            log(f"  Force /term: no preview-ish frame for {dest}")
+            return False
     for sc, fr in ranked[:3]:
         try:
             cur = (fr.url or "")[:100]
@@ -1923,27 +2026,69 @@ async def bring_up_lovableproject_doc(
     max_rounds: int = 0,
     wait_per_round_s: int = 75,
     project_id: str = "",
+    session_id=None,
+    session_config: dict | None = None,
+    chat_url: str = "",
 ) -> bool:
     """After prompting: keep remounting Preview + scanning for lovableproject iframe
     with working window.doc('nproc') until it shows up.
 
-    max_rounds=0 means keep going until the page dies (startup / forever bring-up).
-    No full-page reload — remount Preview/Shell + tiny prompts only.
+    max_rounds=0 means keep going until the page dies (startup / forever bring-up),
+    but blank white Preview (/term:no-doc) triggers soft chat reload every
+    BLANK_PREVIEW_RELOAD_ROUNDS, then hard browser relaunch at
+    BLANK_PREVIEW_HARD_ROUNDS — do not sit forever on a dead shell.
+    No full-page reload on every miss — remount Preview/Shell + tiny prompts only.
     When project_id is set, every failed round force-navigates id-preview → /term
     so recoveries do not wedge on cold mirrors forever.
+    If the SPA shows 'You don't have access' / login, refresh_token and reload.
     """
     round_n = 0
+    dest = chat_url or (
+        f"https://lovable.dev/projects/{project_id}" if project_id else ""
+    )
     while True:
         round_n += 1
         if max_rounds and round_n > max_rounds:
             log(f"  lovableproject+doc not up after {max_rounds} rounds")
             return False
+        # Forever bring-up only: blank iframe for too long → refresh / relaunch
+        if not max_rounds and round_n > BLANK_PREVIEW_HARD_ROUNDS:
+            log(f"  Blank Preview {round_n} rounds — hard-kill browser + relaunch")
+            try:
+                hard_kill_chrome()
+            except Exception:
+                pass
+            raise RuntimeError("aw-snap-relaunch")
         try:
             if chat_page is None or chat_page.is_closed():
                 log("  bring_up: page closed")
                 return False
         except Exception:
             return False
+
+        # Stale cookies → private-project wall with no Preview iframe.
+        # Detect + refresh_token before another empty remount cycle.
+        if (session_id or session_config) and (round_n == 1 or round_n % 3 == 1):
+            try:
+                if await detect_auth_wall(chat_page):
+                    log(f"  Bring-up: access/login wall — refresh_token (r{round_n})")
+                    ok = await ensure_authed(
+                        chat_page,
+                        session_id,
+                        session_config,
+                        target_url=dest or None,
+                    )
+                    if ok and dest:
+                        try:
+                            await chat_page.goto(
+                                dest, timeout=40000, wait_until="domcontentloaded")
+                            await asyncio.sleep(4)
+                        except Exception as e:
+                            log(f"  Bring-up post-auth goto soft: {type(e).__name__}")
+                    elif not ok:
+                        log("  Bring-up: auth revive failed — keep trying")
+            except Exception as e:
+                log(f"  Bring-up auth check soft: {type(e).__name__}")
 
         log(f"  Bring-up lovableproject iframe+doc "
             f"(round {round_n}{'' if not max_rounds else f'/{max_rounds}'})...")
@@ -2006,6 +2151,30 @@ async def bring_up_lovableproject_doc(
             await ensure_preview_shell_panel(chat_page)
         except Exception:
             pass
+
+        # Soft refresh: blank white Preview for N rounds → reload chat tab
+        if (
+            not max_rounds
+            and BLANK_PREVIEW_RELOAD_ROUNDS > 0
+            and round_n % BLANK_PREVIEW_RELOAD_ROUNDS == 0
+            and dest
+        ):
+            log(f"  Blank Preview {round_n} rounds — refresh browser (reload chat)")
+            try:
+                await chat_page.goto(
+                    dest, timeout=40000, wait_until="domcontentloaded")
+                await asyncio.sleep(5)
+                await dismiss_blocking_popups(chat_page, max_passes=5)
+                await ensure_preview_shell_panel(chat_page)
+                if project_id:
+                    try:
+                        await force_preview_to_lovableproject_term(
+                            chat_page, project_id)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"  Blank refresh soft-fail: {type(e).__name__}")
+
         await asyncio.sleep(4)
 
 
@@ -2173,7 +2342,9 @@ async def revive_sandbox(
             except Exception:
                 pass
         ready = await bring_up_lovableproject_doc(
-            chat_page, max_rounds=4, wait_per_round_s=60, project_id=proj)
+            chat_page, max_rounds=4, wait_per_round_s=60, project_id=proj,
+            session_id=session_id, session_config=session_config,
+            chat_url=chat_url or "")
         if ready:
             log("  Revive: soft inject into chat Preview iframe")
             try:
@@ -2195,7 +2366,9 @@ async def revive_sandbox(
             except Exception:
                 pass
         ready = await bring_up_lovableproject_doc(
-            chat_page, max_rounds=3, wait_per_round_s=60, project_id=proj)
+            chat_page, max_rounds=3, wait_per_round_s=60, project_id=proj,
+            session_id=session_id, session_config=session_config,
+            chat_url=chat_url or "")
         if not ready:
             log("  Revive: lovableproject+doc never ready (iframe)")
             return False
@@ -2282,6 +2455,12 @@ async def shell_worker_status(preview_page) -> tuple[bool, str]:
         pass
     if "/login" in cur_url and "lovable.dev" in cur_url:
         return False, "login"
+    # Private-project modal keeps /projects URL but blocks Preview iframe.
+    try:
+        if await detect_auth_wall(preview_page):
+            return False, "auth-wall"
+    except Exception:
+        pass
 
     async def _probe_frame(frame, label: str):
         try:
@@ -2911,6 +3090,8 @@ async def detect_auth_wall(page) -> bool:
     bl = (body or "").lower()
     if "you don't have access" in bl or "this project is private" in bl:
         return True
+    if "request access" in bl and ("log in" in bl or "switch to an account" in bl):
+        return True
     if ("log in" in bl or "sign in" in bl) and (
         "password" in bl or "request access" in bl or "permissions" in bl
     ):
@@ -3177,10 +3358,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 else:
                     browser = await pw.firefox.launch(headless=not headed)
                     log("  Launched Firefox via Playwright")
-                # Smaller viewport on 1GB — less raster/compositor RAM
-                _vp = {"width": 1024, "height": 576}
-                if not (cgroup_mem_gb() and cgroup_mem_gb() <= 1.15):
-                    _vp = {"width": 1280, "height": 720}
+                # Match Chrome --window-size + Xvfb (Lovable needs room for Preview)
+                _vp = {"width": VIEW_W, "height": VIEW_H}
                 context = await browser.new_context(
                     viewport=_vp,
                     user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -3248,13 +3427,20 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 # freeze the asyncio loop on Railway 1GB after commit.
                 log("  open: goto ok — skip aw-snap recover/focus")
 
-            # Check if logged in (page.url is sync — safe)
+            # Check if logged in — URL alone misses "You don't have access"
+            # (still on /projects/… with a private-project modal).
             try:
                 cur_url = chat_page.url or ""
             except Exception:
                 cur_url = ""
-            if "/login" in cur_url:
-                log("Not logged in — refresh_token first (then login if needed)")
+            need_auth = "/login" in cur_url or "/auth" in cur_url
+            if not need_auth:
+                try:
+                    need_auth = await detect_auth_wall(chat_page)
+                except Exception:
+                    need_auth = False
+            if need_auth:
+                log("Auth wall on open — refresh_token first (then login if needed)")
                 ok = await ensure_authed(
                     chat_page,
                     session_id,
@@ -3374,13 +3560,19 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await asyncio.sleep(5)
             log("  hydrate: skip aw-snap recover (1GB path)")
 
-            # Cookie/auth probes freeze the asyncio loop on 1GB — URL-only check.
+            # Cookie/auth: URL-only misses private-project wall on /projects/…
             try:
                 cur_url = chat_page.url or ""
             except Exception:
                 cur_url = ""
-            if "/login" in cur_url or "/auth" in cur_url:
-                log("  Auth wall (URL) after restore — refresh_token first")
+            need_auth = "/login" in cur_url or "/auth" in cur_url
+            if not need_auth:
+                try:
+                    need_auth = await detect_auth_wall(chat_page)
+                except Exception:
+                    need_auth = False
+            if need_auth:
+                log("  Auth wall after restore — refresh_token first")
                 logged = await ensure_authed(
                     chat_page,
                     session_id,
@@ -3394,7 +3586,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                 await safe_goto(chat_page, chat_url, timeout_s=25)
                 log("  Auth wall cleared — continuing")
             else:
-                log("  post-hydrate: skip CDP auth/cookie probes")
+                log("  post-hydrate: no auth wall")
 
             await asyncio.sleep(4)
             # Do NOT probe preview frames before composer — cold shell_worker_status
@@ -3424,7 +3616,13 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                         cur = chat_page.url or ""
                     except Exception:
                         cur = ""
-                    if "/login" in cur or "/auth" in cur:
+                    mid_wall = "/login" in cur or "/auth" in cur
+                    if not mid_wall:
+                        try:
+                            mid_wall = await detect_auth_wall(chat_page)
+                        except Exception:
+                            mid_wall = False
+                    if mid_wall:
                         log(f"  Auth wall mid composer hunt (r{round_n}) — refresh_token first")
                         logged = await ensure_authed(
                             chat_page,
@@ -3517,11 +3715,17 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
               log("  After wake — looking for lovableproject iframe + doc('nproc')...")
               if doc_mark:
                   log(f"  CHIMERA_DOC_MARK=1 — max_rounds={mark_rounds}, stop after verdict")
+              # Mining: wait for lovableproject sandbox/doc. Blank white Preview
+              # soft-reloads chat every BLANK_PREVIEW_RELOAD_ROUNDS, then
+              # hard-kills browser at BLANK_PREVIEW_HARD_ROUNDS (no wedge).
               sandbox_in_chat = await bring_up_lovableproject_doc(
                   chat_page,
                   max_rounds=(mark_rounds if doc_mark else 0),
                   wait_per_round_s=75,
-                  project_id=project_id)
+                  project_id=project_id,
+                  session_id=session_id,
+                  session_config=config,
+                  chat_url=chat_url)
 
               if doc_mark:
                   mark_path = Path("/app/work/DOC_MARK.txt")
@@ -3569,7 +3773,10 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                           log(f"  Retry presence skip: {type(e).__name__}")
                       await bring_up_lovableproject_doc(
                           chat_page, max_rounds=2, wait_per_round_s=60,
-                          project_id=project_id)
+                          project_id=project_id,
+                          session_id=session_id,
+                          session_config=config,
+                          chat_url=chat_url)
               else:
                   log("  Page died before lovableproject+doc — health/fresh tab will retry")
 
@@ -3677,7 +3884,8 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 except Exception:
                                     pass
                         else:
-                            # Full presence: prompt every 2nd tick (not every tick)
+                            # Full presence: even ticks submit a trivial prompt,
+                            # odd ticks type-without-submit (activity, zero credits)
                             if not page_lock.locked():
                                 try:
                                     await dismiss_blocking_popups(
@@ -3685,7 +3893,7 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                     if iteration % 2 == 0:
                                         await send_presence_prompt(chat_page)
                                     else:
-                                        log("  Presence prompt: skip (odd tick babysit)")
+                                        await type_idle_text(chat_page)
                                     await dismiss_blocking_popups(
                                         chat_page, max_passes=3)
                                 except Exception as e_pp:
@@ -3755,6 +3963,26 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 continue
                             soft_dead = 0
                             log(f"  Worker not running ({detail}) — inject/revive")
+                            # Stale cookies → "You don't have access" with no Preview.
+                            # Refresh before Force /term / revive.
+                            try:
+                                if detail in ("login", "auth-wall") or await detect_auth_wall(
+                                        chat_page):
+                                    log("  Soft-dead: access/login wall — refresh_token")
+                                    revived = await ensure_authed(
+                                        chat_page,
+                                        session_id,
+                                        config,
+                                        target_url=chat_url,
+                                    )
+                                    if revived:
+                                        try:
+                                            await safe_goto(
+                                                chat_page, chat_url, timeout_s=25)
+                                        except Exception:
+                                            pass
+                            except Exception as e:
+                                log(f"  Soft-dead auth check soft: {type(e).__name__}")
                             # CRITICAL 1GB flake: stay on tab, Force /term. If DOC
                             # returns → fall through to in-place inject. If Force
                             # /term keeps missing → hard-kill + relaunch (self-heal

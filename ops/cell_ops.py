@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cell fleet ops — SSH / deploy / trio upload / status / bootstrap.
 
-See docs/CLONE-AND-RUN.md. Mapping: ops/fleet_map.json (+ railways/services.json).
+See docs/CLONE-AND-RUN.md. Mapping: ops/fleet.json (built by ops/build_fleet.py).
 
 Examples:
   python3 ops/cell_ops.py status 13 16 28 35
@@ -28,37 +28,63 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OPS = Path(__file__).resolve().parent
-MAP_PATH = OPS / "fleet_map.json"
+MAP_PATH = OPS / "fleet.json"  # MASTER registry (built by ops/build_fleet.py)
 CHIM = ROOT
-ATK_SESSIONS = Path("/home/alan/Documents/repos/automation-toolkit/scripts/sessions")
-ATK_RW = Path("/home/alan/Documents/repos/automation-toolkit/sessions")
-SERVICES_JSON = Path("/home/alan/Documents/railways/services.json")
+ATK_SESSIONS = Path("/home/alae/Documents/repos/automation-toolkit/scripts/sessions")
+ATK_RW = Path("/home/alae/Documents/repos/automation-toolkit/sessions")
+if not ATK_SESSIONS.is_dir():  # legacy /home/alan symlink fallback
+    ATK_SESSIONS = Path("/home/alan/Documents/repos/automation-toolkit/scripts/sessions")
+if not ATK_RW.is_dir():
+    ATK_RW = Path("/home/alan/Documents/repos/automation-toolkit/sessions")
+SERVICES_JSONS = [
+    Path("/home/alan/Documents/railways/services.json"),
+    Path("/home/alae/Documents/repos/automation-toolkit/services.json"),
+    Path("/home/alan/Documents/repos/automation-toolkit/services.json"),
+]
+SERVICES_JSON = next((p for p in SERVICES_JSONS if p.exists()),
+                     SERVICES_JSONS[0])
 
 LEAN_SUP = textwrap.dedent(
     """\
     #!/bin/bash
     # lean_sup — keep Xvfb + daemon forever (CLONE-AND-RUN)
+    # + watchdog: if no "Worker alive" in LOG for WORKER_STALE_S → kill daemon
     set -u
     LOG="${LOG:-/app/work/daemon.log}"
     SESS="${SESS:-session-2}"
     PROJ="${PROJ:-}"
+    WORKER_STALE_S="${WORKER_STALE_S:-600}"
     cd /app/work/chimera-miner || exit 1
+    me=$$
+    for pid in $(ps -eo pid=,args= 2>/dev/null | awk '/lean_sup\\.sh/ {print $1}'); do
+      if [ "$pid" != "$me" ] && [ "$pid" != "$PPID" ]; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    done
     if ! pgrep -f "Xvfb :99" >/dev/null 2>&1; then
       rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
       mkdir -p /tmp/.X11-unix
-      Xvfb :99 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
+      Xvfb :99 -screen 0 1600x900x24 >/tmp/xvfb.log 2>&1 &
       sleep 1
     fi
     export DISPLAY=:99
     export CHIMERA_NO_PROXY=1 CHIMERA_SKIP_IDB=1 CHIMERA_FORCE_HEADED=1
+    export CHIMERA_VIEW_W=1600 CHIMERA_VIEW_H=900
     export CHIMERA_SESSIONS_DIR=/app/work/scripts/sessions
     export CHIMERA_SHOT_DIR=/app/work/shots
     export PYTHONUNBUFFERED=1
+    (
+      while true; do
+        sleep 90
+        [ -f "$LOG" ] || continue
+        /opt/venv/bin/python3 -u /app/work/chimera-miner/watchdog_worker.py "$LOG" "$WORKER_STALE_S" || true
+      done
+    ) &
     while true; do
       if ! pgrep -f "Xvfb :99" >/dev/null 2>&1; then
         rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
         mkdir -p /tmp/.X11-unix
-        Xvfb :99 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
+        Xvfb :99 -screen 0 1600x900x24 >/tmp/xvfb.log 2>&1 &
         sleep 1
       fi
       /opt/venv/bin/python3 -u daemon.py --session "$SESS" --project "$PROJ" \\
@@ -243,7 +269,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         futs = {ex.submit(_status_one, c, fmap): c for c in cells}
         for f in as_completed(futs):
             print(f.result())
-    want = fmap.get("daemon_md5")
+    want = (fmap.get("meta") or {}).get("daemon_md5")
     if want:
         print(f"(canonical daemon md5 {want})")
     return 0
@@ -551,7 +577,7 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sp.add_parser("list", help="Show fleet_map.json (+ services fill)")
+    p = sp.add_parser("list", help="Show fleet.json registry")
     p.set_defaults(func=cmd_list)
 
     p = sp.add_parser("ssh", help="Run remote bash -lc on a cell")
