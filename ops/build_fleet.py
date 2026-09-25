@@ -141,6 +141,20 @@ def main() -> int:
         c["lovable_project"] = proj
         c["miner"] = "bare"
         c["note"] = note
+    # ops/assign_plan.json: bridged session -> healthy cell. Cells already in
+    # the mining map keep their state; the rest are "assigned".
+    plan_path = OPS / "assign_plan.json"
+    if plan_path.exists():
+        for e in json.loads(plan_path.read_text()):
+            n = str(e["cell"])
+            c = cells.setdefault(n, {})
+            if c.get("miner") == "mining":
+                continue
+            c["lov_session"] = int(e["lov"])
+            c["lovable_project"] = e["project"]
+            c["log"] = f"daemon_r{n}.log"
+            c["miner"] = "assigned"
+            c.pop("note", None)
 
     sessions: dict[str, dict] = {}
     for d in sorted(SESS.iterdir()):
@@ -171,10 +185,11 @@ def main() -> int:
                             "project_link": cfg.get("project_link"),
                             "invite_link": cfg.get("invite_link")}
     for n, c in cells.items():
-        if c.get("miner") == "mining" and c.get("lov_session") is not None:
+        if c.get("miner") in ("mining", "assigned") and c.get("lov_session") is not None:
             key = f"session-{c['lov_session']}"
             if key in sessions:
-                sessions[key]["status"] = "mining"
+                if c["miner"] == "mining" or sessions[key]["status"] != "mining":
+                    sessions[key]["status"] = c["miner"]
                 sessions[key]["cells"].append(int(n))
     for n, (lov, _proj, note) in PENDING.items():
         key = f"session-{lov}"

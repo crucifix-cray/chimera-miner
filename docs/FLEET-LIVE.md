@@ -18,6 +18,40 @@
 
 13 + 16 share Lovable session 2 (two projects, two cells).
 
+## Assigned, rolling out (18 bridged sessions waiting on their cell)
+
+Every one of these has a project with a verified `window.doc` bridge. The cell image is
+deployed; `ops/bootstrap_plan.py` is bringing the daemon up one at a time.
+
+| Cell | Lov sess | Email | Project |
+|---|---|---|---|
+| 53 | 25 | johnpeter08541@gmail.com | `84fa81b7…` |
+| 76 | 26 | Josephgrant651@gmail.com | `e474f21d…` |
+| 77 | 27 | julianhiramqwr@gmail.com | `cdcc177a…` |
+| 80 | 28 | kristinenorris08@gmail.com | `ef264ce7…` |
+| 81 | 30 | liamantoine31@gmail.com | `9f42ef89…` |
+| 82 | 33 | roce.sisla@gmail.com | `b27e2af0…` |
+| 83 | 37 | zakarmmusa832@gmail.com | `1f5b8636…` |
+| 84 | 38 | simpsonjessicamarie.0@gmail.com | `7703551a…` |
+| 86 | 39 | lovgraukipb6b@souss.dev | `432a10dd…` |
+| 87 | 40 | lov6020lpeic9@souss.dev | `ac03f128…` |
+| 88 | 42 | na.thanrolutenasa@gmail.com | `388ebccb…` |
+| 89 | 43 | lovohqhzhno7q@souss.dev | `f16469dc…` |
+| 90 | 45 | lovwsrj0lswqa@souss.dev | `ea9614b2…` |
+| 91 | 47 | lov484vnilli1@souss.dev | `9508a15e…` (no SSH key on that Railway account) |
+| 92 | 49 | lovtx66imf0z1@souss.dev | `ab8e78fe…` |
+| 93 | 51 | lovv2ubbdli1c@souss.dev | `9c8b880c…` |
+| 94 | 52 | lova4jgjpd9cv@souss.dev | `fa7ad090…` |
+| 96 | 53 | lovauxtyiqsp6@souss.dev | `06189278…` |
+
+**Not deployable:** cells 75 / 95 / 110 / 120 — Railway workspace payment-restricted.
+
+## Transport gotcha when checking these
+
+`railway ssh` drops the **first line** of stdout and silently truncates long arguments.
+Never read a cell status without `ops/ssh_reliable.py`; a bare rc=0 with empty output
+means the command never ran, not that the cell is fine.
+
 ## Cell logs
 
 | Cell | Log |

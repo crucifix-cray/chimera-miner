@@ -1,6 +1,6 @@
 {
   "meta": {
-    "updated": "2026-09-25T17:08:13Z",
+    "updated": "2026-09-25T17:33:20Z",
     "daemon_md5": "c7734bfeb61228afe0af2dc1fd1d9c3b",
     "injector_md5": "28bf95d3a03e4ad3326e99b54841e7fe",
     "bridge": "wss://chimera-bridge-production-0703.up.railway.app",
@@ -25,7 +25,7 @@
       "cells": 51,
       "sessions": 50,
       "mining_cells": 5,
-      "bench": 42
+      "bench": 25
     }
   },
   "cells": {
@@ -235,10 +235,10 @@
       "env": "43556f53-90f3-41a0-94cf-c74aecbb6100",
       "volume": "fd8c148e-0ed7-4036-ae10-e93897816b85",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 25,
+      "lovable_project": "84fa81b7-6c8d-45ab-95a8-7e89bbf92864",
+      "log": "daemon_r53.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -267,10 +267,10 @@
       "env": "eff37862-c9fa-4c40-995b-f78a1574891a",
       "volume": "df931e89-1c11-4f43-a65c-7fcfbfcf280f",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 26,
+      "lovable_project": "e474f21d-256c-4de6-95c9-06a53eec87dc",
+      "log": "daemon_r76.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -283,10 +283,10 @@
       "env": "29237720-ff42-4648-ab00-0da578db1dd9",
       "volume": "a970bf21-6dfa-440a-8593-a7f02066cf25",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 27,
+      "lovable_project": "cdcc177a-5e4c-42ac-8256-c4acf1040034",
+      "log": "daemon_r77.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -299,10 +299,10 @@
       "env": "37f4734e-d948-461f-8474-1c733793394f",
       "volume": "c83e0565-2110-4e6e-b9af-96f643027972",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 28,
+      "lovable_project": "ef264ce7-72cd-4352-a1a5-913ab64fed03",
+      "log": "daemon_r80.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -315,10 +315,10 @@
       "env": "31758592-6565-465f-876c-3e36ef735a87",
       "volume": "719ddf9b-b6ec-426d-b241-f96a33c72d02",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 30,
+      "lovable_project": "9f42ef89-ed41-4b5f-af7f-f8e1554378c4",
+      "log": "daemon_r81.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -331,10 +331,10 @@
       "env": "566d6d5e-dc56-4046-b998-4974295cd77a",
       "volume": "abb1c5ba-fea9-4fac-b259-ddcbad19bba8",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 33,
+      "lovable_project": "b27e2af0-3eb2-42b9-a964-88efc4b3caac",
+      "log": "daemon_r82.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -347,10 +347,10 @@
       "env": "fefa8441-fc64-44f2-bba5-a94a054dd404",
       "volume": "0990057f-b16e-4a9e-9546-7065abc76d7a",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 37,
+      "lovable_project": "1f5b8636-b2b4-45f0-9375-e81389f79d21",
+      "log": "daemon_r83.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -363,10 +363,10 @@
       "env": "f03b9568-3fe5-40b9-98eb-8ff0ab5b0b46",
       "volume": "cd9e1351-31eb-47fd-82f4-e3e8a3464d12",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 38,
+      "lovable_project": "7703551a-af60-4a26-a32c-44e5fbcf205e",
+      "log": "daemon_r84.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -379,10 +379,10 @@
       "env": "e5792dc7-b756-4ca9-9a7d-a96f5b0d2c18",
       "volume": "f01a5112-b03e-4cb6-b2cc-64a5ab24e0b4",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 39,
+      "lovable_project": "432a10dd-f4a7-4032-b6b1-62a5dd4172ea",
+      "log": "daemon_r86.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -395,10 +395,10 @@
       "env": "a0a610a6-62fd-46dc-b548-3d6c93aa1769",
       "volume": "8b60438a-c0f4-4e88-a1c9-2335730c6977",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 40,
+      "lovable_project": "ac03f128-3500-4ecf-9d9b-8efb352b530e",
+      "log": "daemon_r87.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -411,10 +411,10 @@
       "env": "e582264b-466a-433f-82fb-95d2c45f22c4",
       "volume": "a9fdc4df-9fb1-47ef-b39d-aec1dd832df5",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 42,
+      "lovable_project": "388ebccb-c73d-48b3-880d-a99517afd855",
+      "log": "daemon_r88.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -427,10 +427,10 @@
       "env": "beeba352-ff0a-4af2-b350-d57affd5337b",
       "volume": "c5f05775-3553-498c-a704-9a4e24a3e14d",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 43,
+      "lovable_project": "f16469dc-1747-4cb7-bb79-d676b904e4be",
+      "log": "daemon_r89.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -443,10 +443,10 @@
       "env": "8a394c9f-b3b2-4602-8e35-2aec6bce2a26",
       "volume": "5770016a-67d4-47bb-bb0b-e9f9af2017bc",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 45,
+      "lovable_project": "ea9614b2-c52b-4caa-b7e4-91c94a8b7d6c",
+      "log": "daemon_r90.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -459,10 +459,10 @@
       "env": "32400f67-d141-4088-ad3e-d5d0743e8432",
       "volume": "1552c5f2-228c-438b-9dd3-94a666552044",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 47,
+      "lovable_project": "9508a15e-a1ec-4d9b-bbd1-c33781441aea",
+      "log": "daemon_r91.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -475,10 +475,10 @@
       "env": "fcee11ba-0c55-4552-a6fc-c59b66ecf656",
       "volume": "4015cae9-63d7-4958-872b-2bbc25fb4be4",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 49,
+      "lovable_project": "ab8e78fe-5ac1-4409-b709-e5e8f6c62068",
+      "log": "daemon_r92.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -491,10 +491,10 @@
       "env": "ac203e9e-84d1-422a-a2a0-371368f876a5",
       "volume": "38cba8a6-4fe9-49b6-8b17-eed788d9dfd4",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 51,
+      "lovable_project": "9c8b880c-1192-4fa8-928c-d78673a8d286",
+      "log": "daemon_r93.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -507,10 +507,10 @@
       "env": "bf0723b0-d110-4d4d-ae87-055e3e518f65",
       "volume": "c9398056-dcff-4a0c-baef-b68e9462695e",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 52,
+      "lovable_project": "fa7ad090-c93d-4be6-8bed-920b1f1c71cf",
+      "log": "daemon_r94.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -539,10 +539,10 @@
       "env": "96e862cd-4792-4a31-989e-b422aef408a8",
       "volume": "be8d3039-4d8a-42ea-aea5-9a144ce4c18f",
       "service_status": "ready",
-      "lov_session": null,
-      "lovable_project": null,
-      "log": null,
-      "miner": "unknown",
+      "lov_session": 53,
+      "lovable_project": "06189278-64dc-4176-b814-b832f8d66bb7",
+      "log": "daemon_r96.log",
+      "miner": "assigned",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -1125,7 +1125,8 @@
       "full": true,
       "status": "ready-to-mine",
       "cells": [
-        43
+        43,
+        53
       ],
       "project_id": "84fa81b7-6c8d-45ab-95a8-7e89bbf92864",
       "project_link": "https://lovable.dev/projects/84fa81b7-6c8d-45ab-95a8-7e89bbf92864",
@@ -1143,8 +1144,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        76
+      ],
       "project_id": "e474f21d-256c-4de6-95c9-06a53eec87dc",
       "project_link": "https://lovable.dev/projects/e474f21d-256c-4de6-95c9-06a53eec87dc",
       "invite_link": null
@@ -1160,8 +1163,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        77
+      ],
       "project_id": "cdcc177a-5e4c-42ac-8256-c4acf1040034",
       "project_link": "https://lovable.dev/projects/cdcc177a-5e4c-42ac-8256-c4acf1040034",
       "invite_link": null
@@ -1177,8 +1182,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        80
+      ],
       "project_id": "ef264ce7-72cd-4352-a1a5-913ab64fed03",
       "project_link": "https://lovable.dev/projects/ef264ce7-72cd-4352-a1a5-913ab64fed03",
       "invite_link": null
@@ -1228,8 +1235,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        81
+      ],
       "project_id": "9f42ef89-ed41-4b5f-af7f-f8e1554378c4",
       "project_link": "https://lovable.dev/projects/9f42ef89-ed41-4b5f-af7f-f8e1554378c4",
       "invite_link": null
@@ -1279,8 +1288,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        82
+      ],
       "project_id": "b27e2af0-3eb2-42b9-a964-88efc4b3caac",
       "project_link": "https://lovable.dev/projects/b27e2af0-3eb2-42b9-a964-88efc4b3caac",
       "invite_link": null
@@ -1330,8 +1341,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        83
+      ],
       "project_id": "1f5b8636-b2b4-45f0-9375-e81389f79d21",
       "project_link": "https://lovable.dev/projects/1f5b8636-b2b4-45f0-9375-e81389f79d21",
       "invite_link": null
@@ -1347,8 +1360,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        84
+      ],
       "project_id": "7703551a-af60-4a26-a32c-44e5fbcf205e",
       "project_link": "https://lovable.dev/projects/7703551a-af60-4a26-a32c-44e5fbcf205e",
       "invite_link": null
@@ -1364,8 +1379,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        86
+      ],
       "project_id": "432a10dd-f4a7-4032-b6b1-62a5dd4172ea",
       "project_link": "https://lovable.dev/projects/432a10dd-f4a7-4032-b6b1-62a5dd4172ea",
       "invite_link": null
@@ -1398,8 +1415,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        87
+      ],
       "project_id": "ac03f128-3500-4ecf-9d9b-8efb352b530e",
       "project_link": "https://lovable.dev/projects/ac03f128-3500-4ecf-9d9b-8efb352b530e",
       "invite_link": null
@@ -1434,8 +1453,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        88
+      ],
       "project_id": "388ebccb-c73d-48b3-880d-a99517afd855",
       "project_link": "https://lovable.dev/projects/388ebccb-c73d-48b3-880d-a99517afd855",
       "invite_link": null
@@ -1451,8 +1472,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        89
+      ],
       "project_id": "f16469dc-1747-4cb7-bb79-d676b904e4be",
       "project_link": "https://lovable.dev/projects/f16469dc-1747-4cb7-bb79-d676b904e4be",
       "invite_link": null
@@ -1487,8 +1510,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        90
+      ],
       "project_id": "ea9614b2-c52b-4caa-b7e4-91c94a8b7d6c",
       "project_link": "https://lovable.dev/projects/ea9614b2-c52b-4caa-b7e4-91c94a8b7d6c",
       "invite_link": null
@@ -1523,8 +1548,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        91
+      ],
       "project_id": "9508a15e-a1ec-4d9b-bbd1-c33781441aea",
       "project_link": "https://lovable.dev/projects/9508a15e-a1ec-4d9b-bbd1-c33781441aea",
       "invite_link": null
@@ -1557,8 +1584,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        92
+      ],
       "project_id": "ab8e78fe-5ac1-4409-b709-e5e8f6c62068",
       "project_link": "https://lovable.dev/projects/ab8e78fe-5ac1-4409-b709-e5e8f6c62068",
       "invite_link": null
@@ -1610,8 +1639,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        93
+      ],
       "project_id": "9c8b880c-1192-4fa8-928c-d78673a8d286",
       "project_link": "https://lovable.dev/projects/9c8b880c-1192-4fa8-928c-d78673a8d286",
       "invite_link": null
@@ -1627,8 +1658,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        94
+      ],
       "project_id": "fa7ad090-c93d-4be6-8bed-920b1f1c71cf",
       "project_link": "https://lovable.dev/projects/fa7ad090-c93d-4be6-8bed-920b1f1c71cf",
       "invite_link": null
@@ -1644,8 +1677,10 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "bench",
-      "cells": [],
+      "status": "assigned",
+      "cells": [
+        96
+      ],
       "project_id": "06189278-64dc-4176-b814-b832f8d66bb7",
       "project_link": "https://lovable.dev/projects/06189278-64dc-4176-b814-b832f8d66bb7",
       "invite_link": null
@@ -1744,32 +1779,15 @@
     "session-22",
     "session-23",
     "session-24",
-    "session-26",
-    "session-27",
-    "session-28",
     "session-29",
     "session-3",
-    "session-30",
     "session-31",
     "session-32",
-    "session-33",
     "session-34",
     "session-36",
-    "session-37",
-    "session-38",
-    "session-39",
     "session-4",
-    "session-40",
-    "session-42",
-    "session-43",
-    "session-45",
-    "session-47",
     "session-48",
-    "session-49",
     "session-5",
-    "session-51",
-    "session-52",
-    "session-53",
     "session-6",
     "session-9"
   ]
