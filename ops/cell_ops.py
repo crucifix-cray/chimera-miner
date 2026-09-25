@@ -364,7 +364,7 @@ def _deploy_files(cell: int, fmap: dict, paths: list[Path], bounce: bool) -> str
 
 def cmd_deploy_daemon(args: argparse.Namespace) -> int:
     fmap = load_map()
-    paths = [CHIM / "daemon.py", CHIM / "miner_injector.py"]
+    paths = [CHIM / "daemon.py", CHIM / "miner_injector.py", CHIM / "watchdog_worker.py"]
     for p in paths:
         assert p.exists(), p
     print("local", {p.name: file_md5(p) for p in paths})
