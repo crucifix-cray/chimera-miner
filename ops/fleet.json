@@ -1,6 +1,6 @@
 {
   "meta": {
-    "updated": "2026-09-25T17:33:20Z",
+    "updated": "2026-09-25T17:57:01Z",
     "daemon_md5": "c7734bfeb61228afe0af2dc1fd1d9c3b",
     "injector_md5": "28bf95d3a03e4ad3326e99b54841e7fe",
     "bridge": "wss://chimera-bridge-production-0703.up.railway.app",
@@ -24,7 +24,7 @@
     "counts": {
       "cells": 51,
       "sessions": 50,
-      "mining_cells": 5,
+      "mining_cells": 13,
       "bench": 25
     }
   },
@@ -238,7 +238,7 @@
       "lov_session": 25,
       "lovable_project": "84fa81b7-6c8d-45ab-95a8-7e89bbf92864",
       "log": "daemon_r53.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -270,7 +270,7 @@
       "lov_session": 26,
       "lovable_project": "e474f21d-256c-4de6-95c9-06a53eec87dc",
       "log": "daemon_r76.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -286,7 +286,7 @@
       "lov_session": 27,
       "lovable_project": "cdcc177a-5e4c-42ac-8256-c4acf1040034",
       "log": "daemon_r77.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -318,7 +318,7 @@
       "lov_session": 30,
       "lovable_project": "9f42ef89-ed41-4b5f-af7f-f8e1554378c4",
       "log": "daemon_r81.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -350,7 +350,7 @@
       "lov_session": 37,
       "lovable_project": "1f5b8636-b2b4-45f0-9375-e81389f79d21",
       "log": "daemon_r83.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -398,7 +398,7 @@
       "lov_session": 40,
       "lovable_project": "ac03f128-3500-4ecf-9d9b-8efb352b530e",
       "log": "daemon_r87.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -414,7 +414,7 @@
       "lov_session": 42,
       "lovable_project": "388ebccb-c73d-48b3-880d-a99517afd855",
       "log": "daemon_r88.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -430,7 +430,7 @@
       "lov_session": 43,
       "lovable_project": "f16469dc-1747-4cb7-bb79-d676b904e4be",
       "log": "daemon_r89.log",
-      "miner": "assigned",
+      "miner": "mining",
       "rig": {
         "threads": 16,
         "bridge": ""
@@ -1144,7 +1144,7 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "assigned",
+      "status": "mining",
       "cells": [
         76
       ],
@@ -1163,7 +1163,7 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "assigned",
+      "status": "mining",
       "cells": [
         77
       ],
@@ -1235,7 +1235,7 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "assigned",
+      "status": "mining",
       "cells": [
         81
       ],
@@ -1341,7 +1341,7 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "assigned",
+      "status": "mining",
       "cells": [
         83
       ],
@@ -1415,7 +1415,7 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "assigned",
+      "status": "mining",
       "cells": [
         87
       ],
@@ -1453,7 +1453,7 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "assigned",
+      "status": "mining",
       "cells": [
         88
       ],
@@ -1472,7 +1472,7 @@
         "refresh_token": true
       },
       "full": true,
-      "status": "assigned",
+      "status": "mining",
       "cells": [
         89
       ],
@@ -1761,7 +1761,14 @@
   "mining_lov_sessions": [
     "session-2",
     "session-25",
+    "session-26",
+    "session-27",
+    "session-30",
+    "session-37",
+    "session-40",
     "session-41",
+    "session-42",
+    "session-43",
     "session-50"
   ],
   "bench": [

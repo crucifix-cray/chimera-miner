@@ -37,6 +37,15 @@ PENDING = {
 # Live mining cells not in legacy fleet_map (verified via cell_ops status)
 MINING_EXTRA = {
     43: (25, "84fa81b7-6c8d-45ab-95a8-7e89bbf92864", "daemon_r43.log"),
+    # 2026-09-25 17:55 UTC — verified `Worker alive` + `Preview healthy`
+    53: (25, "84fa81b7-6c8d-45ab-95a8-7e89bbf92864", "daemon_r53.log"),
+    76: (26, "e474f21d-256c-4de6-95c9-06a53eec87dc", "daemon_r76.log"),
+    77: (27, "cdcc177a-5e4c-42ac-8256-c4acf1040034", "daemon_r77.log"),
+    81: (30, "9f42ef89-ed41-4b5f-af7f-f8e1554378c4", "daemon_r81.log"),
+    83: (37, "1f5b8636-b2b4-45f0-9375-e81389f79d21", "daemon_r83.log"),
+    87: (40, "ac03f128-3500-4ecf-9d9b-8efb352b530e", "daemon_r87.log"),
+    88: (42, "388ebccb-c73d-48b3-880d-a99517afd855", "daemon_r88.log"),
+    89: (43, "f16469dc-1747-4cb7-bb79-d676b904e4be", "daemon_r89.log"),
 }
 
 

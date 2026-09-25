@@ -1,12 +1,12 @@
 # FLEET-LIVE — who is mining
 
-**Updated:** 2026-09-25 17:10 UTC
+**Updated:** 2026-09-25 18:00 UTC — **13 cells confirmed healthy**, 7 hunting, 3 not started
 **Registry (single source of truth):** `ops/fleet.json` — rebuild `python3 ops/build_fleet.py`
 **Rule:** one Railway cell per **Lovable project**. Same cookies can mine two projects as two cells.
 
-## Mining now (5)
+## Mining now (13)
 
-**Gate:** real bridge = `window.doc('nproc')` returns stdout (not URL, not `typeof`). Daemon md5 `c7734bfeb61228afe0af2dc1fd1d9c3b` on all five.
+**Gate:** real bridge = `window.doc('nproc')` returns stdout (not URL, not `typeof`). Daemon md5 `c7734bfeb61228afe0af2dc1fd1d9c3b` on all thirteen.
 
 | Cell | Railway | Lov sess | Email | Project | Project name |
 |---|---|---|---|---|---|
@@ -15,35 +15,40 @@
 | **28** | session-6 | 41 | jamesmanalodat.e@gmail.com | `ce592dc0-eb0f-4500-81ae-2f848840aaac` | — |
 | **35** | session-10 | 50 | hellolakanhernand.ez@gmail.com | `c0bafd1e-33d8-4625-89a4-1250f4755d23` | — |
 | **43** | session-12 | 25 | johnpeter08541@gmail.com | `84fa81b7-6c8d-45ab-95a8-7e89bbf92864` | — |
+| **53** | session-13 | 25 | johnpeter08541@gmail.com | `84fa81b7…` | 2nd cell, same project as 43 |
+| **76** | session-15 | 26 | Josephgrant651@gmail.com | `e474f21d…` | — |
+| **77** | session-16 | 27 | julianhiramqwr@gmail.com | `cdcc177a…` | — |
+| **81** | session-18 | 30 | liamantoine31@gmail.com | `9f42ef89…` | — |
+| **83** | session-20 | 37 | zakarmmusa832@gmail.com | `1f5b8636…` | — |
+| **87** | session-24 | 40 | lov6020lpeic9@souss.dev | `ac03f128…` | — |
+| **88** | session-25 | 42 | na.thanrolutenasa@gmail.com | `388ebccb…` | — |
+| **89** | session-26 | 43 | lovohqhzhno7q@souss.dev | `f16469dc…` | — |
 
-13 + 16 share Lovable session 2 (two projects, two cells).
+13 + 16 share Lovable session 2, and 43 + 53 share Lovable session 25 — two projects can each
+carry two cells with the same cookies, but note the cells must not fight over one preview.
 
-## Assigned, rolling out (18 bridged sessions waiting on their cell)
+## Assigned, not yet mining (7 hunting + 3 not started)
 
-Every one of these has a project with a verified `window.doc` bridge. The cell image is
-deployed; `ops/bootstrap_plan.py` is bringing the daemon up one at a time.
+Every account below owns a project with a verified `window.doc` bridge. The cell image is
+deployed; the daemon is running and authed — they are waiting on the Lovable sandbox to serve
+a `lovableproject.com/term` frame that answers `doc('nproc')`.
 
-| Cell | Lov sess | Email | Project |
-|---|---|---|---|
-| 53 | 25 | johnpeter08541@gmail.com | `84fa81b7…` |
-| 76 | 26 | Josephgrant651@gmail.com | `e474f21d…` |
-| 77 | 27 | julianhiramqwr@gmail.com | `cdcc177a…` |
-| 80 | 28 | kristinenorris08@gmail.com | `ef264ce7…` |
-| 81 | 30 | liamantoine31@gmail.com | `9f42ef89…` |
-| 82 | 33 | roce.sisla@gmail.com | `b27e2af0…` |
-| 83 | 37 | zakarmmusa832@gmail.com | `1f5b8636…` |
-| 84 | 38 | simpsonjessicamarie.0@gmail.com | `7703551a…` |
-| 86 | 39 | lovgraukipb6b@souss.dev | `432a10dd…` |
-| 87 | 40 | lov6020lpeic9@souss.dev | `ac03f128…` |
-| 88 | 42 | na.thanrolutenasa@gmail.com | `388ebccb…` |
-| 89 | 43 | lovohqhzhno7q@souss.dev | `f16469dc…` |
-| 90 | 45 | lovwsrj0lswqa@souss.dev | `ea9614b2…` |
-| 91 | 47 | lov484vnilli1@souss.dev | `9508a15e…` (no SSH key on that Railway account) |
-| 92 | 49 | lovtx66imf0z1@souss.dev | `ab8e78fe…` |
-| 93 | 51 | lovv2ubbdli1c@souss.dev | `9c8b880c…` |
-| 94 | 52 | lova4jgjpd9cv@souss.dev | `fa7ad090…` |
-| 96 | 53 | lovauxtyiqsp6@souss.dev | `06189278…` |
+| Cell | Lov sess | Email | Project | State |
+|---|---|---|---|---|
+| 80 | 28 | kristinenorris08@gmail.com | `ef264ce7…` | hunting, `Force /term` timeouts |
+| 82 | 33 | roce.sisla@gmail.com | `b27e2af0…` | hunting, `id-preview` only |
+| 84 | 38 | simpsonjessicamarie.0@gmail.com | `7703551a…` | hunting, early |
+| 86 | 39 | lovgraukipb6b@souss.dev | `432a10dd…` | hunting |
+| 90 | 45 | lovwsrj0lswqa@souss.dev | `ea9614b2…` | hunting, `Force /term` soft+assign timeout |
+| 92 | 49 | lovtx66imf0z1@souss.dev | `ab8e78fe…` | hunting, early |
+| 93 | 51 | lovv2ubbdli1c@souss.dev | `9c8b880c…` | hunting, cycle #1 |
+| 94 | 52 | lova4jgjpd9cv@souss.dev | `fa7ad090…` | image deployed, **not bootstrapped** |
+| 96 | 53 | lovauxtyiqsp6@souss.dev | `06189278…` | image deployed, **not bootstrapped** |
 
+Rule of thumb: give a hunting cell 45 min. Bounce it after that; if a second pass fails, the
+project side lost its bridge — re-run `remix_inject.py --session N --bridge-only`.
+
+**Blocked:** cell 91 (sess-47) — no SSH key registered on that Railway account.
 **Not deployable:** cells 75 / 95 / 110 / 120 — Railway workspace payment-restricted.
 
 ## Transport gotcha when checking these
@@ -100,5 +105,5 @@ Wake/presence prompts (`say 'a'`, idle typing) are **not** the bridge prompt.
 ## Fixed rig per cell
 
 `fleet.json` cell `rig: {threads, bridge}` → baked into `lean_sup.sh` → daemon logs `Rig: threads=… bridge=…`.
-All five mining cells currently run default 16 threads on the built-in bridge.
+All 13 mining cells currently run default 16 threads on the built-in bridge.
 Change live: `python3 ops/cell_ops.py set-rig 28 --threads 8` (restarts supervisor so env re-reads).
