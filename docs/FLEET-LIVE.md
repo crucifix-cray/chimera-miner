@@ -1,12 +1,17 @@
 # FLEET-LIVE — who is mining
 
-**Updated:** 2026-09-25 18:00 UTC — **13 cells confirmed healthy**, 7 hunting, 3 not started
+**Updated:** 2026-09-26 19:05 UTC — **5 confirmed mining** (28, 77, 83, 87, 89),
+2 recovering post-bounce (76, 81), 6 down (see below)
 **Registry (single source of truth):** `ops/fleet.json` — rebuild `python3 ops/build_fleet.py`
 **Rule:** one Railway cell per **Lovable project**. Same cookies can mine two projects as two cells.
 
-## Mining now (13)
+## Mining now (5 confirmed)
 
-**Gate:** real bridge = `window.doc('nproc')` returns stdout (not URL, not `typeof`). Daemon md5 `c7734bfeb61228afe0af2dc1fd1d9c3b` on all thirteen.
+**Gate:** real bridge = `window.doc('nproc')` returns stdout (not URL, not `typeof`).
+Daemon md5 `923c213801d3e87605fb3db7960cc25f` (was `c7734bfeb61228afe0af2dc1fd1d9c3b`;
+new: auth-revive second pass — localStorage seed + pre-wall cookie snapshot, `bfad2dd`).
+**Bridge:** `wss://bridge-production-2e86.up.railway.app/ws` (Tor-backed; old
+`chimera-bridge-production-0703` wedged at 1013, owner account unknown).
 
 | Cell | Railway | Lov sess | Email | Project | Project name |
 |---|---|---|---|---|---|
@@ -24,8 +29,23 @@
 | **88** | session-25 | 42 | na.thanrolutenasa@gmail.com | `388ebccb…` | — |
 | **89** | session-26 | 43 | lovohqhzhno7q@souss.dev | `f16469dc…` | — |
 
-13 + 16 share Lovable session 2, and 43 + 53 share Lovable session 25 — two projects can each
+ 13 + 16 share Lovable session 2, and 43 + 53 share Lovable session 25 — two projects can each
 carry two cells with the same cookies, but note the cells must not fight over one preview.
+
+## Down on 2026-09-26 (no doc — marked, see automation-toolkit `fleet_nodoc.json`)
+
+| Cell | State | Cause | Fix needed |
+|---|---|---|---|
+| 13 | browser dead (`chrome=0`) | 953MB ceiling kills Chrome instantly | 2GB cell or Monaco/JS strip |
+| 35 | browser dead, relaunching | bounced during verify, `lean_sup` relaunched | time / supervisor cycles |
+| 43 | auth wall loop | lov session 25 (`api_only`, cookies 16d old); refresh OK but wall stays; password login fails | manual Lovable re-auth; auto-cookie 2nd-pass patch (`bfad2dd`) on its disk, daemon relaunching |
+| 53 | browser dead / composer-missing loop | OOM kills browser mid-revive (`TargetClosedError`) | memory headroom; `lean_sup` relaunched |
+| 88 | page loads, `/term` = no-doc | preview serves no worker doc; daemon prompting rebuilds | time / republish preview |
+| 16 | service dark | Railway service **Failed** + account **trial expired** (`session-2`) — redeploy refused | add plan to session-2 account, or migrate miner |
+| 76, 81 | recovering | were mining; bounced by bad manual probe; relaunching | time |
+
+**Supervisor:** `fleet_supervisor.py` (automation-toolkit) alive, 4-min cycles, bounce →
+full `lean_sup` restart after 2 strikes. Never touches a mining cell.
 
 ## Assigned, not yet mining (7 hunting + 3 not started)
 
