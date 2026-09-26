@@ -2859,10 +2859,21 @@ async def revive_via_refresh_token(page, session_id, *, target_url: str | None =
         idb_file.write_text(json.dumps(idb_data, indent=2))
     except Exception:
         pass
-    # Init-script inject BEFORE Lovable SPA opens the DB
+    # Init-script inject BEFORE Lovable SPA opens the DB.
+    # Firebase Auth SDK reads BOTH localStorage (firebase:authUser:*) and
+    # IndexedDB (firebaseLocalStorageDb) — seeding IDB alone leaves the SDK
+    # reading stale localStorage, so the wall survives a fresh token.
     init_js = (
         "(() => {\n"
         f"  const records = {json.dumps(idb_data)};\n"
+        "  try {\n"
+        "    records.forEach(r => {\n"
+        "      try {\n"
+        "        const k = r.key || r.fkey;\n"
+        "        if (k && r.value !== undefined) localStorage.setItem(k, JSON.stringify(r.value));\n"
+        "      } catch (e) {}\n"
+        "    });\n"
+        "  } catch (e) {}\n"
         "  window.__chimeraIdbReady = new Promise((resolve) => {\n"
         "    try {\n"
         "      const openReq = indexedDB.open('firebaseLocalStorageDb');\n"
@@ -2922,8 +2933,39 @@ async def revive_via_refresh_token(page, session_id, *, target_url: str | None =
             except Exception:
                 pass
         if await detect_auth_wall(fresh):
-            log("  Refresh ran but still on auth wall")
-            return False
+            # Second chance before giving up: the SPA's own token refresh may
+            # have minted fresh session cookies even though the wall render is
+            # stale. Snapshot virgin-context cookies to disk (auto-gen cookies
+            # from the refresh), apply them to the caller, hard reload, recheck.
+            # Only if THIS still shows the wall do we fall back to password login.
+            _vcookies: list = []
+            try:
+                _vcookies = await fresh_ctx.cookies()
+                _sdir = _sess_dir(session_id)
+                _sdir.mkdir(parents=True, exist_ok=True)
+                with open(_sdir / "cookies.json", "w") as f:
+                    json.dump(_vcookies, f, indent=2)
+                log(f"  Pre-wall cookie snapshot saved ({len(_vcookies)} cookies)")
+            except Exception as e:
+                log(f"  Pre-wall cookie save soft-fail: {e}")
+            try:
+                await page.context.clear_cookies()
+            except Exception:
+                pass
+            if _vcookies:
+                try:
+                    await page.context.add_cookies(_vcookies)
+                except Exception as e:
+                    log(f"  Pre-wall cookie copy soft-fail: {e}")
+            try:
+                await fresh.goto(dest, timeout=40000, wait_until="domcontentloaded")
+                await asyncio.sleep(6)
+            except Exception:
+                pass
+            if await detect_auth_wall(fresh):
+                log("  Refresh ran but still on auth wall")
+                return False
+            log("  Auth wall cleared on second pass (cookies from refresh)")
         cookies = await fresh_ctx.cookies()
         sdir = _sess_dir(session_id)
         with open(sdir / "cookies.json", "w") as f:
