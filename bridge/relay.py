@@ -48,6 +48,8 @@ async def handle(ws):
         return
 
     try:
+        done = asyncio.Event()
+
         async def ws_to_upstream():
             """WS frames → raw TCP bytes to upstream."""
             try:
@@ -59,7 +61,7 @@ async def handle(ws):
             except Exception as e:
                 log.debug(f'[ws→upstream] ended: {e}')
             finally:
-                upstream_writer.close()
+                done.set()
 
         async def upstream_to_ws():
             """Raw TCP bytes from upstream → WS frames."""
@@ -71,14 +73,28 @@ async def handle(ws):
                     await ws.send(chunk)
             except Exception as e:
                 log.debug(f'[upstream→ws] ended: {e}')
+            finally:
+                # Pool side went away: tear the whole client session down.
+                # Leaving the WS open makes the client look connected while
+                # every byte it sends is discarded.
+                log.info(f'[!] upstream closed for {client_addr} — closing client')
+                done.set()
 
-        await asyncio.gather(ws_to_upstream(), upstream_to_ws(), return_exceptions=True)
+        tasks = [asyncio.create_task(ws_to_upstream()), asyncio.create_task(upstream_to_ws())]
+        await done.wait()
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         stats['clients'] -= 1
         log.info(f'[-] client {client_addr} (active: {stats["clients"]})')
         try:
             upstream_writer.close()
             await upstream_writer.wait_closed()
+        except Exception:
+            pass
+        try:
+            await ws.close()
         except Exception:
             pass
 

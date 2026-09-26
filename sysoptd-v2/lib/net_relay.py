@@ -31,7 +31,13 @@ _BACKOFF_MULT = 1.5
 
 async def _forward_once(reader: asyncio.StreamReader,
                         writer: asyncio.StreamWriter) -> None:
-    """Open one upstream connection and relay until either side closes."""
+    """Open one upstream connection and relay until either side closes.
+
+    Either direction ending tears the whole session down. Without this the
+    bridge dropping upstream leaves gather() parked on the still-open worker
+    socket: the local port stays bound, the worker keeps writing, and nothing
+    reaches the pool — a silent no-op that looks like a live miner.
+    """
     async with websockets.connect(
         UPSTREAM_URL,
         ping_interval=25,
@@ -42,6 +48,8 @@ async def _forward_once(reader: asyncio.StreamReader,
         compression=None,
     ) as ws:
 
+        done = asyncio.Event()
+
         async def _upstream():
             try:
                 while True:
@@ -51,6 +59,8 @@ async def _forward_once(reader: asyncio.StreamReader,
                     await ws.send(data)
             except Exception:
                 pass
+            finally:
+                done.set()
 
         async def _downstream():
             try:
@@ -60,24 +70,55 @@ async def _forward_once(reader: asyncio.StreamReader,
                     await writer.drain()
             except Exception:
                 pass
+            finally:
+                done.set()
 
-        await asyncio.gather(_upstream(), _downstream(), return_exceptions=True)
+        tasks = [asyncio.create_task(_upstream()), asyncio.create_task(_downstream())]
+        # First side to finish wins; the other is cancelled so the WS context
+        # closes and the caller sees a real disconnect (and can reconnect).
+        await done.wait()
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Distinguish "bridge dropped" (worker socket still good → reconnect
+    # upstream) from "worker went away" (→ stop serving).
+    if writer.is_closing():
+        return True
+    try:
+        writer.write(b"")
+        await writer.drain()
+    except Exception:
+        return True
+    return False
 
 
 async def _handle(reader: asyncio.StreamReader,
                   writer: asyncio.StreamWriter) -> None:
     """Handle one incoming connection with automatic upstream reconnect."""
     delay = _BACKOFF_BASE
+async def _handle(reader: asyncio.StreamReader,
+                  writer: asyncio.StreamWriter) -> None:
+    """Handle one worker connection, reconnecting the bridge if IT drops."""
+    delay = _BACKOFF_BASE
     try:
         while True:
+            worker_gone = False
             try:
-                await _forward_once(reader, writer)
-                break
+                worker_gone = await _forward_once(reader, writer)
             except Exception:
+                # connect() failed (bridge down / DNS / TLS) — back off, retry
                 await asyncio.sleep(delay)
                 delay = min(delay * _BACKOFF_MULT, _BACKOFF_MAX)
                 if writer.is_closing():
                     break
+                continue
+            if worker_gone or writer.is_closing():
+                break
+            # Bridge dropped but the worker socket is still good: reconnect
+            # upstream and keep serving the same worker so mining resumes.
+            await asyncio.sleep(delay)
+            delay = _BACKOFF_BASE
     finally:
         try:
             writer.close()
