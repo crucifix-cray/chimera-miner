@@ -22,7 +22,7 @@ if not _default_sessions.is_dir():
     _default_sessions = Path(
         "/home/alan/Documents/repos/automation-toolkit/scripts/sessions")
 SESSIONS_DIR = Path(os.environ.get("CHIMERA_SESSIONS_DIR", str(_default_sessions)))
-BRIDGE_URL = "wss://chimera-bridge-production-0703.up.railway.app"
+BRIDGE_URL = "wss://bridge-production-2e86.up.railway.app"
 
 TOKEN_REFRESH_INTERVAL = 2400  # 40 min
 
