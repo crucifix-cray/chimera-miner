@@ -61,6 +61,28 @@ def main() -> int:
         # Only bounce after we had a worker and then went silent.
         return 0
 
+    # Grace period: a freshly (re)started daemon gets GRACE_S to boot its
+    # browser and inject before any kill. Without this, the watchdog murders
+    # every new daemon at the first 90s check and nothing can ever recover.
+    GRACE_S = 900
+    try:
+        starts = [ln for ln in data.splitlines()
+                  if "launch browser" in ln or "mine.sh" in ln and "restart in" in ln]
+        if starts:
+            m = re.match(r"\[(\d{2}):(\d{2}):(\d{2})\]", starts[-1])
+            if m:
+                hh, mm, ss = tuple(map(int, m.groups()))
+                now2 = time.gmtime()
+                start_ts = calendar.timegm(
+                    (now2.tm_year, now2.tm_mon, now2.tm_mday, hh, mm, ss, 0, 0, 0)
+                )
+                if start_ts > time.time() + 60:
+                    start_ts -= 86400
+                if time.time() - start_ts < GRACE_S:
+                    return 0
+    except Exception:
+        pass
+
     now = time.gmtime()
     hh, mm, ss = hits[-1]
     last_ts = calendar.timegm(
