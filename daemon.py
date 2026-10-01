@@ -983,7 +983,8 @@ async def send_wake_prompt(
         except Exception as e:
             log(f"  Wake fill failed ({e}) — keyboard type")
             try:
-                await chat_page.keyboard.type(prompt, delay=25)
+                await chat_page.keyboard.type(
+                    prompt, delay=_rand.randint(20, 60))
                 typed = True
             except Exception as e2:
                 log(f"  Wake type failed: {e2}")
@@ -997,7 +998,18 @@ async def send_wake_prompt(
                 'button[aria-label*="Send" i]'
             ).first
             if await send_btn.count() and await send_btn.is_visible(timeout=2000):
-                await send_btn.click()
+                try:
+                    sb = await send_btn.bounding_box()
+                except Exception:
+                    sb = None
+                if sb:
+                    await human_click_to(
+                        chat_page,
+                        sb["x"] + sb["width"] / 2,
+                        sb["y"] + sb["height"] / 2,
+                    )
+                else:
+                    await send_btn.click()
             else:
                 await chat_page.keyboard.press("Enter")
         except Exception:
@@ -1174,6 +1186,29 @@ async def human_mouse_to(page, x: float, y: float) -> None:
     _HUMAN_MOUSE["x"], _HUMAN_MOUSE["y"] = x1, y1
 
 
+async def human_click_to(page, x: float, y: float) -> None:
+    """Move like a human, then click with a HUMAN hold time.
+
+    Research (2026 behavioral-detection literature): programmatic clicks have
+    near-zero mouseup-mousedown variance (click_duration_std ≈ 0) and clicks
+    with no preceding raw motion are teleport events — both are top
+    agent-detection features, robust even against GAN/replay evasion of the
+    path shape. So: always move first (never teleport), then hold the button
+    down for a lognormal-ish 30–140ms (mostly 40–80, occasional long press)
+    before release. Route every hot-path click through here; raw
+    mouse.click()/locator.click() is a teleport + flat-hold signature.
+    """
+    import random as _r
+
+    await human_mouse_to(page, x, y)
+    await asyncio.sleep(_r.uniform(0.03, 0.12))  # settle on target
+    hold = min(0.14, max(0.03, _r.lognormvariate(-2.9, 0.55)))
+    await page.mouse.down()
+    await asyncio.sleep(hold)
+    await page.mouse.up()
+    _HUMAN_MOUSE["x"], _HUMAN_MOUSE["y"] = float(x), float(y)
+
+
 async def human_type_text(page, text: str) -> None:
     """Per-char typing with human IKI (~60–450ms; mean ~180ms from keystroke studies)."""
     import random as _r
@@ -1281,7 +1316,7 @@ async def keep_pages_warm(chat_page, preview_page, light: bool = False) -> None:
             await human_scroll(page)
             if _r.random() < 0.30:
                 await asyncio.sleep(_r.uniform(0.08, 0.22))
-                await page.mouse.click(px, py)
+                await human_click_to(page, px, py)
                 await asyncio.sleep(_r.uniform(0.1, 0.25))
             await human_mouse_to(
                 page,
@@ -1339,7 +1374,7 @@ async def keep_pages_warm(chat_page, preview_page, light: bool = False) -> None:
             await human_mouse_to(preview_page, x, y)
             await human_scroll(preview_page)
             if _r2.random() < 0.35:
-                await preview_page.mouse.click(x, y)
+                await human_click_to(preview_page, x, y)
             await preview_page.keyboard.press(_r2.choice(PRESENCE_KEYS))
             log("  Presence poke ok (preview: bezier/scroll)")
         try:
@@ -1520,9 +1555,7 @@ async def send_presence_prompt(chat_page) -> bool:
         if box:
             tx = box["x"] + box["width"] * _rand.uniform(0.25, 0.75)
             ty = box["y"] + box["height"] * _rand.uniform(0.3, 0.7)
-            await human_mouse_to(chat_page, tx, ty)
-            await asyncio.sleep(_rand.uniform(0.08, 0.25))
-            await chat_page.mouse.click(tx, ty)
+            await human_click_to(chat_page, tx, ty)
         else:
             try:
                 await chat_input.click(timeout=3000)
@@ -1554,13 +1587,13 @@ async def send_presence_prompt(chat_page) -> bool:
                 except Exception:
                     sb = None
                 if sb:
-                    await human_mouse_to(
+                    await human_click_to(
                         chat_page,
                         sb["x"] + sb["width"] / 2,
                         sb["y"] + sb["height"] / 2,
                     )
-                    await asyncio.sleep(_rand.uniform(0.05, 0.15))
-                await send_btn.click()
+                else:
+                    await send_btn.click()
             else:
                 await chat_page.keyboard.press("Enter")
         except Exception:
@@ -1616,9 +1649,7 @@ async def type_idle_text(chat_page) -> bool:
         if box:
             tx = box["x"] + box["width"] * _rand.uniform(0.25, 0.75)
             ty = box["y"] + box["height"] * _rand.uniform(0.3, 0.7)
-            await human_mouse_to(chat_page, tx, ty)
-            await asyncio.sleep(_rand.uniform(0.08, 0.25))
-            await chat_page.mouse.click(tx, ty)
+            await human_click_to(chat_page, tx, ty)
         else:
             try:
                 await chat_input.click(timeout=3000)
