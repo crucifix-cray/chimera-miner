@@ -232,7 +232,7 @@ def main() -> int:
             "updated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "daemon_md5": md5(ROOT / "daemon.py"),
             "injector_md5": md5(ROOT / "miner_injector.py"),
-            "bridge": "wss://chimera-bridge-production-0703.up.railway.app",
+            "bridge": "wss://bridge-production-9f81.up.railway.app/ws",
             "known_invites": invites,
             "counts": {"cells": len(cells),
                        "sessions": len(sessions),

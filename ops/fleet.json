@@ -3,7 +3,7 @@
   "updated": "2026-09-25T17:57:01Z",
   "daemon_md5": "c7734bfeb61228afe0af2dc1fd1d9c3b",
   "injector_md5": "28bf95d3a03e4ad3326e99b54841e7fe",
-  "bridge": "wss://chimera-bridge-production-0703.up.railway.app",
+  "bridge": "wss://bridge-production-9f81.up.railway.app/ws",
   "known_invites": [
    {
     "invite_link": "https://lovable.dev/projects/6c09b9fd-5ace-497a-8a55-0ec5a1a4e6e0?magic_link=mc_1c8fecba-21e2-438a-9707-9b70dbb37258",
