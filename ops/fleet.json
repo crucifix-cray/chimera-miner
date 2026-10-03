@@ -519,20 +519,12 @@
    "note": "rebuilt 2026-09-29 on fresh session-51 (old rs-30); lov-52 revived trio"
   },
   "95": {
-   "railway_session": 31,
+   "railway_session": 35,
    "service": "cell-95",
-   "railway_project": "c689d2d0-4c7d-4b6b-861e-38974f917d6e",
-   "env": "6780c3f9-1b19-4a73-8b64-eaf1e7db4c03",
-   "volume": "132a372a-7166-4f6c-8b7f-26871772c289",
-   "service_status": "ready",
-   "lov_session": null,
-   "lovable_project": null,
-   "log": null,
-   "miner": "unknown",
-   "rig": {
-    "threads": 16,
-    "bridge": ""
-   }
+   "service_name": "cell-95",
+   "lov_session": 25,
+   "miner": "mining",
+   "note": "built 2026-10-02 no-build ubuntu path"
   },
   "96": {
    "railway_session": 32,
@@ -853,6 +845,54 @@
     "threads": 16,
     "bridge": ""
    }
+  },
+  "97": {
+   "railway_session": 36,
+   "service": "cell-97",
+   "service_name": "cell-97",
+   "lov_session": 33,
+   "miner": "mining",
+   "note": "built 2026-10-02 no-build ubuntu path"
+  },
+  "98": {
+   "railway_session": 38,
+   "service": "cell-98",
+   "service_name": "cell-98",
+   "lov_session": 39,
+   "miner": "mining",
+   "note": "built 2026-10-02 no-build ubuntu path"
+  },
+  "100": {
+   "railway_session": 41,
+   "service": "cell-100",
+   "service_name": "cell-100",
+   "lov_session": 45,
+   "miner": "mining",
+   "note": "built 2026-10-02 no-build ubuntu path"
+  },
+  "101": {
+   "railway_session": 42,
+   "service": "cell-101",
+   "service_name": "cell-101",
+   "lov_session": 46,
+   "miner": "mining",
+   "note": "built 2026-10-02 no-build ubuntu path"
+  },
+  "102": {
+   "railway_session": 43,
+   "service": "cell-102",
+   "service_name": "cell-102",
+   "lov_session": 47,
+   "miner": "mining",
+   "note": "built 2026-10-02 no-build ubuntu path"
+  },
+  "103": {
+   "railway_session": 44,
+   "service": "cell-103",
+   "service_name": "cell-103",
+   "lov_session": 28,
+   "miner": "mining",
+   "note": "built 2026-10-02 no-build ubuntu path"
   }
  },
  "sessions": {
