@@ -1788,8 +1788,10 @@ async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bo
         if "webcontainer" in u or "stackblitz" in u:
             return 40
         try:
+            # Blank/about frames can never hold window.doc — exclude them so we
+            # never probe or navigate a frame that is hopeless by definition.
             if fr != chat_page.main_frame and (not u or u.startswith("about:")):
-                return 20
+                return -1
         except Exception:
             pass
         return -1
@@ -1848,11 +1850,22 @@ async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bo
         if not navigated:
             continue
         try:
-            await asyncio.sleep(3)
-            probe = await _probe_frame_doc_nproc(fr, timeout=12.0)
+            # Give the cold WebContainer terminal time to boot before probing:
+            # wait for load quiescence first (up to ~45s), then probe long.
+            # Probing a still-booting page only ever yields no-doc.
+            try:
+                await asyncio.wait_for(
+                    fr.wait_for_load_state("networkidle", timeout=30000),
+                    timeout=35,
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(10)
+            probe = await _probe_frame_doc_nproc(fr, timeout=25.0)
             if isinstance(probe, dict) and probe.get("ok"):
                 log(f"  Force /term: DOC ok nproc={probe.get('r')!r}")
                 return True
+            log(f"  Force /term: probe says {str(probe.get('err', '?'))[:60]} — page may still be booting, will re-check next pass")
         except Exception as e:
             log(f"  Force /term probe soft: {type(e).__name__}")
             continue
@@ -1913,7 +1926,8 @@ def _sandbox_frame_score(frame) -> int:
     except Exception:
         is_main = False
     if not u or u.startswith("about:"):
-        return 8 if not is_main else -1
+        # Blank frames can never hold window.doc — exclude everywhere.
+        return -1
     score = 0
     if "lovableproject.com" in u:
         score += 100
@@ -2000,18 +2014,26 @@ async def wait_for_chat_preview_sandbox(
         except Exception:
             pass
 
-        # Remount Preview/Shell periodically — iframe often appears only after remount
+        # Remount ONLY when no lovableproject frame exists — remounting
+        # destroys a mid-load iframe, so a timer remount erases progress.
         if elapsed - last_remount >= 20:
             last_remount = elapsed
             try:
-                await asyncio.wait_for(
-                    ensure_preview_shell_panel(chat_page), timeout=20)
-            except Exception as e:
-                last_note = f"remount:{type(e).__name__}"
-            try:
-                await dismiss_blocking_popups(chat_page, max_passes=2)
+                has_lp = await has_lovableproject_frame(chat_page)
             except Exception:
-                pass
+                has_lp = False
+            if not has_lp:
+                try:
+                    await asyncio.wait_for(
+                        ensure_preview_shell_panel(chat_page), timeout=20)
+                except Exception as e:
+                    last_note = f"remount:{type(e).__name__}"
+                try:
+                    await dismiss_blocking_popups(chat_page, max_passes=2)
+                except Exception:
+                    pass
+            else:
+                last_note = "frame-present-skip-remount"
 
         try:
             frames = list(chat_page.frames)
@@ -2091,6 +2113,27 @@ async def wait_for_chat_preview_sandbox(
             log(f"  Chat Preview sandbox ready (nproc): {str(u_soft)[:120]}")
             return True
         await asyncio.sleep(4)
+
+
+async def has_lovableproject_frame(chat_page) -> bool:
+    """True if any live frame already points at lovableproject.com.
+
+    Remounting destroys and recreates the preview iframe, so callers must
+    check this FIRST and skip the remount when the frame exists. A remount
+    is a reset — never do it on a timer or unconditionally per round.
+    """
+    try:
+        frames = list(chat_page.frames)
+    except Exception:
+        return False
+    for fr in frames:
+        try:
+            u = (fr.url or "").lower()
+        except Exception:
+            continue
+        if "lovableproject.com" in u:
+            return True
+    return False
 
 
 async def bring_up_lovableproject_doc(
@@ -2174,7 +2217,10 @@ async def bring_up_lovableproject_doc(
         except Exception:
             pass
         try:
-            await ensure_preview_shell_panel(chat_page)
+            if not await has_lovableproject_frame(chat_page):
+                await ensure_preview_shell_panel(chat_page)
+            else:
+                log("  Panel: lovableproject frame present — skip remount")
         except Exception as e:
             log(f"  Panel remount soft: {type(e).__name__}")
         try:
