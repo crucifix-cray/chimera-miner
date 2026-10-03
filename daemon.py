@@ -3519,6 +3519,20 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
     pw = None
     browser = None
     context = None
+    camou_cm = None
+
+    class _CamouPlaywright:
+        """Minimal Playwright-driver shim so _shutdown_browser can stop Camoufox."""
+
+        def __init__(self, cm):
+            self._cm = cm
+
+        async def stop(self):
+            try:
+                await self._cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+
     while True:
         cycle += 1
         attached = False
@@ -3541,7 +3555,12 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     log(f"  {tab_fail_streak} fresh tabs never came up — "
                         f"relaunching browser (last resort)")
                 await _shutdown_browser(pw, browser)
-                pw = browser = context = None
+                if camou_cm is not None:
+                    try:
+                        await camou_cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                pw = browser = context = camou_cm = None
                 tab_fail_streak = 0
                 # Always reap zombies + clear any leftover Chrome before launch
                 kill_browser_orphans()
@@ -3549,40 +3568,53 @@ async def run_daemon(session_id, project_id, browser_type, threads, mode, headed
                     hard_kill_chrome()
                 reclaim_if_pressure("pre-launch")
 
-                pw = await async_playwright().start()
-                if browser_type == "chromium":
+                if browser_type == "camoufox":
+                    from camoufox.async_api import AsyncCamoufox
+
+                    camou_cm = AsyncCamoufox(
+                        headless=not headed,
+                        humanize=True,
+                        args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    )
+                    browser = await camou_cm.__aenter__()
+                    pw = _CamouPlaywright(camou_cm)
+                    log("  Launched Camoufox headed="
+                        f"{headed} (test browser for blank-preview diagnosis)")
+                else:
+                    pw = await async_playwright().start()
+                    if browser_type == "chromium":
                     # 1GB Railway: headed Xvfb OOMs (Aw Snap #5). Prefer headless
                     # when cgroup ≤1.1GB unless CHIMERA_FORCE_HEADED=1.
-                    mem_gb = cgroup_mem_gb()
-                    use_headed = headed
-                    force_headed = os.environ.get("CHIMERA_FORCE_HEADED", "") == "1"
-                    disp = (os.environ.get("DISPLAY") or "").strip()
+                        mem_gb = cgroup_mem_gb()
+                        use_headed = headed
+                        force_headed = os.environ.get("CHIMERA_FORCE_HEADED", "") == "1"
+                        disp = (os.environ.get("DISPLAY") or "").strip()
                     # Empty Xvfb was caused by auto-headless on 1GB while DISPLAY=:99
                     # was set but CHIMERA_FORCE_HEADED missing (cell-16 lean_sup).
-                    if mem_gb and mem_gb <= 1.15 and not force_headed:
-                        if disp:
-                            log(f"  cgroup {mem_gb:.2f}GB ≤1.1 but DISPLAY={disp} "
-                                f"— keeping headed (set CHIMERA_FORCE_HEADED=0 + "
-                                f"unset DISPLAY to allow headless)")
-                        else:
-                            use_headed = False
-                            log(f"  cgroup {mem_gb:.2f}GB ≤1.1 — forcing headless "
-                                f"(set CHIMERA_FORCE_HEADED=1 to override)")
-                    chrome_args = _chromium_lean_args()
-                    if use_headed:
+                        if mem_gb and mem_gb <= 1.15 and not force_headed:
+                            if disp:
+                                log(f"  cgroup {mem_gb:.2f}GB ≤1.1 but DISPLAY={disp} "
+                                    f"— keeping headed (set CHIMERA_FORCE_HEADED=0 + "
+                                    f"unset DISPLAY to allow headless)")
+                            else:
+                                use_headed = False
+                                log(f"  cgroup {mem_gb:.2f}GB ≤1.1 — forcing headless "
+                                    f"(set CHIMERA_FORCE_HEADED=1 to override)")
+                        chrome_args = _chromium_lean_args()
+                        if use_headed:
                         # Force real X11 windows on Xvfb (else ozone can stay blank)
-                        chrome_args = list(chrome_args) + [
-                            "--ozone-platform=x11",
-                            "--ozone-platform-hint=x11",
-                        ]
-                    browser = await pw.chromium.launch(
-                        headless=not use_headed, args=chrome_args)
-                    log("  Launched Chromium via Playwright "
-                        f"(headless={not use_headed}, DISPLAY={disp or '-'}, "
-                        f"1GB max-strip flags)")
-                else:
-                    browser = await pw.firefox.launch(headless=not headed)
-                    log("  Launched Firefox via Playwright")
+                            chrome_args = list(chrome_args) + [
+                                "--ozone-platform=x11",
+                                "--ozone-platform-hint=x11",
+                            ]
+                        browser = await pw.chromium.launch(
+                            headless=not use_headed, args=chrome_args)
+                        log("  Launched Chromium via Playwright "
+                            f"(headless={not use_headed}, DISPLAY={disp or '-'}, "
+                            f"1GB max-strip flags)")
+                    else:
+                        browser = await pw.firefox.launch(headless=not headed)
+                        log("  Launched Firefox via Playwright")
                 # Match Chrome --window-size + Xvfb (Lovable needs room for Preview)
                 _vp = {"width": VIEW_W, "height": VIEW_H}
                 context = await browser.new_context(
@@ -4549,7 +4581,7 @@ def main():
     parser = argparse.ArgumentParser(description="Autonomous Miner Daemon")
     parser.add_argument("--session", required=True, help="Session (e.g. session-2 or 2)")
     parser.add_argument("--project", required=True, help="Lovable project ID")
-    parser.add_argument("--browser", default="chromium", choices=["chromium", "firefox"])
+    parser.add_argument("--browser", default="chromium", choices=["chromium", "firefox", "camoufox"])
     parser.add_argument("--threads", type=int, default=16,
                         help="Worker threads (16 fits 1GB Lovable shells; 64 thrashs)")
     parser.add_argument("--mode", default="full", choices=["full", "oneshot", "gh"])
