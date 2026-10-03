@@ -2188,6 +2188,76 @@ async def has_lovableproject_frame(chat_page) -> bool:
     return False
 
 
+async def wait_until_preview_good(chat_page, timeout_s: float = 600.0):
+    """Manual-flow gate: WAIT until a lovableproject frame loads clean.
+
+    No navigation, no remount, no prompts inside — pure observation. Returns
+    (frame, state) where state is one of: 'doc' (window.doc runs — GO),
+    'terminal-no-doc' (terminal DOM visible, doc missing — keep waiting
+    outside), 'loading' (frame exists, still booting), 'error' (page shows
+    an error — needs intervention), 'missing' (no such frame at all).
+    A human waits until the page works; this is that wait.
+    """
+    import time as _t
+    deadline = _t.monotonic() + timeout_s
+    last_state = "missing"
+    while _t.monotonic() < deadline:
+        try:
+            frames = list(chat_page.frames)
+        except Exception:
+            await asyncio.sleep(5)
+            continue
+        best = (None, "missing")
+        for fr in frames:
+            try:
+                u = (fr.url or "").lower()
+            except Exception:
+                continue
+            if "lovableproject.com" not in u:
+                continue
+            try:
+                st = await asyncio.wait_for(
+                    fr.evaluate(
+                        """() => {
+                        try {
+                          const bt = (document.body && document.body.innerText || '').toLowerCase();
+                          if (/error|failed|not found|something went wrong|unable to connect/.test(bt.slice(0, 400)))
+                            return 'error';
+                          if (window.doc && typeof window.doc === 'function') return 'doc';
+                          if (document.querySelector('.xterm, .terminal, [class*=terminal i], canvas')) return 'terminal-no-doc';
+                          const t = (document.body && document.body.innerText || '').trim();
+                          if (t.length > 40) return 'has-text';
+                          const rs = document.readyState;
+                          if (rs === 'loading') return 'loading';
+                          return 'blank';
+                        } catch (e) { return 'eval-fail'; }
+                    }"""
+                    ),
+                    timeout=12,
+                )
+            except Exception:
+                continue
+            rank = {"doc": 5, "terminal-no-doc": 4, "has-text": 3,
+                    "loading": 2, "blank": 1}.get(st, 0)
+            if rank > {"doc": 5, "terminal-no-doc": 4, "has-text": 3,
+                       "loading": 2, "blank": 1}.get(best[1], -1):
+                best = (fr, st)
+                if st == "doc":
+                    return fr, st
+        if best[1] != "missing":
+            last_state = best[1]
+            if best[1] in ("terminal-no-doc", "has-text", "loading"):
+                await asyncio.sleep(10)
+                continue
+            if best[1] == "error":
+                return best[0], "error"
+            # blank: wait, do NOT navigate — navigation is the caller's job
+            await asyncio.sleep(10)
+            continue
+        await asyncio.sleep(8)
+    return None, last_state
+
+
 async def bring_up_lovableproject_doc(
     chat_page,
     *,
@@ -2257,6 +2327,22 @@ async def bring_up_lovableproject_doc(
                         log("  Bring-up: auth revive failed — keep trying")
             except Exception as e:
                 log(f"  Bring-up auth check soft: {type(e).__name__}")
+
+        # MANUAL FLOW GATE (runs once per bring-up, before any navigation):
+        # wait until the preview is truly good, like a human would. Only if
+        # no lovableproject frame appears at all do we fall through to the
+        # remount/force machinery below.
+        if round_n == 1:
+            try:
+                _fr, _st = await wait_until_preview_good(chat_page, timeout_s=600.0)
+            except Exception as e:
+                _fr, _st = None, f"gate-exc:{type(e).__name__}"
+            log(f"  Bring-up gate: preview state={_st}")
+            if _st == "doc":
+                log("  Bring-up gate: doc already live — skipping force machinery")
+                return True
+            if _st == "error":
+                log("  Bring-up gate: preview shows an ERROR page — needs intervention, not navigation")
 
         log(f"  Bring-up lovableproject iframe+doc "
             f"(round {round_n}{'' if not max_rounds else f'/{max_rounds}'})...")
