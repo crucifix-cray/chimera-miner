@@ -1525,6 +1525,77 @@ async def refresh_chat_for_presence(chat_page, chat_url: str | None = None) -> b
         return False
 
 
+async def send_build_prompt_once(chat_page, state: dict) -> bool:
+    """Send ONE app-build prompt when the preview is complete-but-empty.
+
+    A blank preview with readyState complete means the app itself never built
+    (e.g. a cancelled build) — no navigation will ever fix it. A human pushes
+    a build command and waits. Capped at once per bring-up via state flag so
+    it can never spam credits. Returns True if the prompt was sent.
+    """
+    if not chat_page or state.get("build_prompt_sent"):
+        return False
+    try:
+        if chat_page.is_closed():
+            return False
+    except Exception:
+        return False
+    try:
+        chat_input, cdp_hung = await find_chat_composer(
+            chat_page, tag="build-prompt")
+        if cdp_hung or not chat_input:
+            log("  Build prompt: no composer — skip")
+            return False
+        prompt = ("Build the app so the homepage preview loads with content, "
+                  "then stop.")
+        log("  Build prompt: sending one app-build (capped 1x per bring-up)")
+        try:
+            box = await chat_input.bounding_box()
+        except Exception:
+            box = None
+        if box:
+            await human_click_to(chat_page, box["x"] + box["width"] / 2,
+                                 box["y"] + box["height"] / 2)
+        else:
+            try:
+                await chat_input.click(timeout=3000)
+            except Exception:
+                pass
+        await asyncio.sleep(0.4)
+        try:
+            await chat_page.keyboard.press("Control+a")
+            await asyncio.sleep(0.05)
+            await chat_page.keyboard.press("Backspace")
+            await asyncio.sleep(0.15)
+            await human_type_text(chat_page, prompt)
+        except Exception:
+            try:
+                await chat_input.fill(prompt, timeout=5000)
+            except Exception:
+                return False
+        await asyncio.sleep(0.3)
+        try:
+            send_btn = chat_page.locator(
+                'button[data-testid="chat-input-send"], '
+                'button[aria-label*="Send" i]'
+            ).first
+            if await send_btn.count() and await send_btn.is_visible(timeout=1500):
+                await send_btn.click()
+            else:
+                await chat_page.keyboard.press("Enter")
+        except Exception:
+            try:
+                await chat_page.keyboard.press("Enter")
+            except Exception:
+                return False
+        state["build_prompt_sent"] = True
+        log("  Build prompt sent — waiting for the app to build")
+        return True
+    except Exception as e:
+        log(f"  Build prompt skip: {type(e).__name__}")
+        return False
+
+
 async def send_presence_prompt(chat_page) -> bool:
     """Health-tick trivial chat prompt (say 'a' / 1+1? …). Soft-fail unless crash."""
     import random as _rand
@@ -2281,6 +2352,7 @@ async def bring_up_lovableproject_doc(
     If the SPA shows 'You don't have access' / login, refresh_token and reload.
     """
     round_n = 0
+    bringup_state: dict = {}
     dest = chat_url or (
         f"https://lovable.dev/projects/{project_id}" if project_id else ""
     )
@@ -2387,6 +2459,65 @@ async def bring_up_lovableproject_doc(
             return True
 
         log("  Still no lovableproject+doc — close popups, prompt, remount, keep looking")
+        # If the preview frame exists but is complete-yet-empty, the app never
+        # built (e.g. cancelled build) — one build prompt, then wait for it.
+        try:
+            _empty = False
+            for _fr in list(chat_page.frames):
+                try:
+                    _u = (_fr.url or "").lower()
+                except Exception:
+                    continue
+                if "lovableproject.com" not in _u:
+                    continue
+                try:
+                    _body_len = await asyncio.wait_for(
+                        _fr.evaluate(
+                            "() => (document.body && document.body.innerText || '').trim().length"
+                        ),
+                        timeout=10,
+                    )
+                except Exception:
+                    continue
+                if isinstance(_body_len, int) and _body_len == 0:
+                    _empty = True
+                    break
+            if _empty:
+                if await send_build_prompt_once(chat_page, bringup_state):
+                    # Give the build real time: poll for content up to ~8 min,
+                    # no navigation while it works.
+                    import time as _t
+                    _deadline = _t.monotonic() + 480
+                    while _t.monotonic() < _deadline:
+                        await asyncio.sleep(15)
+                        try:
+                            _got = False
+                            for _fr2 in list(chat_page.frames):
+                                try:
+                                    _u2 = (_fr2.url or "").lower()
+                                except Exception:
+                                    continue
+                                if "lovableproject.com" not in _u2:
+                                    continue
+                                try:
+                                    _l2 = await asyncio.wait_for(
+                                        _fr2.evaluate(
+                                            "() => (document.body && document.body.innerText || '').trim().length"
+                                        ),
+                                        timeout=10,
+                                    )
+                                except Exception:
+                                    continue
+                                if isinstance(_l2, int) and _l2 > 40:
+                                    _got = True
+                                    break
+                            if _got:
+                                log("  Build prompt worked — preview has content, re-scanning for doc")
+                                break
+                        except Exception:
+                            pass
+        except Exception as e:
+            log(f"  Build-prompt check soft: {type(e).__name__}")
         if project_id:
             try:
                 await force_preview_to_lovableproject_term(chat_page, project_id)
