@@ -1755,6 +1755,39 @@ async def steal_preview_url_from_chat(chat_page) -> str | None:
     return None
 
 
+async def _wait_for_terminal_dom(fr, timeout_s: float = 60.0) -> bool:
+    """Wait until the frame shows terminal DOM (xterm/canvas/non-blank body).
+
+    Returns True as soon as anything terminal-like renders. A frame with
+    terminal DOM but no window.doc yet means "still booting" — WAIT, do not
+    navigate away. Only False after the full timeout means truly blank.
+    """
+    import time as _t
+    deadline = _t.monotonic() + timeout_s
+    while _t.monotonic() < deadline:
+        try:
+            got = await asyncio.wait_for(
+                fr.evaluate(
+                    """() => {
+                    try {
+                      if (document.querySelector('.xterm, .terminal, [class*=terminal i], canvas')) return 'term-dom';
+                      const t = (document.body && document.body.innerText || '').trim();
+                      if (t.length > 40) return 'has-text';
+                      return 'blank';
+                    } catch (e) { return 'eval-fail'; }
+                }"""
+                ),
+                timeout=10,
+            )
+        except Exception:
+            await asyncio.sleep(3)
+            continue
+        if got in ("term-dom", "has-text"):
+            return True
+        await asyncio.sleep(4)
+    return False
+
+
 async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bool:
     """When stuck on id-preview / cold mirrors, push a frame to real Shell /term.
 
@@ -1811,7 +1844,10 @@ async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bo
         if not ranked:
             log(f"  Force /term: no preview-ish frame for {dest}")
             return False
-    for sc, fr in ranked[:3]:
+    # Probe ALL ranked frames (cap 12): the loaded terminal is often NOT in
+    # the top 3 (e.g. buried under blank/id-preview frames). Truncating the
+    # candidate list is how a visible terminal gets missed while we navigate.
+    for sc, fr in ranked[:12]:
         try:
             cur = (fr.url or "")[:100]
         except Exception:
@@ -1850,9 +1886,9 @@ async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bo
         if not navigated:
             continue
         try:
-            # Give the cold WebContainer terminal time to boot before probing:
-            # wait for load quiescence first (up to ~45s), then probe long.
-            # Probing a still-booting page only ever yields no-doc.
+            # WAIT truly: give the cold WebContainer terminal up to ~105s to
+            # render before deciding. Navigating away from a booting terminal
+            # is what blanks a working preview — never cut it short.
             try:
                 await asyncio.wait_for(
                     fr.wait_for_load_state("networkidle", timeout=30000),
@@ -1860,12 +1896,26 @@ async def force_preview_to_lovableproject_term(chat_page, project_id: str) -> bo
                 )
             except Exception:
                 pass
-            await asyncio.sleep(10)
+            term_shown = await _wait_for_terminal_dom(fr, timeout_s=60.0)
+            if not term_shown:
+                log("  Force /term: still blank after full wait — leaving frame alone this pass")
+                continue
+            log("  Force /term: terminal DOM visible — probing doc now")
             probe = await _probe_frame_doc_nproc(fr, timeout=25.0)
             if isinstance(probe, dict) and probe.get("ok"):
                 log(f"  Force /term: DOC ok nproc={probe.get('r')!r}")
                 return True
-            log(f"  Force /term: probe says {str(probe.get('err', '?'))[:60]} — page may still be booting, will re-check next pass")
+            log(f"  Force /term: terminal visible but doc says {str(probe.get('err', '?'))[:60]} — waiting, NOT navigating away")
+            # One more patient round on the SAME frame: doc often arrives late.
+            await asyncio.sleep(20)
+            try:
+                probe2 = await _probe_frame_doc_nproc(fr, timeout=25.0)
+            except Exception as e2:
+                log(f"  Force /term re-probe soft: {type(e2).__name__}")
+                continue
+            if isinstance(probe2, dict) and probe2.get("ok"):
+                log(f"  Force /term: DOC ok on re-probe nproc={probe2.get('r')!r}")
+                return True
         except Exception as e:
             log(f"  Force /term probe soft: {type(e).__name__}")
             continue
@@ -2046,7 +2096,9 @@ async def wait_for_chat_preview_sandbox(
             if sc > 0:
                 ranked.append((sc, fr))
         ranked.sort(key=lambda x: -x[0])
-        candidates = ranked[:5]
+        # Probe ALL ranked frames (cap 12): a loaded terminal buried under
+        # blank/id-preview frames is missed entirely if we truncate to top 5.
+        candidates = ranked[:12]
 
         if elapsed - last_tick >= 12:
             last_tick = elapsed
