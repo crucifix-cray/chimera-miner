@@ -1,6 +1,6 @@
 # FLEET-LIVE — who is mining
 
-**Updated:** 2026-09-26 19:05 UTC — **5 confirmed mining** (28, 77, 83, 87, 89),
+**Updated:** 2026-10-02 — pool 0 H/s, 0 workers; 18 builders hunting docs on live bridge 9f81; memory diet pending approval.
 2 recovering post-bounce (76, 81), 6 down (see below)
 **Registry (single source of truth):** `ops/fleet.json` — rebuild `python3 ops/build_fleet.py`
 **Rule:** one Railway cell per **Lovable project**. Same cookies can mine two projects as two cells.
