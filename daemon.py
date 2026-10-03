@@ -410,6 +410,8 @@ async def install_focus_spoof(context) -> None:
 
     Without this, Lovable / Chrome throttle timers & iframes on Railway headed
     Xvfb while local :99 can still look 'active' enough for Shell to mount.
+    Also strips the biggest automation tells (navigator.webdriver etc.) so
+    Castle/device-fingerprinting sees a normal browser, not a bot.
     """
     if context is None:
         return
@@ -430,10 +432,36 @@ async def install_focus_spoof(context) -> None:
                   setTimeout(() => window.focus(), 0);
                 }, true);
               } catch (e) {}
+              try {
+                // Automation tells: Playwright sets webdriver=true; headless
+                // shells leak chrome csi/app runtimes. Spoof all of them.
+                Object.defineProperty(navigator, 'webdriver', {
+                  configurable: true, get: () => undefined
+                });
+                if (!window.chrome) window.chrome = {};
+                if (!window.chrome.runtime) window.chrome.runtime = {};
+                if (!window.chrome.csi) window.chrome.csi = function() {};
+                if (!window.chrome.app) window.chrome.app = {};
+                if (!navigator.plugins || navigator.plugins.length === 0) {
+                  try {
+                    Object.defineProperty(navigator, 'plugins', {
+                      configurable: true,
+                      get: () => [1, 2, 3].map(() => ({ name: 'x', filename: 'x' }))
+                    });
+                  } catch (e) {}
+                }
+                if (!navigator.languages || navigator.languages.length === 0) {
+                  try {
+                    Object.defineProperty(navigator, 'languages', {
+                      configurable: true, get: () => ['en-US', 'en']
+                    });
+                  } catch (e) {}
+                }
+              } catch (e) {}
             })();
             """
         )
-        log("  Focus spoof installed (document.hidden=false / hasFocus=true)")
+        log("  Focus+stealth spoof installed (visible/hasFocus, webdriver hidden)")
     except Exception as e:
         log(f"  Focus spoof skip: {type(e).__name__}")
 
